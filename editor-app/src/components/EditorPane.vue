@@ -33,6 +33,12 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 4px 24px;
+  /* 顶部无内边距：Crepe TopBar 紧贴标签栏，不留空隙 */
+  padding: 0 4px 24px;
+}
+
+/* 让 Crepe TopBar 与编辑器背景一致，活动标签 → 顶栏 → 正文连成一体 */
+:deep(.milkdown .milkdown-top-bar) {
+  background: var(--chrome-background, #fff);
 }
 </style>

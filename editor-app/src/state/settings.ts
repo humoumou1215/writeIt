@@ -22,11 +22,87 @@ export type ThemeId = (typeof THEMES)[number]['id']
 
 const SETTINGS_KEY = 'milkdown-note-settings-v1'
 
+// ---------- 快捷键 ----------
+
+export interface ShortcutDef {
+  id: string
+  label: string
+  default: string
+}
+
+export const SHORTCUT_DEFS: ShortcutDef[] = [
+  { id: 'save', label: '保存当前文件', default: 'Ctrl+S' },
+  { id: 'openDirectory', label: '打开目录', default: 'Ctrl+O' },
+  { id: 'newFile', label: '新建文件', default: 'Ctrl+N' },
+  { id: 'closeTab', label: '关闭当前标签', default: 'Ctrl+W' },
+  { id: 'nextTab', label: '下一个标签', default: 'Ctrl+Tab' },
+  { id: 'prevTab', label: '上一个标签', default: 'Ctrl+Shift+Tab' },
+  { id: 'prevFile', label: '上一个文件', default: 'Alt+ArrowUp' },
+  { id: 'nextFile', label: '下一个文件', default: 'Alt+ArrowDown' },
+  { id: 'toggleSidebar', label: '收纳/展开侧边栏', default: 'Ctrl+B' },
+  { id: 'settings', label: '打开设置', default: 'Ctrl+,' },
+]
+
+const defaultShortcuts: Record<string, string> = Object.fromEntries(
+  SHORTCUT_DEFS.map((s) => [s.id, s.default])
+)
+
+/** 把按键事件格式化为 "Ctrl+Shift+X" 形式；纯修饰键返回空串 */
+export function formatCombo(e: KeyboardEvent): string {
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return ''
+  const parts: string[] = []
+  if (e.ctrlKey || e.metaKey) parts.push('Ctrl')
+  if (e.altKey) parts.push('Alt')
+  if (e.shiftKey) parts.push('Shift')
+  let key = e.key
+  if (key === ' ') key = 'Space'
+  parts.push(key.length === 1 ? key.toUpperCase() : key)
+  return parts.join('+')
+}
+
+export function parseCombo(
+  combo: string
+): { ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; key: string } | null {
+  const parts = combo.split('+').map((p) => p.trim())
+  if (!parts.length) return null
+  const key = parts.pop()!.toLowerCase()
+  const mods = { ctrl: false, alt: false, shift: false, meta: false }
+  for (const p of parts) {
+    const l = p.toLowerCase()
+    if (l === 'ctrl' || l === 'cmd') mods.ctrl = true
+    else if (l === 'alt' || l === 'option') mods.alt = true
+    else if (l === 'shift') mods.shift = true
+    else if (l === 'meta' || l === 'win') mods.meta = true
+    else return null
+  }
+  return { ...mods, key: key === 'space' ? ' ' : key }
+}
+
+export function comboMatches(e: KeyboardEvent, combo: string): boolean {
+  const parsed = parseCombo(combo)
+  if (!parsed) return false
+  const pressed = e.key.toLowerCase()
+  return (
+    parsed.ctrl === (e.ctrlKey || e.metaKey) &&
+    parsed.alt === e.altKey &&
+    parsed.shift === e.shiftKey &&
+    parsed.key === pressed
+  )
+}
+
+// ---------- 应用设置 ----------
+
 export interface AppSettings {
   theme: ThemeId
   autoSave: boolean
   autoSaveDelay: number // ms
   showAllFiles: boolean
+  /** 侧边栏内容列宽度（px） */
+  sidebarWidth: number
+  /** 侧边栏是否固定（固定后打开文件不自动收纳） */
+  sidebarPinned: boolean
+  /** 快捷键映射：actionId → "Ctrl+Shift+X" */
+  shortcuts: Record<string, string>
 }
 
 const defaultSettings: AppSettings = {
@@ -34,18 +110,32 @@ const defaultSettings: AppSettings = {
   autoSave: false,
   autoSaveDelay: 2000,
   showAllFiles: false,
+  sidebarWidth: 250,
+  sidebarPinned: false,
+  shortcuts: { ...defaultShortcuts },
 }
 
 export const settings = reactive<AppSettings>(loadSettings())
 
 function loadSettings(): AppSettings {
+  const base: AppSettings = {
+    ...defaultSettings,
+    shortcuts: { ...defaultSettings.shortcuts },
+  }
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
-    if (raw) return { ...defaultSettings, ...(JSON.parse(raw) as Partial<AppSettings>) }
+    if (raw) {
+      const saved = JSON.parse(raw) as Partial<AppSettings>
+      return {
+        ...base,
+        ...saved,
+        shortcuts: { ...base.shortcuts, ...(saved.shortcuts ?? {}) },
+      }
+    }
   } catch {
     /* ignore */
   }
-  return { ...defaultSettings }
+  return base
 }
 
 export function saveSettings() {

@@ -43,6 +43,8 @@ function onMiddleClick(e: MouseEvent, id: string) {
   padding: 6px 10px 0;
   overflow-x: auto;
   flex-shrink: 0;
+  background: var(--chrome-surface, #f7f7f7);
+  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
 }
 .tab {
   display: flex;
@@ -66,6 +68,8 @@ function onMiddleClick(e: MouseEvent, id: string) {
   background: var(--chrome-background, #fff);
   border-color: var(--chrome-border, #e5e6eb);
   color: var(--chrome-on-background, #1f2329);
+  /* 与下方编辑器连成一体 */
+  box-shadow: 0 1px 0 0 var(--chrome-background, #fff);
 }
 .dot {
   width: 7px;

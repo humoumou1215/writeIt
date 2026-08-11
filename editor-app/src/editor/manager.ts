@@ -49,6 +49,9 @@ export async function openTab(path: string): Promise<void> {
   state.tabs.push(tab)
   state.activeTabId = tab.id
   // 容器由 EditorPane.vue 在 mount 时创建并调用 mountEditor
+
+  // 自动收纳：打开文件后，若侧边栏未固定则收起内容列
+  if (!settings.sidebarPinned) state.sidebarCollapsed = true
 }
 
 export function activateTab(id: string) {

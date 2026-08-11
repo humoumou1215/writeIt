@@ -45,6 +45,8 @@ export const state = reactive({
   activeTabId: null as null | string,
 
   settingsOpen: false,
+  /** 侧边栏内容列是否收纳（打开文件时若未固定则自动收纳） */
+  sidebarCollapsed: false,
   contextMenu: null as null | MenuRequest,
   confirm: null as null | ConfirmRequest,
   toasts: [] as Toast[],
