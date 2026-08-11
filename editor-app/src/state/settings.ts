@@ -1,0 +1,117 @@
+// 主题管理：6 套 crepe 主题 CSS 以 ?raw 打包进应用（离线可用），运行时注入 <style>
+// 应用外壳（文件树/标签栏/工具栏）通过读取 .milkdown 的计算样式同步配色
+import { reactive } from 'vue'
+
+import frameCss from '@milkdown/crepe/theme/frame.css?raw'
+import frameDarkCss from '@milkdown/crepe/theme/frame-dark.css?raw'
+import classicCss from '@milkdown/crepe/theme/classic.css?raw'
+import classicDarkCss from '@milkdown/crepe/theme/classic-dark.css?raw'
+import nordCss from '@milkdown/crepe/theme/nord.css?raw'
+import nordDarkCss from '@milkdown/crepe/theme/nord-dark.css?raw'
+
+export const THEMES = [
+  { id: 'frame', label: 'Frame 浅色', css: frameCss },
+  { id: 'frame-dark', label: 'Frame 深色', css: frameDarkCss },
+  { id: 'classic', label: 'Classic 浅色', css: classicCss },
+  { id: 'classic-dark', label: 'Classic 深色', css: classicDarkCss },
+  { id: 'nord', label: 'Nord 浅色', css: nordCss },
+  { id: 'nord-dark', label: 'Nord 深色', css: nordDarkCss },
+] as const
+
+export type ThemeId = (typeof THEMES)[number]['id']
+
+const SETTINGS_KEY = 'milkdown-note-settings-v1'
+
+export interface AppSettings {
+  theme: ThemeId
+  autoSave: boolean
+  autoSaveDelay: number // ms
+  showAllFiles: boolean
+}
+
+const defaultSettings: AppSettings = {
+  theme: 'frame',
+  autoSave: false,
+  autoSaveDelay: 2000,
+  showAllFiles: false,
+}
+
+export const settings = reactive<AppSettings>(loadSettings())
+
+function loadSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (raw) return { ...defaultSettings, ...(JSON.parse(raw) as Partial<AppSettings>) }
+  } catch {
+    /* ignore */
+  }
+  return { ...defaultSettings }
+}
+
+export function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+}
+
+// ---------- 主题注入 ----------
+
+let themeStyleEl: HTMLStyleElement | null = null
+
+export function applyTheme(theme: ThemeId) {
+  const t = THEMES.find((x) => x.id === theme) ?? THEMES[0]
+  if (!themeStyleEl) {
+    themeStyleEl = document.createElement('style')
+    themeStyleEl.setAttribute('data-theme-style', '')
+    document.head.appendChild(themeStyleEl)
+  }
+  themeStyleEl.textContent = t.css
+  syncChromeTheme()
+  saveSettings()
+}
+
+// ---------- 外壳配色同步 ----------
+// crepe 主题把变量定义在 .milkdown 上；我们把关键色映射到 :root 的 --chrome-*，
+// 供文件树/标签栏/工具栏使用，保证整体观感与编辑器一致
+
+const CHROME_MAP: Array<[string, string]> = [
+  ['--chrome-background', '--crepe-color-background'],
+  ['--chrome-on-background', '--crepe-color-on-background'],
+  ['--chrome-surface', '--crepe-color-surface'],
+  ['--chrome-surface-low', '--crepe-color-surface-low'],
+  ['--chrome-on-surface', '--crepe-color-on-surface'],
+  ['--chrome-on-surface-variant', '--crepe-color-on-surface-variant'],
+  ['--chrome-outline', '--crepe-color-outline'],
+  ['--chrome-primary', '--crepe-color-primary'],
+  ['--chrome-secondary', '--crepe-color-secondary'],
+  ['--chrome-hover', '--crepe-color-hover'],
+  ['--chrome-selected', '--crepe-color-selected'],
+  ['--chrome-inline-code', '--crepe-color-inline-code'],
+  ['--chrome-error', '--crepe-color-error'],
+]
+
+export function syncChromeTheme() {
+  // 用一个离屏探针元素读取主题变量（不依赖编辑器是否打开）
+  let probe = document.getElementById('crepe-theme-probe') as HTMLElement | null
+  if (!probe) {
+    probe = document.createElement('div')
+    probe.id = 'crepe-theme-probe'
+    probe.className = 'milkdown'
+    probe.setAttribute('aria-hidden', 'true')
+    Object.assign(probe.style, {
+      position: 'fixed',
+      left: '-9999px',
+      top: '0',
+      width: '1px',
+      height: '1px',
+      pointerEvents: 'none',
+    })
+    document.body.appendChild(probe)
+  }
+  const cs = getComputedStyle(probe)
+  const root = document.documentElement
+  for (const [chromeVar, crepeVar] of CHROME_MAP) {
+    const v = cs.getPropertyValue(crepeVar).trim()
+    if (v) root.style.setProperty(chromeVar, v)
+  }
+  // 边框色：无直接对应，用 outline 的淡化
+  root.style.setProperty('--chrome-border', cs.getPropertyValue('--crepe-color-outline').trim() + '55')
+}
