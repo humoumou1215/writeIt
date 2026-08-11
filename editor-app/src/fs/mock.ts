@@ -2,20 +2,14 @@
 // 数据结构：{ files: { [path]: content }, dirs: string[] }
 import type { FileSystem, FsEntry, FsBackendKind } from './types'
 import { isEditableFile, dirName, baseName } from './types'
+import demoMd from '../editor/demo.md?raw'
+import mermaidMd from '../editor/mermaid.md?raw'
 
-const KEY = 'milkdown-note-mock-fs-v1'
+const KEY = 'milkdown-note-mock-fs-v2'
 
 const SAMPLE: Record<string, string> = {
-  'README.md': `# 🥛 Milkdown Note
-
-这是一个**完整可运行**的示例工作区。
-
-- 左侧是文件树（支持新建 / 重命名 / 删除 / 新建文件夹）
-- 顶部是标签页（可同时打开多个文件，各自保留撤销历史）
-- \`Ctrl+S\` 手动保存；带 ● 的标签表示有未保存修改
-- 右上角设置里可以开启**自动保存**
-
-> 试试：修改本文后按 \`Ctrl+S\`，再切到别的文件，最后关闭本标签——会提示你保存。`,
+  'README.md': demoMd,
+  'Mermaid 图表集.md': mermaidMd,
   '笔记/会议记录.md': `# 会议记录
 
 ## 2026-08-11 周会

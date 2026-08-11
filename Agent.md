@@ -16,23 +16,41 @@
 
 ```
 writeIt/
-├── raw/            # Immutable source docs. Pi READS ONLY. Never write/edit/delete.
-│   └── milkdown-docs/
-├── wiki/           # Pi-owned, generated layer. Pi READS + WRITES.
+├── raw/                # Immutable source docs. Pi READS ONLY. Never write/edit/delete.
+│   ├── milkdown-docs/  #   官方文档语料（api / guide / plugin 子目录）
+│   └── milkdown-srouce/ #   milkdown 源码语料（注意目录拼写是 "srouce"；packages/ 下是各插件/组件/preset 包）
+├── wiki/               # Pi-owned, generated layer. Pi READS + WRITES.
 │   ├── index.md        # Master catalog — one line per page.
 │   ├── log.md          # Append-only activity timeline.
 │   ├── concepts/       # Ideas, systems, patterns (e.g. architecture, plugin system).
 │   ├── entities/       # Things/projects/deps (Milkdown, Crepe, ProseMirror, …).
 │   ├── sources/        # Provenance of each raw corpus.
 │   └── syntheses/      # Cross-cutting overviews (e.g. [[Overview]]).
-├── Agent.md         # This file. Human-configured, Pi-executed. NEVER edited by Pi.
-└── (outputs/)       # Optional: long-form query answers, if needed.
+├── Agent.md            # This file. Human-configured, Pi-executed. NEVER edited by Pi.
+├── editor-app/         # ⚠️ 独立应用（Vue 3 + Vite + Tauri + @milkdown/crepe）
+│   ├── src/
+│   │   ├── editor/     #   manager.ts（多标签 Crepe 实例管理）+ mermaid.ts（图表配置工厂）
+│   │   │               #   + mermaid-diagrams.ts / demo.md / mermaid.md（图表数据源与示例）
+│   │   ├── fs/         #   文件系统抽象：types / mock（浏览器 Demo）/ web（FS Access API）/ tauri（IPC）
+│   │   ├── components/ #   FileTree / TabBar / EditorPane / SettingsPanel / 弹窗
+│   │   ├── state/      #   store / settings（主题）/ treeOps（文件树 CRUD）
+│   │   ├── App.vue     #   布局：顶栏 + 文件树 + 多标签 + 编辑器
+│   │   └── main.ts     #   入口（引入 crepe 基础样式）
+│   ├── src-tauri/      #   Tauri 壳（Rust 命令：read_tree / read_file / write_file / CRUD）
+│   ├── package.json    #   依赖：@milkdown/crepe、@milkdown/kit、vue、mermaid、@tauri-apps/*
+│   ├── README.md       #   架构 / 启动 / 打包说明（工作区入口文档）
+│   ├── node_modules/   #   已安装依赖
+│   └── dist/           #   npm run build 产物
+└── (outputs/)          # Optional: long-form query answers, if needed.
 ```
+
+> 历史：`editor/`（单页 Demo）与根 `index.html`（入口页）已删除——功能已全部并入 `editor-app/`，避免资产重复。
 
 ### Permissions (hard rules)
 - `raw/` → **READ ONLY.** If a wiki page is wrong, fix the wiki; never touch the source.
 - `wiki/` → Pi may create/update pages, `index.md`, `log.md`.
-- `Agent.md` → **NEVER modified by Pi.** If you think it needs changing, tell the human.
+- `Agent.md` → **NEVER modified by Pi.** If you think it needs changing, tell the human. （修改须经 human 明确指示）
+- `editor-app/` → 可运行独立应用（Vue + Vite + Tauri），Pi 可在 human 要求下修改代码/依赖/构建/打包。
 - Never delete past `log.md` entries.
 
 ## 3. Wiki Conventions
@@ -128,6 +146,11 @@ Run when asked, or every ~10 ingests. Read all wiki pages and:
 - Markdown is the source of truth; ProseMirror is the engine; Milkdown adds the Markdown + plugin layer.
 - Two build levels: low-level `Editor.make().use(...)` vs high-level `Crepe` / `CrepeBuilder`.
 - Most operationally important caveat in the corpus: **never embed LLM API keys in a browser bundle** (see [[AI Feature]]).
+- 本工作区的可运行编辑器应用位于 `editor-app/`（Vue 3 + Vite + Tauri 本地构建，**勿用 esm.sh CDN**——codemirror `basicSetup` 导出丢失 + CSS 404）。esm.sh CDN 方案已弃用，**不要回退到 CDN 方案**。
+- `editor-app/` 架构要点：文件系统抽象为 `FileSystem` 接口（mock / web / tauri 三种实现，可切换代理）；多标签编辑 = 每标签独立 Crepe 实例（保留各自撤销历史，切标签只切容器可见性）；文件内容只经 `getMarkdown()` 取出、`replaceAll()` 注入。
+- Mermaid 支持：`Crepe.Feature.CodeMirror` 的 `renderPreview` 钩子（渲染 `mermaid` 代码块预览）+ `Crepe.Feature.BlockEdit` 的 `buildMenu`（slash 命令「Mermaid」分组），实现见 `editor-app/src/editor/mermaid.ts`，数据源 `mermaid-diagrams.ts`（30 种图表）。
+- CodeMirror 代码块为 **IntersectionObserver 懒加载**：滚动到可视区才初始化编辑器（编辑器未显示时只渲染 placeholder，属正常行为）。
+- Tauri 目标平台为 **Windows**（NSIS 安装包）；本开发环境是 Linux，Rust 壳用 `cargo check` 验证，打包需在 Windows 机器执行。
 
 ---
-_Last revised: 2026-08-10 — initial schema written during first corpus ingestion._
+_Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri），删除 `editor/` 与根 `index.html`；新增 fs 抽象 / 多标签 / Mermaid 实现路径说明。_

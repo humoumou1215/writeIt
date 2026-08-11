@@ -19,3 +19,18 @@ Append-only activity timeline. Pi appends one line per meaningful operation. Nev
 - **22:20** Created entity page [[Milkdown Monorepo]] (the repo as an entity).
 - **22:20** Updated [[Overview]] with a "source repository" section; added the 4 pages to [[Index]] with a `raw/milkdown-srouce/` module map (wiki now 23 pages).
 - **22:20** [LINT] Reconciled plugin count: source repo has **17 plugins**; [[Plugin System]] previously listed 16 (added `plugin-automd`) and [[Overview]] said "~15" (corrected to 17).
+
+## 2026-08-11
+
+- **05:28** Updated `Agent.md` (human-requested): directory tree now includes `editor/` Vite demo project + root `index.html` entry page, clarified `editor/`/`index.html` permissions, added CDN-deprecation & Mermaid-integration domain notes to prevent path confusion in future sessions.
+- **05:32** Simplified root `index.html` into a minimal entry/navigation page (plan A): only points to `editor/` + run commands; removed CDN history & build details (now only in `editor/README.md`).
+- **02:10** Integrated Mermaid into `editor/` demo: `renderPreview` hook renders `mermaid` code blocks to SVG; `/` slash menu lists all **30 diagram types** in 4 groups (via `BlockEdit.buildMenu` + `insert` macro), each inserting a pre-filled example. Created [[Mermaid]] entity page, linked [[CodeMirror]]/[[Crepe Editor]]/[[Index]].
+- **02:15** Verified all 30 Mermaid examples with `mermaid.parse` (esbuild-bundled browser build + happy-dom) — 30/30 pass; fixed 9 syntax issues (ASCII identifiers/keys required: C4 `Rel()`, architecture `--` edges, radar/venn/wardley/sankey/requirement ASCII names, packet contiguous blocks). Insert logic tested in node — 30/30.
+- **02:40** Added `editor/src/mermaid.md` — standalone catalog of all 30 Mermaid diagram examples (auto-generated from `mermaid-diagrams.ts`, each verified with `mermaid.parse`); toolbar gains a「图表集」button that loads it via `replaceAll`. Verified in node: 30 mermaid code blocks, all language=mermaid, content identical to validated data source.
+- **03:05** Slash `/` menu trimmed to 8 curated Mermaid templates in a single「Mermaid」group (Flowchart/Sequence/State/Class/Mindmap/ER/C4/Gantt) via `MERMAID_SLASH_ITEMS`; rendering still supports all 30 types (renderPreview is type-agnostic), `mermaid.md` gallery unchanged.
+
+## 2026-08-11
+
+- **09:50** Built `editor-app/` — full standalone app (Vue 3 + Vite + Tauri 2): file tree with full CRUD, multi-tab editing (per-tab Crepe instance), Ctrl+S + dirty markers + configurable auto-save, 6 themes with chrome color sync, `.md`/`.txt` scope, Windows NSIS target. File system abstracted as `FileSystem` interface (mock / web FS Access API / tauri IPC). Verified: 29 app E2E + 17 mock-fs unit tests + `cargo check` clean.
+- **10:20** Merged `editor/` Mermaid capability into `editor-app/` (`src/editor/mermaid.ts` feature factory + `mermaid-diagrams.ts`/`demo.md`/`mermaid.md` copied as single source; mock workspace seeds `Mermaid 图表集.md`). Verified Mermaid preview SVG render + slash menu in browser (5/5 E2E). Documented CodeMirror IntersectionObserver lazy-loading behavior.
+- **10:40** Deleted `editor/` (single-page demo) and root `index.html` (stale entry page) — functionality fully superseded by `editor-app/`; assets kept single-source to avoid drift. Updated `Agent.md` (human-requested) + fixed [[Mermaid]] stale paths.

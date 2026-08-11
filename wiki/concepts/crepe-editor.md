@@ -39,4 +39,4 @@ Light: `crepe.css`, `nord.css`, `frame.css`. Dark: `crepe-dark.css`, `nord-dark.
 ## Related
 
 - [[Milkdown Architecture]] · [[Component System]] · [[Plugin System]] · [[AI Feature]] · [[Nord Theme]]
-- Entities: [[Crepe]] · [[Milkdown]] · [[Nord Theme]] · [[KaTeX]] (Latex) · [[CodeMirror]] (CodeMirror feature)
+- Entities: [[Crepe]] · [[Milkdown]] · [[Nord Theme]] · [[KaTeX]] (Latex) · [[CodeMirror]] (CodeMirror feature) · [[Mermaid]] (diagram preview)

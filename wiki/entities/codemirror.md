@@ -3,7 +3,7 @@ title: CodeMirror
 type: entity
 tags: [dependency, codemirror, code-block, editor]
 source: [[Milkdown Docs Corpus]]
-updated: 2026-08-10
+updated: 2026-08-11
 ---
 
 # CodeMirror
@@ -16,9 +16,9 @@ updated: 2026-08-10
 
 ## Why it matters
 
-If you need code editing/highlighting inside Milkdown, you configure CodeMirror 6 language descriptions and extensions — not Milkdown internals.
+If you need code editing/highlighting inside Milkdown, you configure CodeMirror 6 language descriptions and extensions — not Milkdown internals. The `renderPreview` hook also powers the [[Mermaid]] diagram preview (render `mermaid` code blocks to SVG).
 
 ## Related
 
-- [[Component System]] · [[Crepe Editor]]
+- [[Component System]] · [[Crepe Editor]] · [[Mermaid]]
 - Parent framework: [[Milkdown]]

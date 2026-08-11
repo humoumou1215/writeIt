@@ -41,6 +41,8 @@ The roster of every wiki page. **Pi reads this first** when answering a question
 - [Refractor](entities/refractor.md) — syntax-highlighting engine behind `plugin-prism`.
 - [Nord Theme](entities/nord-theme.md) — lightweight Nord/Tailwind-based Milkdown theme.
 
+- [Mermaid](entities/mermaid.md) — diagramming library; no built-in Milkdown plugin, but `renderPreview` + slash `buildMenu` integrate it (30 diagram types, verified examples).
+
 ## Sources (2)
 
 - [Milkdown Source Repository](sources/milkdown-source-repo.md) — provenance & inventory of the immutable `raw/milkdown-srouce/` monorepo (the upstream code).
@@ -103,4 +105,4 @@ Every file under `raw/milkdown-docs/` and where its knowledge lives:
 | `dev/`, `docs/`, `e2e/`, `storybook/`, `scripts/` | [[Monorepo & Build System]], [[Milkdown Monorepo]], [[Milkdown Docs Corpus]] |
 | `README.md`, `LICENSE`, `CONTRIBUTING.md` | [[Milkdown Monorepo]], [[Milkdown]] |
 
-_Page count: 1 overview + 10 concepts + 9 entities + 2 sources + 1 synthesis = 23 wiki pages._
+_Page count: 1 overview + 10 concepts + 10 entities + 2 sources + 1 synthesis = 24 wiki pages._

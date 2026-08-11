@@ -69,6 +69,18 @@ npm run tauri dev    # 需要 Rust 工具链
 - 关闭标签才销毁实例；有未保存修改时弹确认框
 - 数据流单向：文件内容只经 `getMarkdown()` 取出、`replaceAll()` 注入
 
+## Mermaid 图表（自 editor/ 子项目移植）
+
+与 `editor/` 子项目能力对齐，已集成到多标签架构：
+
+- **代码块预览**：任意 ```` ```mermaid ```` 代码块点击右上角 👁 按钮，经 `mermaid.render` 渲染 SVG（含 loading 与错误提示）
+- **斜杠命令**：`/` 菜单新增「Mermaid」分组，精选 8 种模板（Flowchart/Sequence/State/Class/Mindmap/ER/C4/Gantt），选中即插入带示例的代码块
+- **图表集**：示例工作区内置 `Mermaid 图表集.md`（全部 30 种图表类型，逐一可预览）
+- 实现：`src/editor/mermaid.ts`（feature 配置工厂，每个 Crepe 实例应用）+ `src/editor/mermaid-diagrams.ts`（30 种图表数据源）
+- 注意：CodeMirror 代码块为 **IntersectionObserver 懒加载**，滚动到可视区才会初始化
+
+> 代码块语言按钮等细节来自 `editor/` 子项目的验证结论：必须用本地 Vite 构建（esm.sh CDN 有 `basicSetup` 导出丢失与 CSS 404 问题），本项目本身就是本地构建，无此问题。
+
 ## 保存策略
 
 - **手动**：`Ctrl+S` 保存当前标签

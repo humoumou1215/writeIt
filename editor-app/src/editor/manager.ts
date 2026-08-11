@@ -9,6 +9,7 @@ import { baseName } from '../fs/types'
 import { state, nextTabId, toast } from '../state/store'
 import { settings } from '../state/settings'
 import type { Tab } from '../state/store'
+import { mermaidFeatureConfigs } from './mermaid'
 
 interface Instance {
   crepe: Crepe
@@ -72,6 +73,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     features: {
       [CrepeFeature.TopBar]: true,
     },
+    // Mermaid 图表：代码块预览 + 斜杠菜单模板
+    featureConfigs: mermaidFeatureConfigs(),
   })
   await crepe.create()
 
