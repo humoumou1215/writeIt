@@ -153,6 +153,9 @@ function cycleMode(delta: number) {
   props.menu.setMode(MODES[(idx + delta + MODES.length) % MODES.length].id)
 }
 
+// 进入实体级前记录 hover 位置（← 返回时恢复到该文件）
+const entityReturnIndex = ref(0)
+
 function runEntry(entry: MenuEntry) {
   if (!entry) return
   if (entry.kind === 'dir') {
@@ -160,7 +163,8 @@ function runEntry(entry: MenuEntry) {
     props.menu.enterDir(entry.path)
     return
   }
-  // 文件：检查目标 doctype + suggest（M4）→ 命中进入实体级，否则按当前模式插入
+  // 文件：进入实体级前记录当前位置，← 返回时恢复（不跳回第一个）
+  entityReturnIndex.value = hoverIndex.value
   props.menu.selectFile(entry.path, props.state.mode)
 }
 
@@ -180,7 +184,10 @@ function onKeydown(e: KeyboardEvent) {
     } else if (e.key === 'Backspace' || e.key === 'ArrowLeft') {
       e.preventDefault(); e.stopPropagation()
       props.menu.closeEntities()
-      hoverIndex.value = 0
+      // watch 会把 hoverIndex 重置为 0，下一帧恢复为进入前的文件
+      requestAnimationFrame(() => {
+        hoverIndex.value = entityReturnIndex.value
+      })
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); e.stopPropagation()
       const delta = e.key === 'ArrowDown' ? 1 : -1

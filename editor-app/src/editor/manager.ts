@@ -62,12 +62,16 @@ const instances = new Map<string, Instance>()
   if (!inst) return
   inst.crepe.editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
-    const pos = view.state.doc.content.size
-    view.dispatch(
-      view.state.tr
-        .setSelection(TextSelection.near(view.state.doc.resolve(pos)))
-        .scrollIntoView()
-    )
+    const doc = view.state.doc
+    const end = doc.content.size
+    const tr = view.state.tr
+    // 文档末尾若是嵌入块（file_block），其后没有可输入的文本 —— 补一个空段落
+    const lastNode = doc.lastChild
+    if (lastNode?.type.name === 'file_block') {
+      tr.insert(end, tr.doc.type.schema.nodes.paragraph.create())
+    }
+    tr.setSelection(TextSelection.near(tr.doc.resolve(end)))
+    view.dispatch(tr.scrollIntoView())
   })
 }
 

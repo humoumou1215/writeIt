@@ -415,6 +415,12 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 4（嵌入物化与导航恢复）**：
+
+1. **嵌入插入后未物化**：空段落被替换（replaceWith）时块位置偏移 1（`$pos.before()`），`materializeBlock` 用原 pos 查不到块 → dispatch 后从 tr 的最终 doc 重新定位触发位置附近的同 path 块再物化
+2. **← 返回恢复选中项**：进入实体级前记录 hoverIndex，← 返回文件级时 `requestAnimationFrame` 恢复（覆盖 watch 的重置），停在进入前的文件而非第一个
+3. **goEnd 增强**：文档末尾是嵌入块时自动补空段落（Ctrl+End 类操作可输入）
+
 **M4 后续修复 3（实体级完善，用户三需求）**：
 
 1. **标题实体（Obsidian 模式，§6.2 落地）**：无 suggest.ts 的文件选中后进入实体级，列表 = 文件本身 + 标题列表（`# 标题`，从 md 提取）——选标题插入 `[[path#标题]]`（file_ref + fragment）；有 suggest 的文件 = 文件本身 + 模板对象

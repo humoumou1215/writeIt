@@ -178,9 +178,18 @@ function insertFileBlock(
     tr.insert(pos, block)
   }
   view.dispatch(tr)
-
+  // 重新定位刚插入的块：空段落被替换（replaceWith）时块在 $pos.before()，位置偏移 1。
+  // 从 tr 的最终 doc 里找触发位置附近的同 path 块，用其真实位置物化
+  let blockPos = -1
+  tr.doc.descendants((n, p) => {
+    if (n.type.name === 'file_block' && n.attrs.path === path && p >= triggerFrom - 3) {
+      blockPos = p
+      return false
+    }
+    return true
+  })
   // 新插入的块立即物化（异步，容错）
-  void materializeBlock(editor, pos, path, readonly)
+  void materializeBlock(editor, blockPos >= 0 ? blockPos : pos, path, readonly)
 }
 
 /** 插入 object_ref（[[path#object]]，resolvedText 待 resolve 阶段填充） */
