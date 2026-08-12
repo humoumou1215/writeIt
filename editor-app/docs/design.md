@@ -381,79 +381,53 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 进展：M1 ✅（15/15 测试）→ M2 ✅（25/25）→ M3 ✅（9/9）→ M4 ✅（13/13）→ M5（下一步）
+> 状态：**M1-M4 已完成并全量回归通过**；M5（ValidateService）待做。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
 
-1. 语法与节点：doctype / file_ref / object_ref / file_block + parse/toMarkdown + 转义 ✅
-2. SlashProvider `@`/`[[`/`![[` 菜单（迷你文件树 + 模式/对象选择）✅
-3. TemplateService（双域扫描、插入/新建、占位符渲染）✅（占位符 v1 原样文本，chip 渲染待做）
-4. ValidateService（rules.ts 加载执行、三通道呈现、strict 门禁）← M5
-5. RefSyncService（两段式 resolve、物化、写回事务、断链/环/深度）← M5（resolve/物化/断链已实现）
-6. UI：引用卡片、只读徽标、校验面板、警告态样式（引用卡片/只读徽标/警告态已实现；校验面板 M5）
+### 里程碑状态
 
-### M4 实现记录（模板机制 + suggest 实体）
+1. **M1 语法与节点 ✅**：doctype / file_ref / object_ref / file_block + remark 插件 + stringify handler + 两段式 resolve + Obsidian 路径补全（.md/.markdown/.txt）
+2. **M2 触发菜单 ✅**：`@`/`[[`/`![[` 触发 + 三级递进菜单（模式选择器 / 文件树逐级发现 / 实体级懒加载）
+3. **M3 文件树联动 ✅**：chip 点击跳转（#片段平滑滚动）、断链检测+重选菜单、重命名引用联动、只读事务守卫
+4. **M4 模板机制 + 实体级 ✅**：TemplateService 双域扫描、esbuild-wasm 运行时加载 rules/suggest、`/` 菜单「模板」组、ref 菜单第二级实体（suggest 对象 + Obsidian 标题）、基于模板新建
+5. **M5 ValidateService ← 待做**：rules.ts 执行 + 三通道呈现（decorations 标注 / 聚合面板 / 报告落盘）+ strict 门禁
 
-- `src/template/`：types / ts-loader（esbuild-wasm 转译 + new Function 隔离执行）/ service（双域扫描）/ suggest-context
-- `/` 斜杠菜单「模板」组（`config.buildMenu` 扩展点；mountEditor 前 await ready() 确保注册表就绪）
-- ref 菜单第二级实体：选文件 → 查 doctype+suggest（扩展名补全）→ 实体列表 → 插入 `[[path#object]]`
-- resolve 阶段 `#` 消歧：suggest 命中对象 → object_ref（resolvedText）；否则保持 Obsidian 标题链接
-- 基于模板新建：目录右键 → 模板选择器 → 文件名（自动补 .md）→ 复制模板内容
-- 触发词防误触：beforeinput 跟踪最近键入（含 IME 组合文本），验证触发词是刚输入的（段落里旧 `[[` 不再误触发）
+### M4 完成清单（含用户反馈修复轮次）
 
-**M4 记录缺口**：① 占位符 `{{title}}` 以文本原样显示（chip 渲染待做）；② 全局模板域真实文件系统（外部目录）需 Rust 命令，v1 仅 mock 示例；③ 已打开编辑器不感知模板注册表变更（重开标签生效）
+**模板机制**：`src/template/`（types / ts-loader / service / suggest-context）；`/` 斜杠「模板」组（buildMenu 扩展点，mountEditor 前 await ready()）；基于模板新建（目录右键 → 选择器 → 自动补 .md）；占位符 v1 原样文本（chip 渲染待做）；双域扫描工作区 `template/` + 全局（mock 示例；真实外部目录 v1.5 缺口）
 
-**M4 后续修复（用户反馈四问题）**：
+**实体级引用（§6.2 Obsidian 兼容落地）**：选文件 → 实体级 = 文件本身 + （有 suggest.ts → 模板对象；无 → md 提取的标题列表）；选标题插入 `[[path#标题]]`（file_ref+fragment），选对象插入 `[[path#对象]]`（object_ref，resolve 填充值）；实体级与目录展开同款视觉（h6 路径风格 + ◆/#/📄 图标 + › 箭头）；`![[`（嵌入）与断链替换不进实体级
 
-1. **文件树 demo 目录无文件**：模板配套 `.rules.ts`/`.suggest.ts` 被 showAllFiles=false 隐藏 → 新增 `shouldShowInTree()`：模板域（`template/`）文件始终显示（mock/web/tauri 三端一致）
-2. **@ 菜单 Enter 目录直接插入文件（多标签双重触发）**：多标签时多个菜单实例共享 window keydown 监听 → 加 `hasFocus()` + 容器 data-show 双守卫，仅活动编辑器且可见的实例处理按键
-3. **文档尾部 @ 菜单位置在屏幕外**：
-   - 根因①：菜单内容 v-if 渲染在定位后才显示 → flip 测量到 0 高 → 改为**树加载完成后手动 computePosition 重定位**（fixed 策略 + flip/shift，绕开 provider.update 避免递归）
-   - 根因②：`.editor-pane`（滚动容器）与 offsetParent `.milkdown` 不一致 → absolute 坐标错乱 → `strategy: 'fixed'` 视口定位
-   - 根因③：`matchTrigger` 固定优先级使段落旧 `[[` 抢占新输入 `@` → 改为收集候选取「终点离光标最近」者
-   - 根因④：shouldShow 每次更新重置 mode 覆盖用户手动切换 → 加 `triggerKind`，仅触发词变化时重置
-4. **@ 菜单卡顿（性能）**：
-   - 锚点统计：`[menu-perf]` 控制台 + `window.__refMenuPerf`（每次打开耗时分布）—— 菜单打开 ~20-50ms（无卡点）
-   - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
-   - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
+**suggest 自定义能力**：SuggestContext 提供 findText / headingText / paragraphAfterHeading / taskCount / taskProgress / firstTask / firstTableCell / allText；SuggestObject = { id, label, fragment(锚点标题), resolve }——名字、展示内容、跳转锚点全在 TS 定义；demo 样例：问候语、版本号、待办数量(5)、完成率(3/5)、首个待办
 
-**M4 后续修复 7（跳转时序 + 重复嵌入物化）**：
+**菜单交互**：快捷键 = Tab 切模式 / ← 返回上级或清过滤 / → 进入目录或文件实体级 / Enter 选中 / Backspace 返回上级；← 返回恢复到进入前 hover 的目录/文件（Enter/→/点击三路径都记录）；多标签 keydown 双重触发 → hasFocus + data-show 双守卫；全角符号（＠！【）归一化触发
 
-1. **标题跳转时序**：scrollToHeading 原来固定 300ms 后执行——机器慢时编辑器（mountEditor 异步）尚未挂载（instances 里没有）→ 静默不滚 → 改为 `waitForInstance` 轮询等待挂载（最长 5s）后再滚
-2. **重复嵌入物化**：定位新块改用「dispatch 前收集旧块节点对象」（ProseMirror 持久化，未修改的旧块对象不变）——位置方案会因插入内容导致旧块位置漂移、误判为新块 → 文档已有同 path 嵌入时新块物化失败（需重开才显示）
+**引用 UI**：file_ref / object_ref / 断链统一 chip + pointer 光标 + hover 加深；自定义浮窗（`ref-tooltip.ts` 替换原生 title：📄 路径 — 点击打开 / 🔗 对象名（路径）/ ⚠️ 文件不存在）；file_ref 显示完整路径；object_ref 点击跳转（fragment 锚点 + 平滑滚动）；标题跳转手动计算滚动位置（标题在滚动容器顶部下方 15% 偏上处）
 
-**M4 后续修复 6（统一引用 UI + 自定义浮窗）**：
+**性能**：菜单打开 ~20-50ms（`[menu-perf]` 锚点 + `window.__refMenuPerf`）；esbuild-wasm 启动预热（首次 suggest 1.5s → ~100ms）；菜单树缓存（treeVersion 失效）
 
-1. **跳转失败修复**：示例数据 `[[会议记录#待办清单]]` 指向不存在的标题 → 改为真实标题 `2026-08-11 周会`；找不到标题时 toast 提示
-2. **引用 UI 统一**：file_ref / object_ref / 断链 同款 chip + hover 加深 + `cursor: pointer`（object_ref 之前是默认光标）
-3. **自定义浮窗**（`ref-tooltip.ts`，替换原生 title，主题化）：file_ref → `📄 路径 — 点击打开/跳转到「标题」`；object_ref → `🔗 对象名（路径）— 点击跳转`（object_ref attrs 新增 label）；断链 → `⚠️ 文件不存在：路径 — 点击重新选择`
+### 关键技术坑（实现记录）
 
-**M4 后续修复 5（引用显示与跳转完善）**：
+1. **treeChildren walk 未命中返回 `[]`（真值）** → 短路导致只有第一个目录可进 → 返回 `null` + `found !== null`
+2. **插入新块定位**：位置会因插入内容漂移（旧块被误判为新块）→ dispatch 前后用 ProseMirror 节点对象引用（持久化，未修改块对象不变）
+3. **空段落替换嵌入**：replaceWith 整段替换时块在 `$pos.before()` 偏移 1 → dispatch 后按节点对象重定位再物化
+4. **flip 测量 0 高**：菜单内容 v-if 渲染晚于定位 → 树加载后手动 computePosition 重定位（fixed 策略 + flip/shift，不用 provider.update 避免 onShow 递归循环）
+5. **滚动容器查找**：`inst.el` 自身是 `.editor-pane`，querySelector 子元素查不到 → classList 判断自身；scrollIntoView 的 block:'center' 在嵌套滚动容器不可靠 → 手动算 scrollTop
+6. **scrollToHeading 时序**：mountEditor 异步，300ms 固定延迟不够 → waitForInstance 轮询等待挂载
+7. **shouldShow 重置 mode**：每次更新覆盖用户手动切换 → 加 triggerKind 仅触发词变化时重置
+8. **matchTrigger 优先旧 `[[`**：段落旧触发词抢占新输入 → 收集候选取「终点离光标最近」者
+9. **IME 输入**：keydown 记不到组合文本 → beforeinput（insertCompositionText）跟踪 recentTyped；全角符号归一化
+10. **多标签 keydown**：多个菜单实例共享 window 监听 → hasFocus + data-show 守卫
+11. **esbuild-wasm**：初始化 + 首个 transform 各 ~450ms 一次性开销 → 启动后台预热
+12. **mock 示例升级**：SEED_VERSION 版本化 + 演示核心文件跨版本强制覆盖；`window.__mockFsDebug()` 诊断钩子
 
-1. **file_ref 显示完整路径**：chip 文字从文件名改为完整路径（`笔记/会议记录#待办清单`）
-2. **实体列表滚动跟随**：实体模式的 ArrowDown/Up 直接改 hoverIndex 绕过 onHover → 改用 onHover（触发 scrollToHover）
-3. **object_ref 点击跳转**：SuggestObject 新增 `fragment`（标题锚点）→ 点击对象引用打开目标文件 + 平滑滚动到锚点标题（无锚点 → 顶部）；object_ref attrs 增加 fragment
-4. **章节跳转平滑滚动**：scrollIntoView 加 `behavior: 'smooth'`
+### 记录缺口 / 待办
 
-**M4 后续修复 4（嵌入物化与导航恢复）**：
-
-1. **嵌入插入后未物化**：空段落被替换（replaceWith）时块位置偏移 1（`$pos.before()`），`materializeBlock` 用原 pos 查不到块 → dispatch 后从 tr 的最终 doc 重新定位触发位置附近的同 path 块再物化
-2. **← 返回恢复选中项**：进入实体级前记录 hoverIndex，← 返回文件级时 `requestAnimationFrame` 恢复（覆盖 watch 的重置），停在进入前的文件而非第一个
-3. **goEnd 增强**：文档末尾是嵌入块时自动补空段落（Ctrl+End 类操作可输入）
-
-**M4 后续修复 3（实体级完善，用户三需求）**：
-
-1. **标题实体（Obsidian 模式，§6.2 落地）**：无 suggest.ts 的文件选中后进入实体级，列表 = 文件本身 + 标题列表（`# 标题`，从 md 提取）——选标题插入 `[[path#标题]]`（file_ref + fragment）；有 suggest 的文件 = 文件本身 + 模板对象
-2. **UI 丝滑化**：实体级与目录展开同款视觉（h6 路径风格 `📄 笔记/周报 /` + 同款列表）；实体/标题/文件用小图标区分（◆/#/📄）；文件条目显示 › 箭头提示可展开；→ 在文件上同样进入实体级；← 返回文件级
-3. **suggest 自定义能力扩展**：SuggestContext 新增 `taskCount` / `taskProgress`（任务完成率）/ `firstTask` / `firstTableCell`（表格单元格）/ `allText`；demo 模板新增 3 个对象样例：待办数量、完成率（3/5 动态统计）、首个待办——名字（label）与展示内容（resolve）全部在 TS 中自定义
-4. **嵌入/替换模式不进实体级**：`![[`（embed/embed-ro）与断链替换直接插入/替换（标题/对象仅对链接模式有意义）
-5. **示例升级**：SEED_VERSION=3，演示核心文件（suggest.ts/周报/引用演示）跨版本强制覆盖（用户旧数据可体验新样例）
-
-**M4 后续修复 2（用户反馈五问题）**：
-
-1. **数据/template 目录回车后无匹配**：`treeChildren` 的 walk 未命中返回 `[]`（真值）→ 第一个目录未命中就短路返回，只有第一个目录能进入 → 改为未命中返回 `null` + `found !== null` 判断
-2. **中文输入法符号支持**：全角 `＠！【［】］` 归一化为半角后参与触发检测（`normalizeTriggers`，1:1 映射偏移不变；`recentTyped` 同步归一化）
-3. **实体级引用体验**：根因是问题 1 的导航 bug（进不了子目录）；修复后 `@` → 目录 → 文件（有 doctype+suggest 如 笔记/周报）→ Enter 进入实体级
-4. **快捷键调整**：Tab 切换模式；← 过滤模式清空过滤词回树 / 树模式返回上级（`back()` 只删过滤字符保留触发词）；→ 进入 hover 目录；Enter 选中（目录进入/文件插入）；Backspace 保留返回上级
-5. **template 目录空（旧数据）**：合并条件增加「模板示例缺失」兜底（`template/demo/demo.md` 不在数据中就补缺）；新增 `window.__mockFsDebug()` 诊断钩子（返回 seededVersion/模板文件清单/总数，供用户复制 console 输出）
+- **M5**：ValidateService（rules 执行、decorations、聚合面板、报告、strict 门禁）
+- 占位符 `{{title}}` chip 渲染（v1 原样文本）
+- 全局模板域真实文件系统（外部目录需 Rust 命令）
+- 已打开编辑器不感知模板注册表变更（重开标签生效）
+- 脏检测双条件（§6.7 缺口）、只读拖拽加固剩余项、fs.watch、模板继承、目录级模板
 
 ## 12. 未来工作（v2）
 
