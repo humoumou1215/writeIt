@@ -133,11 +133,30 @@ async function scrollToHeading(fragment: string) {
       return true
     })
     if (targetPos >= 0) {
-      const dom = view.domAtPos(targetPos)
-      ;(dom.node as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // 手动计算滚动位置：精确滚动唯一的滚动容器（.editor-pane），
+      // 目标 = 标题在可视区顶部下方 15%（偏上，而非居中）——scrollIntoView 在多层滚动容器下不可靠
+      const titleDOM = view.nodeDOM(targetPos) as HTMLElement | null
+      // 滚动容器：inst.el 本身是 .editor-pane（EditorPane.vue 创建）；querySelector 只查子元素会漏掉自身
+      const pane = (
+        inst.el.classList.contains('editor-pane')
+          ? inst.el
+          : inst.el.querySelector('.editor-pane')
+      ) as HTMLElement | null
+      if (pane && titleDOM) {
+        const paneRect = pane.getBoundingClientRect()
+        const titleRect = titleDOM.getBoundingClientRect()
+        const target = pane.scrollTop + (titleRect.top - paneRect.top) - pane.clientHeight * 0.15
+        pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+      } else {
+        titleDOM?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
     } else if (!fragment) {
       // 无锚点（对象引用未声明 fragment）→ 平滑滚动到文件顶部
-      const pane = inst.el.querySelector('.editor-pane') as HTMLElement | null
+      const pane = (
+        inst.el.classList.contains('editor-pane')
+          ? inst.el
+          : inst.el.querySelector('.editor-pane')
+      ) as HTMLElement | null
       pane?.scrollTo({ top: 0, behavior: 'smooth' })
     } else {
       // 有锚点但找不到标题 → 提示

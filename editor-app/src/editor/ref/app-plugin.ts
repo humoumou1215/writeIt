@@ -59,7 +59,23 @@ export async function resolveRefPath(path: string): Promise<string | null> {
       /* try next */
     }
   }
-  return null
+  // Obsidian 风格：无目录前缀时搜索整个工作区（文件名匹配，取第一个命中）
+  const base = path.split('/').pop() ?? path
+  try {
+    const tree = await fs.readTree(true)
+    const found: string[] = []
+    const walk = (list: import('../../fs/types').FsEntry[]) => {
+      for (const n of list) {
+        if (n.kind === 'file' && (n.name === base || n.name === `${base}.md` || n.name === `${base}.markdown` || n.name === `${base}.txt`)) {
+          found.push(n.path)
+        } else if (n.kind === 'dir' && n.children) walk(n.children)
+      }
+    }
+    walk(tree)
+    return found[0] ?? null
+  } catch {
+    return null
+  }
 }
 
 // ---------- 1. 点击跳转 / 断链重选 ----------
