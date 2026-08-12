@@ -155,12 +155,29 @@ function cycleMode(delta: number) {
 
 // 进入实体级前记录 hover 位置（← 返回时恢复到该文件）
 const entityReturnIndex = ref(0)
+// 进入目录前记录 hover 位置（← 返回上级时恢复到该目录）
+const dirReturnIndex = ref(0)
+
+/** 进入目录：记录返回位置（进入前的 hover index） */
+function goDir(dir: string) {
+  dirReturnIndex.value = hoverIndex.value
+  props.menu.enterDir(dir)
+  hoverIndex.value = 0
+}
+
+/** 返回上级目录：恢复到进入前 hover 的目录（覆盖 watch 的重置） */
+function goUpRestore() {
+  props.menu.back()
+  requestAnimationFrame(() => {
+    hoverIndex.value = dirReturnIndex.value
+  })
+}
 
 function runEntry(entry: MenuEntry) {
   if (!entry) return
   if (entry.kind === 'dir') {
     // 过滤模式下 Enter 目录 → 进入该目录并清空过滤
-    props.menu.enterDir(entry.path)
+    goDir(entry.path)
     return
   }
   // 文件：进入实体级前记录当前位置，← 返回时恢复（不跳回第一个）
@@ -169,7 +186,6 @@ function runEntry(entry: MenuEntry) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  console.log('[menu-key]', e.key, 'visible=', props.state.visible, 'focus=', props.menu.hasFocus())
   if (!props.state.visible) return
   // 多标签时多个菜单实例共享 window 监听：
   // 仅「本编辑器持有焦点 且 本容器可见」的实例处理，避免 Enter 双重触发（展开目录+插入文件）
@@ -210,8 +226,7 @@ function onKeydown(e: KeyboardEvent) {
     // 过滤模式下放行（删除文档字符 → shouldShow 更新过滤词）；树模式返回上级
     if (isFiltering.value) return
     e.preventDefault(); e.stopPropagation()
-    props.menu.goUp()
-    hoverIndex.value = 0
+    goUpRestore()
     return
   }
   if (e.key === 'Tab') {
@@ -220,10 +235,9 @@ function onKeydown(e: KeyboardEvent) {
     return
   }
   if (e.key === 'ArrowLeft') {
-    // ←：过滤模式清空过滤词回树；树模式返回上级目录
+    // ←：过滤模式清空过滤词回树；树模式返回上级目录（恢复进入前 hover）
     e.preventDefault(); e.stopPropagation()
-    props.menu.back()
-    hoverIndex.value = 0
+    goUpRestore()
     return
   }
   if (e.key === 'ArrowRight') {
@@ -232,8 +246,7 @@ function onKeydown(e: KeyboardEvent) {
     const entry = entries.value[hoverIndex.value]
     if (!entry) return
     if (entry.kind === 'dir') {
-      props.menu.enterDir(entry.path)
-      hoverIndex.value = 0
+      goDir(entry.path)
     } else {
       // → 进入实体级同样记录返回位置（与 Enter/点击一致）
       entityReturnIndex.value = hoverIndex.value
