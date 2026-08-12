@@ -3,7 +3,7 @@ import { fs } from '../fs'
 import { joinPath, baseName } from '../fs/types'
 import { state, toast } from './store'
 import { confirmDelete } from '../components/confirm'
-import { onFileRenamed, onFileDeleted, refreshTree } from '../editor/manager'
+import { onFileRenamed, onFileDeleted, refreshTree, updateRefsAfterRename, refreshBrokenAll } from '../editor/manager'
 
 export function toggleExpand(path: string) {
   if (state.expanded.has(path)) state.expanded.delete(path)
@@ -17,6 +17,11 @@ export function isExpanded(path: string): boolean {
 /** 开始新建文件：在 parentPath 目录下 */
 export function startNewFile(parentPath: string) {
   state.editing = { path: parentPath, kind: 'file', mode: 'new' }
+}
+
+/** M4：基于模板新建文件（先选模板，再输入文件名） */
+export function startNewFileWithTemplate(parentPath: string, doctype: string) {
+  state.editing = { path: parentPath, kind: 'file', mode: 'new', template: doctype }
 }
 
 /** 开始新建文件夹：在 parentPath 目录下 */
@@ -51,17 +56,29 @@ export async function commitEditing(name: string): Promise<void> {
   const target = name.trim()
   try {
     if (ed.mode === 'new') {
-      const full = ed.path ? joinPath(ed.path, target) : target
+      let full = ed.path ? joinPath(ed.path, target) : target
+      if (ed.kind === 'file' && ed.template && !full.toLowerCase().match(/\.(md|markdown|txt)$/)) {
+        // 模板文件必然是 markdown：未带扩展名时自动补 .md
+        full = full + '.md'
+      }
       if (ed.kind === 'file') {
-        await fs.createFile(full)
+        if (ed.template) {
+          // M4：从模板复制内容（继承 doctype → 关联 rules/suggest）
+          const { templateService } = await import('../template/service')
+          await templateService.createFromTemplate(full, ed.template)
+          toast(`已基于模板创建文件`, 'success')
+        } else {
+          await fs.createFile(full)
+          toast(`已创建文件`, 'success')
+        }
         // 新建后自动打开
         const { openTab } = await import('../editor/manager')
         await openTab(full)
       } else {
         await fs.createDir(full)
         state.expanded.add(ed.path)
+        toast(`已创建文件夹`, 'success')
       }
-      toast(`已创建 ${ed.kind === 'file' ? '文件' : '文件夹'}`, 'success')
     } else {
       const newPath = ed.path.includes('/')
         ? joinPath(ed.path.slice(0, ed.path.lastIndexOf('/')), target)
@@ -69,6 +86,8 @@ export async function commitEditing(name: string): Promise<void> {
       if (newPath === ed.path) return
       await fs.rename(ed.path, newPath)
       onFileRenamed(ed.path, newPath, ed.kind)
+      updateRefsAfterRename(ed.path, newPath, ed.kind)
+      void refreshBrokenAll()
       toast('已重命名', 'success')
     }
   } catch (e) {
@@ -83,6 +102,7 @@ export async function removeNode(path: string, kind: 'file' | 'dir') {
   try {
     await fs.remove(path)
     onFileDeleted(path)
+    void refreshBrokenAll()
     toast('已删除', 'success')
   } catch (e) {
     toast(`删除失败: ${(e as Error).message}`, 'error')

@@ -1,0 +1,94 @@
+/* ===== 引用节点样式（主题变量自适应） ===== */
+
+/* doctype：弱化、只读（配合 CSS 禁用编辑） */
+.ref-doctype {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--chrome-surface-low, #f2f3f5);
+  display: inline-block;
+  margin-bottom: 6px;
+  user-select: none;
+}
+
+/* file_ref：文件名 chip */
+a.ref-file {
+  color: var(--chrome-primary, #f5b301);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 88%);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin: 0 1px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+a.ref-file:hover {
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+}
+
+/* object_ref：对象值字符串 */
+span.ref-object {
+  color: var(--chrome-primary, #f5b301);
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 90%);
+  border-radius: 5px;
+  padding: 0 5px;
+  font-weight: 500;
+}
+
+/* file_block：卡片容器 */
+.ref-file-block {
+  border: 1px solid var(--chrome-border, #e5e6eb);
+  border-radius: 10px;
+  margin: 8px 0;
+  overflow: hidden;
+  background: var(--chrome-surface-low, #f5f6f8);
+}
+.ref-file-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--chrome-surface, #fff);
+  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  user-select: none;
+}
+.ref-file-block-badge {
+  font-weight: 600;
+  color: var(--chrome-primary, #f5b301);
+}
+.ref-file-block.readonly .ref-file-block-badge {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+}
+.ref-file-block-path {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-file-block-content {
+  padding: 6px 14px;
+  background: var(--chrome-background, #fff);
+}
+.ref-file-block.readonly .ref-file-block-content {
+  opacity: 0.85;
+  cursor: default;
+}
+
+/* M3：断链引用红色警告态 */
+.ref-broken {
+  text-decoration: underline wavy var(--chrome-error, #ba1a1a) !important;
+  color: var(--chrome-error, #ba1a1a) !important;
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 90%) !important;
+}
+
+/* M3：只读 file_block 隐藏块拖拽手柄（hover 到只读卡片时不显示） */
+body:has(.milkdown .ref-file-block.readonly:hover) .block-handle,
+body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
+  display: none !important;
+}

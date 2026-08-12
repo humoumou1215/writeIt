@@ -101,6 +101,8 @@ export interface AppSettings {
   sidebarWidth: number
   /** 侧边栏是否固定（固定后打开文件不自动收纳） */
   sidebarPinned: boolean
+  /** 全局模板目录（真实文件系统：外部目录；mock：忽略，用内置示例） */
+  templateDir: string
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
 }
@@ -112,6 +114,7 @@ const defaultSettings: AppSettings = {
   showAllFiles: false,
   sidebarWidth: 250,
   sidebarPinned: false,
+  templateDir: '',
   shortcuts: { ...defaultShortcuts },
 }
 

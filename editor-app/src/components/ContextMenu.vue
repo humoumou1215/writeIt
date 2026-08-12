@@ -36,6 +36,7 @@ function close() {
         </template>
         <template v-else>
           <button class="menu-item" @click="run('newFile')">新建文件</button>
+          <button class="menu-item" @click="run('newFromTemplate')">基于模板新建…</button>
           <button class="menu-item" @click="run('newDir')">新建文件夹</button>
           <button class="menu-item" @click="run('rename')">重命名</button>
           <button class="menu-item danger" @click="run('delete')">删除</button>

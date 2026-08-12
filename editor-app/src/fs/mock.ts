@@ -47,21 +47,213 @@ console.log('hello milkdown note')
 Milkdown 也能编辑 txt，以 Markdown 语法渲染。
 
 2026-08-11 00:00`,
+  'template/demo/demo.md': `doctype:demo
+
+# 周报模板
+
+{{title}}
+
+## 本周进展
+
+- 
+
+## 下周计划
+
+- 
+
+## 版本
+
+v0.1.0
+
+## 需求
+
+| 前置 | 后置 |
+| --- | --- |
+| A | B |
+`,
+  'template/demo/demo.rules.ts': `import type { ValidationContext, Rule } from '@milkdown-note/validate'
+
+// 校验模式：hint 默认不阻止保存（M5 ValidateService 消费）
+export const mode: 'hint' | 'strict' = 'hint'
+
+export const rules: Rule[] = [
+  {
+    id: 'table-acceptance',
+    label: '需求表：前置列非空则后置列必填',
+    run(ctx: ValidationContext) {
+      const table = ctx.findTableAfterHeading('## 需求')
+      if (!table) return ctx.violation('缺少「需求」表格')
+    },
+  },
+]
+`,
+  'template/demo/demo.suggest.ts': `import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
+
+// 可被 [[path#greeting]] / [[path#version]] 引用的模板对象
+export const objects: SuggestObject[] = [
+  {
+    id: 'greeting',
+    label: '问候语',
+    resolve(ctx: SuggestContext): string | null {
+      return ctx.findText(/^你好/)?.[0] ?? null
+    },
+  },
+  {
+    id: 'version',
+    label: '版本号',
+    resolve(ctx: SuggestContext) {
+      // 取「## 版本」标题后的段落文本（如 v0.2.1）
+      return ctx.paragraphAfterHeading(2, /^版本/) ?? null
+    },
+  },
+]
+`,
+  '笔记/周报.md': `doctype:demo
+
+# 周报
+
+你好，本周完成了引用机制的三块里程碑，下一步推进模板服务。
+
+## 版本
+
+v0.2.1
+
+## 待办
+
+- [ ] 模板服务
+- [ ] 校验服务
+`,
+  '引用演示.md': `doctype:demo
+
+# 引用机制演示（里程碑 1）
+
+本页演示自定义节点的解析、渲染与序列化。
+
+## 文件名链接
+
+- [[README.md]] 是文件名链接
+- [[笔记/会议记录]] 点击可打开
+- [[笔记/会议记录#待办清单]] 带 # 片段（M1 按标题链接）
+
+## 块嵌入
+
+待办清单嵌入如下：
+
+![[笔记/待办清单]]
+
+## 只读嵌入
+
+![[README.md|ro]]
+
+## 模板对象引用（M4）
+
+周报问候语：[[笔记/周报#greeting]]
+
+周报版本号：[[笔记/周报#version]]
+
+## 字面量转义
+
+下面这行是转义后的字面量（序列化器自动转义）：
+
+文本里的 \[\[ 不应被解析为引用。
+`,
+}
+
+const SAMPLE_DIRS = ['笔记', '数据', 'template/demo']
+
+/** 全局模板域示例（mock 模拟；真实文件系统外部目录 v1.5 缺口） */
+const GLOBAL_SAMPLE: Record<string, string> = {
+  'template/邮件/邮件.md': `doctype:mail
+
+# 邮件模板
+
+{{subject}}
+
+您好：
+
+{{body}}
+
+此致
+`,
+  'template/邮件/邮件.suggest.ts': `import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
+
+export const objects: SuggestObject[] = [
+  {
+    id: 'subject',
+    label: '主题',
+    resolve(ctx: SuggestContext): string | null {
+      return ctx.headingText(1, /^邮件模板/) ?? null
+    },
+  },
+]
+`,
+}
+
+/** 全局模板域树（只含 template/ 结构，路径带 template/ 前缀与内容一致） */
+export function mockGlobalTemplates(): FsEntry[] {
+  const children: FsEntry[] = []
+  for (const path of Object.keys(GLOBAL_SAMPLE)) {
+    const parts = path.split('/')
+    const dirPath = parts.slice(0, 2).join('/')
+    const dirName = parts[1]
+    const fileName = parts[2]
+    let dir = children.find((c) => c.name === dirName)
+    if (!dir) {
+      dir = { name: dirName, path: dirPath, kind: 'dir', children: [] }
+      children.push(dir)
+    }
+    dir.children!.push({ name: fileName, path, kind: 'file' })
+  }
+  const tpl = { name: 'template', path: 'template', kind: 'dir' as const, children }
+  return [tpl]
+}
+
+/** 全局域文件读取（mock：内置示例；真实文件系统：外部目录 v1.5 缺口） */
+export async function mockGlobalReadFile(path: string): Promise<string> {
+  const content = GLOBAL_SAMPLE[path]
+  if (content === undefined) throw new Error(`全局模板文件不存在: ${path}`)
+  return content
 }
 
 interface MockData {
   files: Record<string, string>
   dirs: string[]
+  /** 是否已完成示例合并（防止删除的示例文件被重复恢复） */
+  seeded?: boolean
+  /** 示例合并版本：新版本会把新增示例文件补进旧快照 */
+  seededVersion?: number
 }
+
+const SEED_VERSION = 2
 
 function load(): MockData {
   try {
     const raw = localStorage.getItem(KEY)
-    if (raw) return JSON.parse(raw) as MockData
+    if (raw) {
+      const data = JSON.parse(raw) as MockData
+      // 版本 < 2：合并模板示例等新文件（仅补缺，不覆盖用户改动）
+      if ((data.seededVersion ?? 1) < SEED_VERSION) {
+        for (const [path, content] of Object.entries(SAMPLE)) {
+          if (!(path in data.files)) data.files[path] = content
+        }
+        for (const dir of SAMPLE_DIRS) {
+          if (!data.dirs.includes(dir)) data.dirs.push(dir)
+        }
+        data.seeded = true
+        data.seededVersion = SEED_VERSION
+        persist(data)
+      }
+      return data
+    }
   } catch {
     /* ignore */
   }
-  const data: MockData = { files: { ...SAMPLE }, dirs: ['笔记', '数据'] }
+  const data: MockData = {
+    files: { ...SAMPLE },
+    dirs: [...SAMPLE_DIRS],
+    seeded: true,
+    seededVersion: SEED_VERSION,
+  }
   persist(data)
   return data
 }

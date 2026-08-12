@@ -3,13 +3,25 @@
 // 切标签只切换容器可见性；关闭标签才销毁实例。
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
+import { editorViewCtx } from '@milkdown/kit/core'
+import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
+import { refPlugin, resolveRefs } from './ref'
+import { registerRefStringify } from './ref/stringify'
+import {
+  registerOpenRefHandler,
+  registerReSelectHandler,
+  refreshBrokenState,
+  resolveRefPath,
+  notifyBroken,
+} from './ref/app-plugin'
 import { baseName } from '../fs/types'
 import { state, nextTabId, toast } from '../state/store'
 import { settings } from '../state/settings'
 import type { Tab } from '../state/store'
-import { mermaidFeatureConfigs } from './mermaid'
+import { featureConfigs } from './features'
+import { templateService } from '../template/service'
 
 interface Instance {
   crepe: Crepe
@@ -19,6 +31,105 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+
+// 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
+;(window as unknown as { __editorDebug?: unknown }).__editorDebug = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  return inst?.crepe.editor ?? null
+}
+;(window as unknown as { __editorGetMarkdown?: unknown }).__editorGetMarkdown = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  return inst ? inst.crepe.getMarkdown() : ''
+}
+;(window as unknown as { __editorSetRefPath?: unknown }).__editorSetRefPath = (oldPath: string, newPath: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const tr = view.state.tr
+    let pos = -1
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_ref' && n.attrs.path === oldPath) { pos = p; return false }
+      return true
+    })
+    if (pos < 0) return
+    tr.setNodeMarkup(pos, undefined, { path: newPath })
+    view.dispatch(tr)
+  })
+}
+;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const pos = view.state.doc.content.size
+    view.dispatch(
+      view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos)))
+    )
+  })
+}
+
+// M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）
+registerOpenRefHandler(async (path, fragment) => {
+  const real = await resolveRefPath(path)
+  if (!real) {
+    notifyBroken(path)
+    return
+  }
+  await openTab(real)
+  if (fragment) await scrollToHeading(fragment)
+})
+
+// M3：断链 chip 点击 → 打开菜单重选（替换模式）
+registerReSelectHandler((path) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  void import('./ref/menu').then((menuMod) =>
+    menuMod.openReplaceMenu(inst.crepe.editor, path)
+  )
+})
+
+// M3：滚动到标题（#片段）
+async function scrollToHeading(fragment: string) {
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  const inst = tab ? instances.get(tab.id) : null
+  if (!inst) return
+  await new Promise((r) => setTimeout(r, 300))
+  const { editorViewCtx } = await import('@milkdown/kit/core')
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    let targetPos = -1
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.textContent.trim() === fragment) {
+        targetPos = pos
+        return false
+      }
+      return true
+    })
+    if (targetPos >= 0) {
+      const dom = view.domAtPos(targetPos)
+      ;(dom.node as HTMLElement).scrollIntoView({ block: 'center' })
+    }
+  })
+  // 光标移到标题
+  const { TextSelection } = await import('@milkdown/kit/prose/state')
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    let targetPos = -1
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.textContent.trim() === fragment) {
+        targetPos = pos
+        return false
+      }
+      return true
+    })
+    if (targetPos >= 0) {
+      view.dispatch(
+        view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(targetPos)))
+      )
+    }
+  })
+}
 
 // ---------- 打开 / 激活 ----------
 
@@ -70,16 +181,28 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab || instances.has(tabId)) return
 
+  // M4：斜杠菜单「模板」组依赖模板注册表，创建编辑器前确保扫描完成（失败也降级）
+  await templateService.ready()
+
   const crepe = new Crepe({
     root: container,
     defaultValue: tab.savedContent,
     features: {
       [CrepeFeature.TopBar]: true,
     },
-    // Mermaid 图表：代码块预览 + 斜杠菜单模板
-    featureConfigs: mermaidFeatureConfigs(),
+    // Mermaid + 模板：代码块预览 / 斜杠菜单分组
+    featureConfigs: featureConfigs(),
+  })
+  // 注册引用机制自定义节点与 stringify handler（必须在 create 之前）
+  crepe.editor.use(refPlugin)
+  crepe.editor.config((ctx) => {
+    registerRefStringify(ctx)
   })
   await crepe.create()
+
+  // 两段式解析：异步物化引用（容错：失败不影响编辑器）
+  void resolveRefs(crepe.editor)
+  void refreshBrokenState(crepe.editor)
 
   const inst: Instance = { crepe, el: container, suppressing: false }
   instances.set(tabId, inst)
@@ -172,6 +295,52 @@ function confirmDiscard(tab: Tab): Promise<boolean> {
 }
 
 // ---------- 文件树联动 ----------
+
+/** M3：重命名后更新所有打开文档中的引用节点路径 */
+export function updateRefsAfterRename(oldPath: string, newPath: string, kind: 'file' | 'dir') {
+  const strip = (p: string) => p.replace(/\.(md|markdown|txt)$/i, '')
+  const oldStripped = strip(oldPath)
+  const newStripped = strip(newPath)
+  // 遍历每个打开文档，更新引用节点路径（静态导入，避免异步 action 竞态）
+  for (const inst of instances.values()) {
+    inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const tr = view.state.tr
+      let changed = false
+      view.state.doc.descendants((node, pos) => {
+        const isRef =
+          node.type.name === 'file_ref' ||
+          node.type.name === 'file_block' ||
+          node.type.name === 'object_ref'
+        if (!isRef) return true
+        // 跳过只读嵌入块（不可修改；重命名后自然断链，提示重选）
+        if (node.type.name === 'file_block' && node.attrs.readonly) return true
+        const p = node.attrs.path as string
+        const matches =
+          kind === 'file'
+            ? p === oldStripped || p === oldPath
+            : p === oldStripped || p.startsWith(oldStripped + '/')
+        if (matches) {
+          const newP =
+            kind === 'file'
+              ? newStripped
+              : newStripped + p.slice(oldStripped.length)
+          tr.setNodeMarkup(pos, undefined, { ...node.attrs, path: newP })
+          changed = true
+        }
+        return true
+      })
+      if (changed) view.dispatch(tr)
+    })
+  }
+}
+
+/** M3：刷新所有打开文档的断链状态（删除/重命名后调用） */
+export function refreshBrokenAll() {
+  for (const inst of instances.values()) {
+    void refreshBrokenState(inst.crepe.editor)
+  }
+}
 
 export function onFileRenamed(oldPath: string, newPath: string, kind: 'file' | 'dir' = 'file') {
   for (const tab of state.tabs) {
