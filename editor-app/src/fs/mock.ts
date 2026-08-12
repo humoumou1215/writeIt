@@ -101,6 +101,8 @@ export const objects: SuggestObject[] = [
   {
     id: 'version',
     label: '版本号',
+    // 点击引用时跳转到 ## 版本 标题
+    fragment: '版本',
     resolve(ctx: SuggestContext) {
       // 取「## 版本」标题后的段落文本（如 v0.2.1）
       return ctx.paragraphAfterHeading(2, /^版本/) ?? null

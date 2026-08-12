@@ -29,7 +29,7 @@ const props = defineProps<{
     tree: FsEntry[]
     currentDir: string
     selectedPath: string | null
-    entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]
+    entities: { id: string; label: string; kind: 'file' | 'object' | 'heading'; fragment?: string | null }[]
   }
 }>()
 
@@ -208,7 +208,7 @@ function onKeydown(e: KeyboardEvent) {
       e.preventDefault(); e.stopPropagation()
       const delta = e.key === 'ArrowDown' ? 1 : -1
       const n = props.state.entities.length
-      if (n) hoverIndex.value = (hoverIndex.value + delta + n) % n
+      if (n) onHover((hoverIndex.value + delta + n) % n)
     } else if (e.key === 'Enter') {
       e.preventDefault(); e.stopPropagation()
       const obj = props.state.entities[hoverIndex.value]

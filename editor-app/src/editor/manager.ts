@@ -114,7 +114,11 @@ async function scrollToHeading(fragment: string) {
     })
     if (targetPos >= 0) {
       const dom = view.domAtPos(targetPos)
-      ;(dom.node as HTMLElement).scrollIntoView({ block: 'center' })
+      ;(dom.node as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else if (!fragment) {
+      // 无锚点（对象引用未声明 fragment）→ 平滑滚动到文件顶部
+      const pane = inst.el.querySelector('.editor-pane') as HTMLElement | null
+      pane?.scrollTo({ top: 0, behavior: 'smooth' })
     }
   })
   // 光标移到标题

@@ -69,6 +69,16 @@ export const refClickPlugin = new Plugin({
   props: {
     handleClick: (_view, _pos, event) => {
       const target = event.target as HTMLElement | null
+      // 对象引用（object_ref）→ 打开目标文件 + 按锚点标题跳转
+      const objSpan = target?.closest?.('span.ref-object')
+      if (objSpan) {
+        const path = objSpan.getAttribute('data-path')
+        if (path) {
+          const fragment = objSpan.getAttribute('data-fragment')
+          triggerOpenRef(path, fragment)
+          return true
+        }
+      }
       const a = target?.closest?.('a.ref-file')
       if (!a) return false
       const path = a.getAttribute('data-path')

@@ -28,6 +28,8 @@ export interface SuggestContext {
 export interface SuggestObject {
   id: string
   label: string
+  /** 点击引用时跳转的标题锚点（如 '版本' → 滚动到 ## 版本）；缺省 = 文件顶部 */
+  fragment?: string
   resolve(ctx: SuggestContext): string | null
 }
 

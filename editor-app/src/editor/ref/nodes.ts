@@ -94,8 +94,8 @@ export const fileRefSchema = $nodeSchema('file_ref', (_ctx) => {
           : node.attrs.path,
       },
       node.attrs.fragment
-        ? `${node.attrs.path.split('/').pop()}#${node.attrs.fragment}`
-        : (node.attrs.path.split('/').pop() ?? ''),
+        ? `${node.attrs.path}#${node.attrs.fragment}`
+        : (node.attrs.path ?? ''),
     ],
     parseMarkdown: {
       // mdast 由 remark-ref 插件转换为 fileRef 类型（文本已拆分）
@@ -138,6 +138,8 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
       path: { default: '' },
       object: { default: '' },
       resolvedText: { default: null },
+      /** 点击跳转的标题锚点（suggest 对象声明的 fragment；null = 顶部） */
+      fragment: { default: null },
     },
     parseDOM: [
       {
@@ -146,6 +148,7 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
           path: dom.getAttribute('data-path') ?? '',
           object: dom.getAttribute('data-object') ?? '',
           resolvedText: dom.getAttribute('data-text'),
+          fragment: dom.getAttribute('data-fragment'),
         }),
       },
     ],
@@ -156,7 +159,9 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
         'data-path': node.attrs.path,
         'data-object': node.attrs.object,
         ...(node.attrs.resolvedText ? { 'data-text': node.attrs.resolvedText } : {}),
+        ...(node.attrs.fragment ? { 'data-fragment': node.attrs.fragment } : {}),
         class: 'ref-object',
+        title: `跳转到 ${node.attrs.path}`,
       },
       node.attrs.resolvedText ?? `[[${node.attrs.path}#${node.attrs.object}]]`,
     ],

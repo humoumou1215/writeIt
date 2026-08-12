@@ -155,6 +155,7 @@ async function resolveObjectRef(
   const objectId = ref.type === 'object_ref' ? ref.object : ref.fragment
   const obj = objects.find((o) => o.id === objectId)
   if (!obj) return // 对象不存在 → 保持现状（断链态）
+  const anchor = obj.fragment ?? null
 
   let text: string | null = null
   try {
@@ -177,13 +178,13 @@ async function resolveObjectRef(
     const tr = view.state.tr
     if (ref.type === 'object_ref') {
       if (atPos.type.name !== 'object_ref') return
-      tr.setNodeMarkup(ref.pos, undefined, { ...atPos.attrs, resolvedText: text })
+      tr.setNodeMarkup(ref.pos, undefined, { ...atPos.attrs, resolvedText: text, fragment: anchor })
     } else if (ref.type === 'file_ref' && atPos.type.name === 'file_ref') {
       // 消歧：file_ref#fragment → object_ref（命中 suggest 对象）
       tr.replaceWith(
         ref.pos,
         ref.pos + atPos.nodeSize,
-        schema.nodes.object_ref.create({ path: ref.path, object: objectId, resolvedText: text })
+        schema.nodes.object_ref.create({ path: ref.path, object: objectId, resolvedText: text, fragment: anchor })
       )
     }
     view.dispatch(tr)

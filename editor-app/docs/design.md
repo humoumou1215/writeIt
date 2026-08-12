@@ -415,6 +415,13 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 5（引用显示与跳转完善）**：
+
+1. **file_ref 显示完整路径**：chip 文字从文件名改为完整路径（`笔记/会议记录#待办清单`）
+2. **实体列表滚动跟随**：实体模式的 ArrowDown/Up 直接改 hoverIndex 绕过 onHover → 改用 onHover（触发 scrollToHover）
+3. **object_ref 点击跳转**：SuggestObject 新增 `fragment`（标题锚点）→ 点击对象引用打开目标文件 + 平滑滚动到锚点标题（无锚点 → 顶部）；object_ref attrs 增加 fragment
+4. **章节跳转平滑滚动**：scrollIntoView 加 `behavior: 'smooth'`
+
 **M4 后续修复 4（嵌入物化与导航恢复）**：
 
 1. **嵌入插入后未物化**：空段落被替换（replaceWith）时块位置偏移 1（`$pos.before()`），`materializeBlock` 用原 pos 查不到块 → dispatch 后从 tr 的最终 doc 重新定位触发位置附近的同 path 块再物化

@@ -35,7 +35,7 @@ export interface RefMenuState {
   /** 第二级：选中文件（有 suggest 时进入实体级） */
   selectedPath: string | null
   /** 第二级：实体列表（首项=文件本身，其后 suggest 对象 / Obsidian 标题） */
-  entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]
+  entities: { id: string; label: string; kind: 'file' | 'object' | 'heading'; fragment?: string | null }[]
   /** 最近键入的字符（验证触发词是刚输入的，避免段落里旧 [[ 误触发） */
   recentTyped: string
   /** 当前触发词类型（仅触发词变化时重置模式，不覆盖用户手动选择） */
@@ -198,12 +198,13 @@ function insertObjectRef(
   path: string,
   object: string,
   triggerFrom: number,
-  triggerTo: number
+  triggerTo: number,
+  fragment?: string | null
 ) {
   const schema = view.state.schema
   const tr = view.state.tr
   tr.delete(triggerFrom, triggerTo)
-  const node = schema.nodes.object_ref.create({ path, object, resolvedText: null })
+  const node = schema.nodes.object_ref.create({ path, object, resolvedText: null, fragment: fragment ?? null })
   tr.insert(triggerFrom, node)
   const pos = tr.doc.resolve(triggerFrom + node.nodeSize)
   tr.setSelection(TextSelection.near(pos))
@@ -485,7 +486,15 @@ class RefMenuView implements PluginView {
       if (objs && objs.length) {
         this.openEntities(
           path,
-          [fileSelf, ...objs.map((o) => ({ id: o.id, label: o.label, kind: 'object' as const }))]
+          [
+            fileSelf,
+            ...objs.map((o) => ({
+              id: o.id,
+              label: o.label,
+              kind: 'object' as const,
+              fragment: o.fragment ?? null,
+            })),
+          ]
         )
         return
       }
@@ -512,7 +521,8 @@ class RefMenuView implements PluginView {
       return
     }
     if (kind === 'object') {
-      insertObjectRef(this.#view, path, entityId, triggerFrom, triggerTo)
+      const ent = refMenuState.entities.find((e) => e.id === entityId)
+      insertObjectRef(this.#view, path, entityId, triggerFrom, triggerTo, ent?.fragment)
       this.hide()
       // 触发 resolve 阶段填充 resolvedText
       void import('../resolve').then((m) => m.resolveRefs(this.#editor))
@@ -602,7 +612,7 @@ class RefMenuView implements PluginView {
   }
 
   /** 进入实体级（suggest 对象 / Obsidian 标题） */
-  openEntities = (path: string, entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]) => {
+  openEntities = (path: string, entities: { id: string; label: string; kind: 'file' | 'object' | 'heading'; fragment?: string | null }[]) => {
     refMenuState.selectedPath = path
     refMenuState.entities = entities
   }
