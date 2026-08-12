@@ -38,8 +38,13 @@ export const state = reactive({
   tree: [] as FsEntry[],
   /** 展开的目录路径集合 */
   expanded: new Set<string>(),
-  /** 正在重命名/新建输入中的路径（key）与类型 */
-  editing: null as null | { path: string; kind: 'file' | 'dir'; mode: 'new' | 'rename' },
+  /** 正在重命名/新建输入中的路径（key）与类型；新建可携带模板 doctype */
+  editing: null as null | {
+    path: string
+    kind: 'file' | 'dir'
+    mode: 'new' | 'rename'
+    template?: string
+  },
 
   tabs: [] as Tab[],
   activeTabId: null as null | string,
@@ -47,6 +52,8 @@ export const state = reactive({
   settingsOpen: false,
   /** 侧边栏内容列是否收纳（打开文件时若未固定则自动收纳） */
   sidebarCollapsed: false,
+  /** 基于模板新建：等待选择模板的目标目录 */
+  templatePick: null as null | string,
   contextMenu: null as null | MenuRequest,
   confirm: null as null | ConfirmRequest,
   toasts: [] as Toast[],

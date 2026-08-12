@@ -1,0 +1,464 @@
+# Milkdown Note — 模板与引用机制设计文档
+
+> 状态：设计定稿（v0.1，M1-M4 已实现）｜ 范围：设计文档 + 实现进展记录
+> 前置知识：Milkdown（Crepe）节点 schema / SlashProvider / NodeView / ProseMirror decorations
+
+---
+
+## 1. 背景与目标
+
+在 Milkdown Note（Tauri + Vue 3 + Crepe）中引入：
+
+1. **模板机制**：工作区/全局模板域，支持"插入模板"与"基于模板新建文件"
+2. **校验机制**：每个模板携带校验规则，校验结果以"文档内标注 / 面板聚合 / 报告落盘"三通道呈现
+3. **引用机制**：Obsidian 风格 `[[...]]` 语法，支持"文件名链接 / 整文件块嵌入（可编辑与只读）/ 模板对象引用"三类
+4. 与 Milkdown 源码能力对齐（`$nodeSchema` 自定义节点、`SlashProvider` 多 trigger、NodeView、decorations、容器块嵌套）
+
+## 2. 术语表
+
+| 术语 | 含义 |
+|---|---|
+| 模板域 | `<根>/template/<name>/` 目录，含模板 md 与配套 TS 文件；**可信区** |
+| doctype | 模板文件首行 `doctype:<name>`，标识模板身份、弱化只读渲染 |
+| rules.ts | 模板的校验规则文件（TS） |
+| suggest.ts | 模板的联想说明文件（TS），定义可被引用的对象 |
+| 物化 (materialize) | 把 `![[path]]` 标记解析为容器内实际内容的过程 |
+| 写回 (write-back) | 嵌入块编辑内容随保存事务写回源文件 |
+| resolve 两段式 | 解析时先建暂态节点，异步读取文件后定型 |
+
+## 3. 总体架构
+
+```
+数据层（模板域，可信区）
+  template/<name>/<name>.md     模板本体（首行 doctype:<name>）
+  template/<name>/<name>.rules.ts   校验规则（TS）
+  template/<name>/<name>.suggest.ts 联想说明（TS）
+
+语法层（Markdown 为唯一真相）
+  doctype:<name>                    → doctype 节点（弱化、只读）
+  [[笔记/会议记录]]                 → file_ref（文件名链接）
+  [[笔记/会议记录#标题]]            → file_ref + fragment（Obsidian 标题链接，跳转）
+  [[笔记/会议记录#greeting]]        → object_ref（模板对象，字符串展示）
+  ![[笔记/会议记录]]                → file_block（整块嵌入，可编辑）
+  ![[笔记/会议记录|ro]]             → file_block（整块嵌入，只读）
+  \[\[ … \]\]                       → 转义，纯文本
+
+运行层（应用内服务）
+  TemplateService  模板扫描/注册/插入/新建
+  ValidateService  校验执行 + decorations 标注 + 面板 + 报告
+  RefSyncService   引用解析（两段式）、物化、写回事务、断链/环处理
+```
+
+## 4. 模板机制
+
+### 4.1 目录结构
+
+```
+<workspace>/template/
+└── demo/
+    ├── demo.md            # 首行 doctype:demo
+    ├── demo.rules.ts      # 校验规则
+    └── demo.suggest.ts    # 联想说明（可缺省）
+<global>/templates/        # 全局模板域（设置中配置路径）
+    └── …                  # 同构；优先级 工作区 > 全局，同名模板工作区覆盖
+```
+
+启动时 `TemplateService` 扫描两个域，建立注册表 `{ doctype → { md, rules, suggest } }`。
+新建文件时选择模板 → 复制 `demo.md` 内容为新文件；插入时把模板内容实例化到光标处。
+
+### 4.2 配套文件语言：TypeScript（决策：模板域 = 可信区）
+
+**安全模型**：模板目录视为项目可信配置（等价于 ESLint/nuxt.config 的信任级别）。
+- 模板文件由**应用所有者/受信作者**维护，不来自不可信输入
+- `rules.ts / suggest.ts` 由应用**动态加载执行**（详见 §10 技术风险：esbuild-wasm 转译 + 隔离执行）
+- 被引用的**数据文件**（笔记内容）永远只按 Markdown 解析，不执行任何代码 —— 信任边界在"模板域"，不在"内容"
+
+**API 设计（类型签名）**：
+
+```ts
+// template/demo/demo.rules.ts
+import type { ValidationContext, Rule } from '@milkdown-note/validate'
+
+export const mode: 'hint' | 'strict' = 'hint'        // 默认不阻止保存
+export const report = { enabled: true, path: '.validate/report.md' }
+export const rules: Rule[] = [
+  {
+    id: 'table-acceptance',
+    label: '需求表：前置列非空则后置列必填',
+    run(ctx: ValidationContext) {
+      const table = ctx.findTableAfterHeading('## 需求')
+      if (!table) return ctx.violation('缺少「需求」表格')
+      table.dataRows().forEach((row, i) => {
+        const prev = row.cell(0).text().trim()
+        const next = row.cell(1).text().trim()
+        if (prev && !next) {
+          ctx.violationAt(
+            row.cell(1).pos,                       // decorations 标注位置
+            `第 ${i + 1} 行：第 1 列已填写，第 2 列不能为空`,
+            'warning'
+          )
+        }
+      })
+    },
+  },
+]
+```
+
+```ts
+// template/demo/demo.suggest.ts
+import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
+
+export const objects: SuggestObject[] = [
+  {
+    id: 'greeting',
+    label: '问候语',
+    resolve(ctx: SuggestContext): string | null {
+      return ctx.findText(/^你好/)?.[0] ?? null     // 取模板中第一个匹配段落的文本
+    },
+  },
+  {
+    id: 'version',
+    label: '版本号',
+    resolve(ctx) {
+      return ctx.headingText(2, /^版本/) ?? null
+    },
+  },
+]
+```
+
+`ValidationContext` 提供结构查询工具（定位表格/标题/块、单元格文本与位置、计数、正则、anyOf/allOf 组合、`check: [注册校验器, args]` 逃生口）——跨列条件、计数、复合条件全部在 TS 里自然表达，无需 DSL 兜底。
+
+### 4.4 模板注册进斜杠菜单（决策：`/` 新增 template 组）
+
+Crepe 的 BlockEdit 菜单基于 `GroupBuilder`（源码 `block-edit/menu/config.ts`），并提供 `config.buildMenu(groupBuilder)` 扩展点。应用在启动时把全部模板注册为一个 **template 组**（label「模板」），每个模板一个菜单项：
+
+```ts
+new Crepe({
+  features: {
+    [Crepe.Feature.BlockEdit]: {
+      buildMenu(builder) {
+        const group = builder.addGroup('template', '模板')
+        for (const tpl of templateService.list()) {
+          group.addItem(`template-${tpl.doctype}`, {
+            label: tpl.name,
+            icon: templateIcon,
+            onRun: (ctx) => insertTemplateAtCursor(ctx, tpl),
+          })
+        }
+      },
+    },
+  },
+})
+```
+
+选中模板 = 在光标处**实例化**模板内容（占位符显示为 chip）。新建文件的入口在文件树右键菜单（「基于模板新建」）。
+
+### 4.5 使用方式与占位符
+
+- **插入模板**：光标处实例化（复制内容，与模板无链接关系），`{{title}}` 等占位符**原样显示**（渲染为高亮 chip），不弹窗替换
+- **新建文件**：选择模板 → 新文件继承 `doctype`，自动关联 rules/suggest
+- v1 **不做**：模板继承（extends）、目录级模板（整棵复制）→ v2
+
+## 5. 校验机制
+
+### 5.1 时机（可配置，默认全开）
+- 打开文档时（异步）
+- 保存前（strict 模式下失败可阻止保存）
+- 编辑防抖实时（默认关闭，大文档建议关）
+
+### 5.2 三通道呈现
+| 通道 | 实现 | 说明 |
+|---|---|---|
+| 文档内标注 | **ProseMirror decorations** | 违规位置叠加"⚠ 说明"，不改动文档本身，保存即消失 |
+| 聚合面板 | 侧边栏底部/状态栏 | 列出全部违规，点击跳转 |
+| 报告落盘 | `report.path` 声明 | 输出 markdown 报告，供归档/CI |
+
+### 5.3 严格度
+- `mode: 'hint'`（默认）：仅提示与标注，**不阻止保存**
+- `mode: 'strict'`：保存前校验失败给出确认（可配置为强制阻止）
+
+### 5.4 与引用的交互
+- `file_block` 物化内容**不参与宿主文档校验**（其内容属于源文件，按源文件自身 doctype 校验）
+- `object_ref` **不参与实时校验**（决策）；引用时找不到对象 → 视为不存在（断链处理，见 §6.9）
+
+## 6. 引用机制
+
+### 6.1 语法表
+
+| 语法 | 节点 | 渲染 | 写回 |
+|---|---|---|---|
+| `[[笔记/会议记录]]` | file_ref {path} | 文件名 chip，点击打开 | 否 |
+| `[[笔记/会议记录#标题]]` | file_ref {path, fragment} | 文件名#标题，点击跳转标题 | 否 |
+| `[[笔记/会议记录#greeting]]` | object_ref {path, object} | 对象当前值字符串 | 否 |
+| `![[笔记/会议记录]]` | file_block {path, readonly:false} | 卡片 + 内嵌全部块（可编辑） | 是（随保存） |
+| `![[笔记/会议记录\|ro]]` | file_block {path, readonly:true} | 卡片 + 只读徽标 | 否 |
+| `\[\[` / `\!\[\[` | 文本 | 原样 | — |
+
+### 6.2 `#` 消歧（Obsidian 兼容为默认）
+
+解析 `[[path#xxx]]` 时：
+1. 目标文件**存在 suggest.ts 且定义对象 `xxx`** → `object_ref`
+2. 否则 → **Obsidian 标题链接**（`file_ref` + fragment，点击打开文件并滚动到该标题）
+
+即：无 suggest 规则时天然兼容 Obsidian；有 suggest 时优先模板对象。两者都不命中 → 断链处理。
+
+### 6.3 节点设计（ProseMirror schema）
+
+```ts
+// 均通过 $nodeSchema 注册，附 parseMarkdown / toMarkdown
+doctype    : block atom,   attrs { value }                       // 首行 doctype:<name>
+file_ref   : inline atom,  attrs { path, fragment? }             // [[…]]
+object_ref : inline atom,  attrs { path, object, resolvedText? } // [[…#obj]]
+file_block : block,        content: 'block+',                    // ![[…]]
+             attrs { path, readonly: boolean }
+```
+
+- `file_block` 的 `toMarkdown` 只输出 `![[path]]`（或 `![[path|ro]]`）**标记行**，不落盘物化内容 → 单一真相源
+- `doctype` 渲染弱化（灰色、小号、徽标），`contenteditable=false`，不可删除（删除需转为普通文本的操作，v1 仅只读）
+
+### 6.4 两段式解析（resolve）
+
+`[[path#xxx]]` 的消歧、`![[path]]` 的物化都需要**读文件（异步）**，而 Milkdown 解析是同步的。设计：
+
+1. **解析阶段（同步）**：按语法生成**暂态节点**（file_block 空容器 / ref 带 `kind: unknown`）
+2. **resolve 阶段（异步）**：`RefSyncService` 遍历暂态节点 → 读目标文件（缓存）→ 判定 suggest 对象 / 标题链接 / 断链 → 定型节点；`file_block` 物化内容填充容器
+
+保存时只序列化标记行，与物化状态无关，因此两段式对磁盘内容无副作用。
+
+### 6.5 触发规则（决策已确认）
+
+| 触发 | 位置规则 | 产出 |
+|---|---|---|
+| `@` | **边界感知**：块首或前一字符为空白时才触发（避免中文/邮箱误触，如“联系@小明”不触发） | 菜单：链接 / 嵌入 / 嵌入只读 |
+| `[[` | **任意位置**触发 | 链接（含 `#对象/标题` 消歧） |
+| `![[` | **任意位置**触发 | 嵌入（`\|ro` 只读变体） |
+| `\[\[` | 转义 | 纯文本 |
+
+**嵌入自动劈分**：`![[path]]` 是 block 节点（`group: 'block'`），不能在段落文本内。若光标位于段落中间，插入事务自动劈分段落为三段：`前段 \| 嵌入块 \| 后段`（ProseMirror 事务 split + replace，schema 决定，非自定义行为）。
+
+### 6.6 触发与菜单流程（三级递进，v2 定稿）
+
+- `SlashProvider` `trigger: ['@', '[[', '![']`（源码原生支持多 trigger；`![[` 前缀直接进入嵌入模式）
+- 菜单**保留 slash 视觉语言**（同款样式/键盘交互），但内容结构为三级递进（文件树 + 模式选择器 + 实体级），不再三组重复文件列表
+
+**三级结构**：
+
+```
+┌───────────────────────────────────────┐
+│ [链接] [嵌入] [嵌入只读]   ← 模式选择器（Tab/←→ 切换）│
+├───────────────────────────────────────┤
+│ 📁 笔记 ▸                  ← 第一级：文件树（逐级发现）│
+│ 📁 数据 ▸                             │
+│ 📄 README                 ← 每个文件只出现一次      │
+├───────────────────────────────────────┤
+│ （输入字符 → 全树过滤模式）                       │
+│ （选中文件 → 第二级：模板实体列表，懒加载）          │
+└───────────────────────────────────────┘
+```
+
+**第一级 · 文件树（逐级发现）**：
+- 渲染工作区目录树；`Enter` 展开目录进入下一级，`Backspace` 返回上级，展开状态记忆
+- 大量文件时默认只显示根目录 + 顶层目录，逐级进入，不做一次性全量渲染
+- 每个文件只出现一次；模式（链接/嵌入/嵌入只读）是独立选择器，不复制列表
+- 输入字符 → **全树搜索模式**（扁平按路径匹配，带目录前缀展示）；Esc/清空返回树
+
+**第二级 · 模板实体（懒加载）**：
+- `Enter` 选中文件时，**仅对该文件**检查 doctype → 命中且有 suggest → 菜单进入实体列表（解析**单个**文件，按路径缓存）
+- 选中实体 → 插入 `[[path#object]]`（仅字符串展示）；Esc/Backspace 返回文件级
+- **绝不在触发时解析所有文件**（触发成本 = 一次 `fs.readTree`）
+
+**交互矩阵**：
+
+| 动作 | 树模式 | 过滤模式 | 实体模式 |
+|---|---|---|---|
+| ↑↓ | 移动选择 | 移动选择 | 移动选择 |
+| ←→ | 切换模式 | 切换模式 | 返回文件级 |
+| Enter | 展开目录 / 选中文件 | 插入 | 插入实体 |
+| Backspace | 返回上级 | 清空过滤 | 返回文件级 |
+| Esc | 关闭 | 关闭 | 返回文件级 |
+| 输入字符 | 进入过滤 | 过滤 | — |
+
+### 6.7 file_block 写回事务（决策：并入保存）
+
+```
+保存（Ctrl+S / 自动保存定时器 autoSaveDelay）：
+  1. 收集本文档所有可编辑 file_block 的当前内容
+  2. 与缓存源内容对比，仅取有差异者（按路径去重，同源多处引用合并）
+  3. 批量写回源文件
+  4. 序列化当前文档（仅标记行）写盘
+  5. 广播"源文件已更新" → 其他打开该源的标签/引用刷新物化内容
+```
+
+- 写盘次数 = 保存次数，无独立防抖风暴；一次保存 = 原子提交点（撤销在保存前只影响内存）
+- 冲突：同源被多文档编辑 → **最后保存者胜** + toast（不做三方合并）
+- 只读变体不参与步骤 2-3
+
+> **【缺口记录 · M1 暴露】脏检测双条件**：序列化只输出标记行，`getMarkdown()` 不感知嵌入块内的编辑，
+> 基于 markdown 对比的脏检测会失效。修复：
+> `dirty = markdown 变化 || 任一可编辑嵌入容器内容 ≠ 其源文件快照`
+> 语义统一为「保存 = 提交文档 + 全部被引用文件变更（原子）」
+
+> **【缺口记录 · M1 暴露】只读变体拖拽缺口**：`contenteditable=false` + `stopEvent` 只拦截打字，
+> block 拖拽把手在 ProseMirror 事务层操作，可绕过 DOM 层修改只读容器内容。加固方案（M2/M3 实施）：
+> ① NodeView 拦截拖拽/选择事件；② 事务层编辑守卫（只读容器拒绝修改事务）；③ 对只读容器隐藏块手柄
+
+### 6.8 嵌套与循环
+
+- 容器 `content: 'block+'` 允许内部再出现 `file_block` → 天然嵌套（A 嵌 B，B 嵌 C）
+- **循环检测**：resolve 时维护路径栈，`A→B→A` 渲染"⚠ 循环引用"占位，不再展开
+- **深度上限 3 层**，超限渲染截断提示
+
+### 6.9 断链与重命名
+
+- 目标文件被删除/改名 → 引用节点红色警告态（"文件不存在"），提供「重新选择 / 清除」
+- 同目录内重命名文件 → 联动更新引用路径；跨目录移动 → 提示断链（v1）
+- `object_ref` 对象缺失 = 同上断链处理
+
+### 6.10 路径边界与安全
+
+- **拒绝工作区外引用**（`..` 穿越拒绝）——模板域除外（可信区）
+- 字面量 `[[` 用 `\[\[` 转义
+- 嵌入内容仅按 Markdown 解析，不执行代码
+
+### 6.11 外部改动与性能
+
+- v1 **不做 fs.watch**：打开/激活标签时刷新引用；打开中的标签间靠保存广播
+- 源内容按路径**缓存**；>200KB 懒加载提示；物化内容不落盘
+
+## 7. 运行时服务
+
+| 服务 | 职责 |
+|---|---|
+| TemplateService | 双域扫描、注册表、斜杠「模板」组注册、插入/新建、占位符渲染 |
+| ValidateService | rules 执行、decorations 标注、聚合面板、报告落盘、strict 门禁 |
+| RefSyncService | 两段式 resolve、物化、写回事务、断链/环/深度处理、广播 |
+
+### 7.1 异步容错原则（决策）
+
+**ValidateService 与 RefSyncService 均为异步、隔离的附加功能——崩溃不得影响编辑器主流程：**
+
+- rules.ts 执行包裹 try/catch + **超时上限**（如单条规则 2s），异常 → 该规则跳过 + toast 提示
+- suggest.ts 的 `resolve` 失败 → 该对象引用进入断链态，不中断编辑
+- 两段式 resolve 中任何文件读取失败 → 引用节点标记警告态，编辑器继续可用
+- 两服务由应用启动后**旁路初始化**（不阻塞编辑器创建），任何阶段失败只降级不报错
+
+## 8. 场景决策矩阵（最终）
+
+| # | 场景 | 决策 |
+|---|---|---|
+| 1 | 模板作用域 | 工作区 + 全局目录，优先级工作区 > 全局 |
+| 2 | 占位符 | 原样显示为 chip，不做变量替换 |
+| 3 | 校验联动 | mode 声明于 rules.ts，默认 hint 不阻止；报告路径声明 |
+| 4 | 外部改动 | v1 无 fs.watch，打开/激活时刷新 |
+| 5 | 断链 | 红色警告 + 重新选择/清除；同目录重命名联动 |
+| 6 | 循环/深度 | 路径栈 + 占位，深度上限 3 |
+| 7 | 性能 | 缓存、懒加载、物化不落盘 |
+| 8 | 安全 | `\[\[` 转义、拒绝 `..`、内容不执行代码 |
+| 9 | 多标签并发 | 写回并入保存，最后保存者胜 + toast |
+| 10 | 模板继承 | **v1 不做**（extends） |
+| 11 | 目录模板 | v2 |
+| 12 | 对象引用校验 | 不实时校验；缺失视为断链 |
+
+## 9. 实现效果（视觉）
+
+- `doctype:demo` 首行：灰色弱化 + 「模板：demo」徽标，不可编辑
+- 输入 `@` / `[[`：浮出迷你文件树，方向键选择
+- `![[path]]`：边框卡片，内部为源内容，可编辑；保存后源文件与所有引用同步更新
+- `![[path|ro]]`：同款卡片 + 只读徽标，内容不可编辑
+- 校验违规：黄色下划线 + 「⚠ 说明」；侧边栏聚合面板；可选报告文件
+- 断链/循环：红色警告态卡片
+
+## 10. 技术风险与关键实现点
+
+1. **TS 动态加载**：模板域 TS 文件不在 Vite 模块图内。方案：fs 读文本 → esbuild-wasm 转译 → 隔离执行（Web Worker / Function）。需评估 esbuild-wasm 体积（约 8-10MB，可后置懒加载）；备选：构建期注册或受限 VM
+2. **两段式 resolve**：异步定型节点需处理"用户已编辑暂态区域"的竞态（resolve 完成前禁止编辑 file_block 容器）
+3. **写回事务**：批量写回需按路径合并、失败回滚提示；广播刷新需避免抖动（节流）
+4. **decorations 与文档同步**：violationAt 使用位置，文档编辑后需重算（ProseMirror decorations 天然随 doc 变化）
+5. **`![[` 与表格语法冲突**：`[[` 出现在表格单元格内需转义规则
+6. **【缺口】嵌入编辑脏检测**（§6.7）：getMarkdown 不感知嵌入编辑 → 脏检测双条件
+7. **【缺口】只读容器拖拽**（§6.7）：block 手柄绕过 contenteditable → 事务层守卫/隐藏手柄
+8. **触发菜单插入语义**（M2）：触发文本需替换为**节点**而非文本（slash 命令同款：transaction 直接建节点），块嵌入需劈分段落
+
+## 11. v1 里程碑拆解
+
+> 状态：**M1-M6 已完成并全量回归通过**。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、**m6 7/7、m6-toolbar 7/7**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
+
+### 里程碑状态
+
+1. **M1 语法与节点 ✅**：doctype / file_ref / object_ref / file_block + remark 插件 + stringify handler + 两段式 resolve + Obsidian 路径补全（.md/.markdown/.txt）
+2. **M2 触发菜单 ✅**：`@`/`[[`/`![[` 触发 + 三级递进菜单（模式选择器 / 文件树逐级发现 / 实体级懒加载）
+3. **M3 文件树联动 ✅**：chip 点击跳转（#片段平滑滚动）、断链检测+重选菜单、重命名引用联动、只读事务守卫
+4. **M4 模板机制 + 实体级 ✅**：TemplateService 双域扫描、esbuild-wasm 运行时加载 rules/suggest、`/` 菜单「模板」组、ref 菜单第二级实体（suggest 对象 + Obsidian 标题）、基于模板新建
+5. **M5 ValidateService ✅**：rules.ts 执行 + 三通道呈现（decorations 标注 / 聚合面板 / 报告落盘）+ strict 门禁
+6. **M6 批注插件 ✅**：`<mark data-note>` 语法节点 + 运行时批注（校验违规高亮）+ 批注卡 + 选中文本工具条「添加批注」
+
+### M4 完成清单（含用户反馈修复轮次）
+
+**模板机制**：`src/template/`（types / ts-loader / service / suggest-context）；`/` 斜杠「模板」组（buildMenu 扩展点，mountEditor 前 await ready()）；基于模板新建（目录右键 → 选择器 → 自动补 .md）；占位符 v1 原样文本（chip 渲染待做）；双域扫描工作区 `template/` + 全局（mock 示例；真实外部目录 v1.5 缺口）
+
+**实体级引用（§6.2 Obsidian 兼容落地）**：选文件 → 实体级 = 文件本身 + （有 suggest.ts → 模板对象；无 → md 提取的标题列表）；选标题插入 `[[path#标题]]`（file_ref+fragment），选对象插入 `[[path#对象]]`（object_ref，resolve 填充值）；实体级与目录展开同款视觉（h6 路径风格 + ◆/#/📄 图标 + › 箭头）；`![[`（嵌入）与断链替换不进实体级
+
+**suggest 自定义能力**：SuggestContext 提供 findText / headingText / paragraphAfterHeading / taskCount / taskProgress / firstTask / firstTableCell / allText；SuggestObject = { id, label, fragment(锚点标题), resolve }——名字、展示内容、跳转锚点全在 TS 定义；demo 样例：问候语、版本号、待办数量(5)、完成率(3/5)、首个待办
+
+**菜单交互**：快捷键 = Tab 切模式 / ← 返回上级或清过滤 / → 进入目录或文件实体级 / Enter 选中 / Backspace 返回上级；← 返回恢复到进入前 hover 的目录/文件（Enter/→/点击三路径都记录）；多标签 keydown 双重触发 → hasFocus + data-show 双守卫；全角符号（＠！【）归一化触发
+
+**引用 UI**：file_ref / object_ref / 断链统一 chip + pointer 光标 + hover 加深；自定义浮窗（`ref-tooltip.ts` 替换原生 title：📄 路径 — 点击打开 / 🔗 对象名（路径）/ ⚠️ 文件不存在）；file_ref 显示完整路径；object_ref 点击跳转（fragment 锚点 + 平滑滚动）；标题跳转手动计算滚动位置（标题在滚动容器顶部下方 15% 偏上处）
+
+**性能**：菜单打开 ~20-50ms（`[menu-perf]` 锚点 + `window.__refMenuPerf`）；esbuild-wasm 启动预热（首次 suggest 1.5s → ~100ms）；菜单树缓存（treeVersion 失效）
+
+### 关键技术坑（实现记录）
+
+1. **treeChildren walk 未命中返回 `[]`（真值）** → 短路导致只有第一个目录可进 → 返回 `null` + `found !== null`
+2. **插入新块定位**：位置会因插入内容漂移（旧块被误判为新块）→ dispatch 前后用 ProseMirror 节点对象引用（持久化，未修改块对象不变）
+3. **空段落替换嵌入**：replaceWith 整段替换时块在 `$pos.before()` 偏移 1 → dispatch 后按节点对象重定位再物化
+4. **flip 测量 0 高**：菜单内容 v-if 渲染晚于定位 → 树加载后手动 computePosition 重定位（fixed 策略 + flip/shift，不用 provider.update 避免 onShow 递归循环）
+5. **滚动容器查找**：`inst.el` 自身是 `.editor-pane`，querySelector 子元素查不到 → classList 判断自身；scrollIntoView 的 block:'center' 在嵌套滚动容器不可靠 → 手动算 scrollTop
+6. **scrollToHeading 时序**：mountEditor 异步，300ms 固定延迟不够 → waitForInstance 轮询等待挂载
+7. **shouldShow 重置 mode**：每次更新覆盖用户手动切换 → 加 triggerKind 仅触发词变化时重置
+8. **matchTrigger 优先旧 `[[`**：段落旧触发词抢占新输入 → 收集候选取「终点离光标最近」者
+9. **IME 输入**：keydown 记不到组合文本 → beforeinput（insertCompositionText）跟踪 recentTyped；全角符号归一化
+10. **多标签 keydown**：多个菜单实例共享 window 监听 → hasFocus + data-show 守卫
+11. **esbuild-wasm**：初始化 + 首个 transform 各 ~450ms 一次性开销 → 启动后台预热
+12. **mock 示例升级**：SEED_VERSION 版本化 + 演示核心文件跨版本强制覆盖；`window.__mockFsDebug()` 诊断钩子
+
+### M5 实现记录（ValidateService）
+
+- `src/validate/`：service（执行/结果缓存/订阅广播/报告落盘）、validate-context（doc → 结构查询上下文）、plugin（decorations）
+- 类型补全：ValidationContext 完整（findTableAfterHeading/findHeading/findText/allText + violation/violationAt + TableContext/TableRow/TableCell）；Violation 结果类型
+- **三通道**：① decorations——`validateDecorationsPlugin`（$prose 包装 + PluginKey），违规位置 ⚠ widget（level 分色 + title 提示），service 完成后空事务 `setMeta('validateRefresh')` 触发重算，不写入 doc（保存即消失）；② 聚合面板——`ValidatePanel.vue` 浮动右下角（错误/警告计数、违规列表、点击跳转 scrollToPos、⟳ 刷新），无 doctype 时引导提示；③ 报告——`report = { enabled, path }` 声明 → 校验后写 markdown 报告（`.validate/report.md`）
+- **触发时机**：打开文档（mountEditor 后 silent）+ 编辑防抖（1.5s，markdownUpdated 挂载点；§5.1 默认关闭 → v1 内置，后续可加开关）+ 保存前（saveTab 重新校验保证新鲜）
+- **strict 门禁**：saveTab 里 `hasStrictBlock`（mode strict + error 违规）→ ConfirmDialog「校验失败，确定保存？」（可取消/仍然保存）；hint 模式不阻止
+- **§5.4 引用交互**：collect() 跳过 file_block 物化内容（源文件按自己 doctype 校验）；object_ref 不参与实时校验
+- **doctype 提取坑**：首行 `doctype:<value>` 被 M1 自定义 doctype 节点解析（textContent 为空！）→ 从 `node.attrs.value` 提取，不能从文本
+- **单元格 pos 坑**：`table.pos + 1 + rowOff + cellOff` 少加 1（cell 相对 row 还有一层边界）→ ⚠ 会标到前一格（A 单元格）内 → 应为 `pos + 2 + rowOff + cellOff`（用户反馈：需求表提示位置不对）
+- **超时防护**：单条规则 >2s 标记 stale（同步 run 无法中断，仅告警跳过结果归属）
+- **demo.rules.ts**：需求表前置/后置联动（violationAt 单元格级标注）+ 必须存在版本章节（error 级）；mode/report 导出演示
+- 测试：m5-e2e 9/9（三通道 + 编辑触发 + hint 保存不阻止）、m5-strict 3/3（严格模式弹确认/取消不保存/确认仍保存）
+
+### M6 实现记录（批注插件，独立于校验）
+
+- `src/annotations/`：remark-annotation（`<mark data-note="x">…</mark>` 合并为 annotation mdast）、nodes（$nodeSchema('annotation')，inline 容器 content text*，渲染为高亮 mark）、service（AnnotationService：运行时批注 setRuntimeAnnotations / 人工批注 add/remove/update）、plugin（运行时批注 decorations：非空范围 inline 高亮、空范围降级锚定行 node 高亮）、card（批注卡：点击展开/再点收起，@floating-ui 靠右+flip，持久化批注可删除/内联编辑）、styles
+- **两种批注**：① 运行时（persist=false，校验违规→高亮/锚定行，不落盘）② 人工（persist=true，插入 `<mark data-note>` 节点，随保存序列化到 md——round-trip 已验证）
+- **校验集成**：ValidateService 违规 → `setRuntimeAnnotations`（替换原 validate/plugin.ts decorations 通道）；锚定行 = violationAt 空范围（如空单元格）降级为所在 block 容器（tr/段落）整块高亮
+- **人工批注入口**：Crepe Toolbar（选中文本浮窗）`buildToolbar` 加「添加批注」（与加粗/标黄等并列）→ 输入浮窗 → addAnnotation 包裹选区
+- **坑**：① schema marks 名称是 emphasis/inlineCode 而非 em/code（Unknown mark type）；② ToolbarItem 必须提供 active()（checker 渲染抛错）；③ posAtDOM 对 inline 节点返回内容位置（偏移 1）→ 减 1 找 annotation 节点；④ onRun 类型缺口（ToolbarItem 未声明但运行时使用）→ 断言 addItem 参数类型
+- 测试：m6-e2e 7/7（round-trip/批注卡/动态高亮）、m6-toolbar 7/7（Toolbar 添加/删除/编辑）；m5-e2e 同步更新（校验标注改走批注体系）
+
+### 记录缺口 / 待办
+
+- gutter 侧边条（v2 决策：批注卡点击展开替代）
+- 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）
+- 占位符 `{{title}}` chip 渲染（v1 原样文本）
+- 全局模板域真实文件系统（外部目录需 Rust 命令）
+- 已打开编辑器不感知模板注册表变更（重开标签生效）
+- 脏检测双条件（§6.7 缺口）、只读拖拽加固剩余项、fs.watch、模板继承、目录级模板
+
+## 12. 未来工作（v2）
+
+- 模板继承（extends）与规则合并优先级
+- fs.watch 实时同步外部改动
+- 目录级模板（整棵复制）
+- Obsidian 标题链接冲突的进一步细化（对象/标题同名优先级已在 §6.2 定义）
+- 三方合并 / 冲突解决 UI
+- 模板市场/导入导出

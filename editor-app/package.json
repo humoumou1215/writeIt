@@ -10,10 +10,12 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@floating-ui/dom": "^1.8.0",
     "@milkdown/crepe": "7.22.0",
     "@milkdown/kit": "7.22.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
+    "esbuild-wasm": "^0.28.2",
     "mermaid": "^11.16.1",
     "vue": "^3.5.41"
   },

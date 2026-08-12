@@ -3,13 +3,37 @@
 // 切标签只切换容器可见性；关闭标签才销毁实例。
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
+import { editorViewCtx } from '@milkdown/kit/core'
+import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
+import { refPlugin, resolveRefs } from './ref'
+import { registerRefStringify } from './ref/stringify'
+import {
+  registerOpenRefHandler,
+  registerReSelectHandler,
+  refreshBrokenState,
+  resolveRefPath,
+  notifyBroken,
+} from './ref/app-plugin'
+import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
-import { state, nextTabId, toast } from '../state/store'
+import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings } from '../state/settings'
 import type { Tab } from '../state/store'
-import { mermaidFeatureConfigs } from './mermaid'
+import { featureConfigs } from './features'
+import { templateService } from '../template/service'
+import {
+  validateEditor,
+  hasStrictBlock,
+  clearValidation,
+} from '../validate/service'
+import { annotationSchema } from '../annotations/nodes'
+import { remarkAnnotation } from '../annotations/remark-annotation'
+import { bindAnnotationDecorations } from '../annotations'
+import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
+import { clearAnnotations } from '../annotations/service'
+import { $remark } from '@milkdown/kit/utils'
 
 interface Instance {
   crepe: Crepe
@@ -19,6 +43,213 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+
+// M5：编辑防抖实时校验（1.5s；规则简单/文档小无所谓，大文档后续可配置关闭）
+const validationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+function scheduleDebouncedValidation(tabId: string, inst: Instance) {
+  const prev = validationTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  validationTimers.set(
+    tabId,
+    setTimeout(() => {
+      validationTimers.delete(tabId)
+      void validateEditor(inst.crepe.editor, tabId, { silent: true })
+    }, 1500)
+  )
+}
+
+// M5：校验面板点击违规跳转到文档位置（打开/激活标签 + 滚动到 pos）
+export async function scrollToPos(tabId: string, pos: number): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (!tab) return
+  if (state.activeTabId !== tabId) {
+    await openTab(tabId)
+  }
+  const inst = instances.get(tabId)
+  if (!inst) return
+  await new Promise((r) => setTimeout(r, 120))
+  try {
+    await inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const dom = view.domAtPos(Math.min(pos, view.state.doc.content.size))
+      const el = (dom.node as HTMLElement)?.closest?.('td, th, p, li, h1, h2, h3, h4, pre') ?? (dom.node as HTMLElement)
+      const pane = inst.el.classList.contains('editor-pane')
+        ? inst.el
+        : (inst.el.querySelector('.editor-pane') as HTMLElement | null)
+      if (pane && el) {
+        const elRect = el.getBoundingClientRect()
+        const paneRect = pane.getBoundingClientRect()
+        const target =
+          pane.scrollTop + (elRect.top - paneRect.top) - pane.clientHeight * 0.15
+        pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+      }
+    })
+  } catch {
+    /* 编辑器已销毁 */
+  }
+}
+
+// M5：手动重新校验活动标签（面板 ⟳ 按钮）
+export async function refreshValidation(): Promise<void> {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  const res = await validateEditor(inst.crepe.editor, state.activeTabId!, { silent: true })
+  const n = res.violations.length
+  if (n === 0) toast('校验通过：未发现违规', 'success')
+  else toast(`校验完成：${n} 项违规（${res.violations.filter((v) => v.level === 'error').length} 错误）`, 'error')
+}
+
+// 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
+;(window as unknown as { __editorDebug?: unknown }).__editorDebug = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  return inst?.crepe.editor ?? null
+}
+;(window as unknown as { __editorGetMarkdown?: unknown }).__editorGetMarkdown = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  return inst ? inst.crepe.getMarkdown() : ''
+}
+;(window as unknown as { __editorSetRefPath?: unknown }).__editorSetRefPath = (oldPath: string, newPath: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const tr = view.state.tr
+    let pos = -1
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_ref' && n.attrs.path === oldPath) { pos = p; return false }
+      return true
+    })
+    if (pos < 0) return
+    tr.setNodeMarkup(pos, undefined, { path: newPath })
+    view.dispatch(tr)
+  })
+}
+;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const doc = view.state.doc
+    const end = doc.content.size
+    const tr = view.state.tr
+    // 文档末尾若是嵌入块（file_block），其后没有可输入的文本 —— 补一个空段落
+    const lastNode = doc.lastChild
+    if (lastNode?.type.name === 'file_block') {
+      tr.insert(end, tr.doc.type.schema.nodes.paragraph.create())
+    }
+    tr.setSelection(TextSelection.near(tr.doc.resolve(end)))
+    view.dispatch(tr.scrollIntoView())
+  })
+}
+
+// M3：引用 chip 悬停浮窗（自定义 tooltip，幂等初始化）
+initRefTooltip()
+// M6：批注卡（点击展开/收起，幂等初始化）
+initAnnotationCard()
+
+// M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）
+registerOpenRefHandler(async (path, fragment) => {
+  const real = await resolveRefPath(path)
+  if (!real) {
+    notifyBroken(path)
+    return
+  }
+  await openTab(real)
+  if (fragment) await scrollToHeading(fragment)
+})
+
+// M3：断链 chip 点击 → 打开菜单重选（替换模式）
+registerReSelectHandler((path) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  void import('./ref/menu').then((menuMod) =>
+    menuMod.openReplaceMenu(inst.crepe.editor, path)
+  )
+})
+
+// 等待编辑器实例挂载（mountEditor 异步；标签刚打开时实例可能还没建）
+function waitForInstance(tabId: string, timeout = 5000): Promise<Instance | null> {
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const check = () => {
+      const inst = instances.get(tabId)
+      if (inst) return resolve(inst)
+      if (Date.now() - start > timeout) return resolve(null)
+      setTimeout(check, 100)
+    }
+    check()
+  })
+}
+
+// M3：滚动到标题（#片段）
+async function scrollToHeading(fragment: string) {
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (!tab) return
+  const inst = await waitForInstance(tab.id)
+  if (!inst) return
+  const targetTab = tab
+  await new Promise((r) => setTimeout(r, 300))
+  const { editorViewCtx } = await import('@milkdown/kit/core')
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    let targetPos = -1
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.textContent.trim() === fragment) {
+        targetPos = pos
+        return false
+      }
+      return true
+    })
+    if (targetPos >= 0) {
+      // 手动计算滚动位置：精确滚动唯一的滚动容器（.editor-pane），
+      // 目标 = 标题在可视区顶部下方 15%（偏上，而非居中）——scrollIntoView 在多层滚动容器下不可靠
+      const titleDOM = view.nodeDOM(targetPos) as HTMLElement | null
+      // 滚动容器：inst.el 本身是 .editor-pane（EditorPane.vue 创建）；querySelector 只查子元素会漏掉自身
+      const pane = (
+        inst.el.classList.contains('editor-pane')
+          ? inst.el
+          : inst.el.querySelector('.editor-pane')
+      ) as HTMLElement | null
+      if (pane && titleDOM) {
+        const paneRect = pane.getBoundingClientRect()
+        const titleRect = titleDOM.getBoundingClientRect()
+        const target = pane.scrollTop + (titleRect.top - paneRect.top) - pane.clientHeight * 0.15
+        pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+      } else {
+        titleDOM?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    } else if (!fragment) {
+      // 无锚点（对象引用未声明 fragment）→ 平滑滚动到文件顶部
+      const pane = (
+        inst.el.classList.contains('editor-pane')
+          ? inst.el
+          : inst.el.querySelector('.editor-pane')
+      ) as HTMLElement | null
+      pane?.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      // 有锚点但找不到标题 → 提示
+      toast(`未找到标题「${fragment}」（${targetTab?.name ?? ''}）`, 'error')
+    }
+  })
+  // 光标移到标题
+  const { TextSelection } = await import('@milkdown/kit/prose/state')
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    let targetPos = -1
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading' && node.textContent.trim() === fragment) {
+        targetPos = pos
+        return false
+      }
+      return true
+    })
+    if (targetPos >= 0) {
+      view.dispatch(
+        view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(targetPos)))
+      )
+    }
+  })
+}
 
 // ---------- 打开 / 激活 ----------
 
@@ -70,16 +301,36 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab || instances.has(tabId)) return
 
+  // M4：斜杠菜单「模板」组依赖模板注册表，创建编辑器前确保扫描完成（失败也降级）
+  await templateService.ready()
+
   const crepe = new Crepe({
     root: container,
     defaultValue: tab.savedContent,
     features: {
       [CrepeFeature.TopBar]: true,
     },
-    // Mermaid 图表：代码块预览 + 斜杠菜单模板
-    featureConfigs: mermaidFeatureConfigs(),
+    // Mermaid + 模板：代码块预览 / 斜杠菜单分组
+    featureConfigs: featureConfigs(),
+  })
+  // 注册引用机制自定义节点与 stringify handler（必须在 create 之前）
+  crepe.editor.use(refPlugin)
+  // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，绑定当前标签）
+  crepe.editor.use($remark('annotationRemark', () => remarkAnnotation as never))
+  crepe.editor.use(annotationSchema)
+  crepe.editor.use(bindAnnotationDecorations(tabId))
+  crepe.editor.config((ctx) => {
+    registerRefStringify(ctx)
   })
   await crepe.create()
+  // M6：批注卡上下文（tabId + 编辑器引用）
+  setAnnotationCardContext(tabId, crepe.editor)
+
+  // 两段式解析：异步物化引用（容错：失败不影响编辑器）
+  void resolveRefs(crepe.editor)
+  void refreshBrokenState(crepe.editor)
+  // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
+  void validateEditor(crepe.editor, tabId, { silent: true })
 
   const inst: Instance = { crepe, el: container, suppressing: false }
   instances.set(tabId, inst)
@@ -92,6 +343,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const nowDirty = md !== t.savedContent
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
+      // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
+      scheduleDebouncedValidation(tabId, inst)
     })
   })
 
@@ -125,6 +378,21 @@ export async function saveTab(tabId: string): Promise<boolean> {
     tab.dirty = false
     return true
   }
+  // M5 strict 门禁：先确保校验结果新鲜（文档可能已编辑），mode strict + error 违规 → 需确认
+  const result = await validateEditor(inst.crepe.editor, tabId, { silent: true })
+  if (hasStrictBlock(result)) {
+    const errs = result.violations.filter((v) => v.level === 'error')
+    const ok = await confirmDialog({
+      title: '校验失败，确定保存？',
+      message: `存在 ${errs.length} 个错误级违规（模式：strict）。\n${errs
+        .slice(0, 3)
+        .map((v) => `• ${v.message}`)
+        .join('\n')}${errs.length > 3 ? `\n…等 ${errs.length} 项` : ''}`,
+      confirmText: '仍然保存',
+      danger: true,
+    })
+    if (!ok) return false
+  }
   const md = inst.crepe.getMarkdown()
   try {
     await fs.writeFile(tab.path, md)
@@ -153,6 +421,10 @@ export async function saveActiveTab(): Promise<boolean> {
 export async function closeTab(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
+  // 关闭标签时清理校验结果（订阅面板/报告不残留）
+  clearValidation(tabId)
+  clearAnnotations(tabId)
+  setAnnotationCardContext(tabId, null)
   if (tab.dirty) {
     const ok = await confirmDiscard(tab)
     if (!ok) return
@@ -172,6 +444,52 @@ function confirmDiscard(tab: Tab): Promise<boolean> {
 }
 
 // ---------- 文件树联动 ----------
+
+/** M3：重命名后更新所有打开文档中的引用节点路径 */
+export function updateRefsAfterRename(oldPath: string, newPath: string, kind: 'file' | 'dir') {
+  const strip = (p: string) => p.replace(/\.(md|markdown|txt)$/i, '')
+  const oldStripped = strip(oldPath)
+  const newStripped = strip(newPath)
+  // 遍历每个打开文档，更新引用节点路径（静态导入，避免异步 action 竞态）
+  for (const inst of instances.values()) {
+    inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const tr = view.state.tr
+      let changed = false
+      view.state.doc.descendants((node, pos) => {
+        const isRef =
+          node.type.name === 'file_ref' ||
+          node.type.name === 'file_block' ||
+          node.type.name === 'object_ref'
+        if (!isRef) return true
+        // 跳过只读嵌入块（不可修改；重命名后自然断链，提示重选）
+        if (node.type.name === 'file_block' && node.attrs.readonly) return true
+        const p = node.attrs.path as string
+        const matches =
+          kind === 'file'
+            ? p === oldStripped || p === oldPath
+            : p === oldStripped || p.startsWith(oldStripped + '/')
+        if (matches) {
+          const newP =
+            kind === 'file'
+              ? newStripped
+              : newStripped + p.slice(oldStripped.length)
+          tr.setNodeMarkup(pos, undefined, { ...node.attrs, path: newP })
+          changed = true
+        }
+        return true
+      })
+      if (changed) view.dispatch(tr)
+    })
+  }
+}
+
+/** M3：刷新所有打开文档的断链状态（删除/重命名后调用） */
+export function refreshBrokenAll() {
+  for (const inst of instances.values()) {
+    void refreshBrokenState(inst.crepe.editor)
+  }
+}
 
 export function onFileRenamed(oldPath: string, newPath: string, kind: 'file' | 'dir' = 'file') {
   for (const tab of state.tabs) {

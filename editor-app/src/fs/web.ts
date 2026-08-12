@@ -1,6 +1,6 @@
 // File System Access API 实现（Chromium）——浏览器里也能打开真实目录
 import type { FileSystem, FsEntry } from './types'
-import { isEditableFile, joinPath } from './types'
+import { shouldShowInTree, joinPath } from './types'
 
 let rootHandle: FileSystemDirectoryHandle | null = null
 let rootName = ''
@@ -30,7 +30,7 @@ async function walk(
         kind: 'dir',
         children: await walk(dir, root, showAll, path),
       })
-    } else if (showAll || isEditableFile(name)) {
+    } else if (shouldShowInTree(path, name, showAll)) {
       entries.push({ name, path, kind: 'file' })
     }
   }

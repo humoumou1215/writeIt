@@ -23,15 +23,21 @@ import FileTree from './components/FileTree.vue'
 import NewInput from './components/NewInput.vue'
 import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
+import ValidatePanel from './components/ValidatePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
+import TemplatePicker from './components/TemplatePicker.vue'
 
 // ---------- 生命周期 ----------
 onMounted(async () => {
   applyTheme(settings.theme)
   state.fsName = fs.kind
   await refreshTree()
+  // M4：启动即扫描模板注册表（斜杠菜单「模板」组 / 基于模板新建依赖）
+  void import('./template/service').then((m) => m.templateService.ready())
+  // 性能：后台预热 esbuild-wasm（模板 TS 转译），避免首次 suggest 加载卡顿
+  void import('./template/ts-loader').then((m) => m.warmupTsLoader())
   ensureAutoSaveLoop()
   window.addEventListener('keydown', onKeydown)
   // 点击按钮后 blur，避免空格/回车再次激活按钮（编辑器里按空格是输入）
@@ -129,6 +135,10 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
     case 'newFile':
       snf(path)
       break
+    case 'newFromTemplate':
+      // 打开模板选择器（TemplatePicker.vue 监听 templatePick）
+      state.templatePick = path
+      break
     case 'newDir':
       snd(path)
       break
@@ -139,6 +149,18 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
       await removeNode(path, kind)
       break
   }
+}
+
+// ---------- 基于模板新建（TemplatePicker 回调） ----------
+function onTemplatePicked(doctype: string) {
+  const dir = state.templatePick
+  state.templatePick = null
+  if (dir === null) return
+  void import('./state/treeOps').then((m) => m.startNewFileWithTemplate(dir, doctype))
+}
+
+function onTemplatePickClose() {
+  state.templatePick = null
 }
 
 // ---------- 上一个 / 下一个文件 ----------
@@ -276,7 +298,13 @@ async function onOpenDir() {
     <!-- 浮层 -->
     <SettingsModal v-if="state.settingsOpen" @close="state.settingsOpen = false" />
     <ConfirmDialog />
+    <ValidatePanel />
     <ContextMenu @action="onMenuAction" />
+    <TemplatePicker
+      v-if="state.templatePick !== null"
+      @pick="onTemplatePicked"
+      @close="onTemplatePickClose"
+    />
     <Teleport to="body">
       <div class="toasts">
         <div v-for="t in state.toasts" :key="t.id" class="toast" :class="t.type">

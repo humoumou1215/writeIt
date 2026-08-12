@@ -1,0 +1,259 @@
+/* ===== 引用节点样式（主题变量自适应） ===== */
+
+/* doctype：弱化、只读（配合 CSS 禁用编辑） */
+.ref-doctype {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--chrome-surface-low, #f2f3f5);
+  display: inline-block;
+  margin-bottom: 6px;
+  user-select: none;
+}
+
+/* file_ref：文件名 chip */
+a.ref-file {
+  color: var(--chrome-primary, #f5b301);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 88%);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin: 0 1px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+a.ref-file:hover {
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+}
+
+/* object_ref：对象值字符串（与 file_ref 同款 chip，可点击跳转） */
+span.ref-object {
+  color: var(--chrome-primary, #f5b301);
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 90%);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin: 0 1px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+span.ref-object:hover {
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+}
+
+/* 自定义悬停浮窗（替换原生 title） */
+.ref-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 240px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface, #1f2329);
+  border: 1px solid var(--chrome-border, #e5e6eb);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.ref-tooltip-visible {
+  opacity: 1;
+}
+
+/* file_block：卡片容器 */
+.ref-file-block {
+  border: 1px solid var(--chrome-border, #e5e6eb);
+  border-radius: 10px;
+  margin: 8px 0;
+  overflow: hidden;
+  background: var(--chrome-surface-low, #f5f6f8);
+}
+.ref-file-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--chrome-surface, #fff);
+  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  user-select: none;
+}
+.ref-file-block-badge {
+  font-weight: 600;
+  color: var(--chrome-primary, #f5b301);
+}
+.ref-file-block.readonly .ref-file-block-badge {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+}
+.ref-file-block-path {
+  color: var(--chrome-on-surface-variant, #8a8f99);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-file-block-content {
+  padding: 6px 14px;
+  background: var(--chrome-background, #fff);
+}
+.ref-file-block.readonly .ref-file-block-content {
+  opacity: 0.85;
+  cursor: default;
+}
+
+/* M3：断链引用红色警告态 */
+.ref-broken {
+  text-decoration: underline wavy var(--chrome-error, #ba1a1a) !important;
+  color: var(--chrome-error, #ba1a1a) !important;
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 90%) !important;
+}
+
+/* M3：只读 file_block 隐藏块拖拽手柄（hover 到只读卡片时不显示） */
+body:has(.milkdown .ref-file-block.readonly:hover) .block-handle,
+body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
+  display: none !important;
+}
+
+/* M5：校验 decorations（违规位置 ⚠ 徽标；不写入文档，保存即消失） */
+.validate-mark {
+  display: inline-block;
+  margin: 0 1px;
+  color: var(--chrome-warning, #b58900);
+  font-weight: 700;
+  cursor: help;
+  /* 纯视觉标记：鼠标点击/选中穿透到编辑器（不拦截输入） */
+  pointer-events: none;
+  user-select: none;
+}
+.validate-mark[data-level='error'] {
+  color: var(--chrome-error, #ba1a1a);
+}
+
+/* ========== 批注（M6）========== */
+
+/* 持久化批注节点：<mark data-note> —— 高亮锚定文本，note 内容只在批注卡显示 */
+mark.annotation {
+  background: color-mix(in srgb, #f5d76e, transparent 65%);
+  border-bottom: 1px dashed #b58900;
+  padding: 0 1px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+mark.annotation:hover {
+  background: color-mix(in srgb, #f5d76e, transparent 40%);
+}
+
+/* 运行时批注（校验违规）：inline 高亮 / 锚定行整块高亮 */
+.annotation-dynamic {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 78%);
+  border-bottom: 1px dotted var(--chrome-warning, #b58900);
+  cursor: pointer;
+}
+.annotation-dynamic.annotation-level-error {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 82%);
+  border-bottom-color: var(--chrome-error, #ba1a1a);
+}
+.annotation-dynamic.annotation-level-error:hover {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 65%);
+}
+.annotation-dynamic.annotation-level-warning:hover,
+.annotation-dynamic.annotation-level-info:hover {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 55%);
+}
+
+/* 锚定行（空范围降级）：node decoration 整块高亮 */
+tr.annotation-dynamic {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 85%);
+}
+tr.annotation-dynamic.annotation-level-error {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
+}
+
+/* 批注卡（点击展开，默认展开；再点/点外部收起） */
+.annotation-card {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 320px;
+  border-radius: 8px;
+  background: var(--chrome-panel-bg, #fff);
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+  display: none;
+}
+.annotation-card-visible {
+  display: block;
+}
+.annotation-card-head {
+  padding: 6px 10px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--chrome-border-light, #eee);
+  color: var(--chrome-text, #333);
+}
+.annotation-card-body {
+  padding: 8px 10px;
+  line-height: 1.5;
+  color: var(--chrome-text, #333);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.annotation-card-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 8px;
+  justify-content: flex-end;
+}
+.annotation-card-actions .mini.danger {
+  color: var(--chrome-error, #ba1a1a);
+}
+.annotation-card-edit {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  background: var(--chrome-input-bg, #fff);
+  color: var(--chrome-text, #333);
+}
+
+/* 添加批注输入浮窗（Toolbar 入口） */
+.annotation-input {
+  position: fixed;
+  z-index: 1100;
+  width: 240px;
+  border-radius: 8px;
+  background: var(--chrome-panel-bg, #fff);
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  padding: 8px;
+  display: none;
+}
+.annotation-input-visible {
+  display: block;
+}
+.annotation-input-ta {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  min-height: 52px;
+  resize: vertical;
+  background: var(--chrome-input-bg, #fff);
+  color: var(--chrome-text, #333);
+}
+.annotation-input-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}

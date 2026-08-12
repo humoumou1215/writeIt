@@ -154,3 +154,43 @@ Run when asked, or every ~10 ingests. Read all wiki pages and:
 
 ---
 _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri），删除 `editor/` 与根 `index.html`；新增 fs 抽象 / 多标签 / Mermaid 实现路径说明。_
+
+## 9. 研发经验（editor-app 开发，供后续 agent 直接使用）
+
+### 项目状态（截至 2026-08-11）
+- **里程碑 M1-M6 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级 → 校验三通道 → 批注插件）；M7（v2 方向）未定。
+- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、各里程碑实现记录、关键技术坑、缺口清单——**开发前先读**。
+
+### 架构速览（相对上文的补充）
+- `src/annotations/`：批注插件（M6，独立于校验）——remark-annotation（`<mark data-note>` 语法）、nodes（annotation schema）、service（AnnotationService：运行时批注 persist=false / 人工批注 persist=true 节点插入）、plugin（decorations：非空 inline 高亮 / 空范围锚定行）、card（批注卡 + 添加批注输入浮窗）、styles
+- `src/validate/`：校验服务（M5）——service（rules 执行/三通道/strict 门禁）、validate-context（ValidationContext 表格/标题查询）；违规标注走批注体系（setRuntimeAnnotations）
+- `src/editor/ref/`：引用机制核心——`nodes.ts`（4 自定义节点 schema）、`remark-ref.ts`（mdast 解析）、`stringify.ts`（防转义）、`resolve.ts`（两段式物化+对象消歧）、`file-block-view.ts`（嵌入卡片 NodeView）、`app-plugin.ts`（点击跳转/只读守卫/断链装饰）、`menu/`（三级菜单 index.ts + RefMenu.vue）、`ref-tooltip.ts`（自定义悬停浮窗）、`styles.css`
+- `src/template/`：模板机制——`service.ts`（双域扫描/注册表）、`ts-loader.ts`（esbuild-wasm 转译 TS 并隔离执行）、`suggest-context.ts`（结构查询工具）、`types.ts`（SuggestObject/Rule 类型）
+- `src/editor/features.ts`：每个 Crepe 实例的 featureConfigs 组合（Mermaid + 模板组）
+- `src/fs/`：FileSystem 抽象（mock/web/tauri 三实现）；`shouldShowInTree()` 控制树过滤（模板域文件始终显示）
+
+### 测试（改代码后必跑）
+- 套件在 `/tmp/pwtest/`（真实 Chromium，需 dev server :5173）：`ref-e2e`(15) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9，标题实体+suggest 样例) / `m4c-e2e`(6，路径显示+对象跳转) / `app-e2e`(28，会清空 demo-shots/)
+- 运行：`node <file>.js`，看末尾「结果: X 通过 / Y 失败」；`app-e2e` 最后跑（清截图目录）
+- 每轮回归后 `npm run build` 验证
+
+### 调试钩子（window 上，测试/排障用）
+- `__editorDebug()` 活动编辑器 / `__editorGetMarkdown()` 当前 md / `__editorGoEnd()`（光标到文档末尾可输入处，末尾嵌入块自动补空段）
+- `__editorSetRefPath(old,new)` / `__refMenuState`（菜单 reactive 状态）/ `__refMenuPerf`（菜单打开耗时）/ `__mockFsDebug()`（mock 数据摘要：seededVersion/模板文件清单）
+
+### 关键踩坑速查（详细见 design.md §11）
+1. **walk 未命中返回 `[]` 是真值** → 必须返回 `null` + `found !== null`
+2. **插入后定位新节点**：位置会漂移 → 用 ProseMirror 节点对象引用（dispatch 前后对比，持久化不变）
+3. **flip 中间件测 0 高**（内容异步渲染）→ 树加载后手动 computePosition 重定位（fixed 策略），别用 provider.update（会 onShow 递归循环）
+4. **滚动**：`inst.el` 自身是 `.editor-pane`（querySelector 查子查不到）；scrollIntoView 在嵌套滚动容器不可靠 → 手动算 scrollTop（标题偏上 15%）
+5. **编辑器挂载异步**：打开文件后要 waitForInstance 再操作
+6. **IME**：组合文本用 beforeinput 跟踪（keydown 记不到）；全角符号（＠！【）归一化再匹配
+7. **多标签**：多个菜单实例共享 window keydown → hasFocus + data-show 守卫，防 Enter 双重触发
+8. **esbuild-wasm**：初始化+首个 transform 各 ~450ms → 启动后台预热
+9. **mock 示例升级**：SEED_VERSION 版本化 + 演示核心文件跨版本强制覆盖（FORCE_UPDATE_PATHS）；`seededVersion` 与「模板缺失」双条件兜底
+
+### 开发约定
+- 与用户全程中文交流；重大改动先讨论方案再实现（用户多次强调）
+- 触发词匹配：`matchTrigger` 取「终点离光标最近」的候选（段落旧 `[[` 不抢占）
+- 实体级 = 文件本身 + （suggest 对象 / Obsidian 标题）；`![[` 嵌入与断链替换不进实体级
+- 引用 chip 显示完整路径；悬停用自定义 tooltip（ref-tooltip.ts），不要原生 title

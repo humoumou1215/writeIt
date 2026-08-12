@@ -23,6 +23,11 @@ function onThemeChange() {
   applyTheme(settings.theme)
   saveSettings()
 }
+function onTemplateDirChange() {
+  saveSettings()
+  // 重新扫描模板注册表（已打开的编辑器菜单不刷新，重开标签生效）
+  void import('../template/service').then((m) => m.templateService.rescan())
+}
 function onSettingChange() {
   saveSettings()
   refreshTree()
@@ -136,6 +141,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <input type="checkbox" v-model="settings.sidebarPinned" @change="saveSettings" />
             <em class="hint-inline">固定后打开文件不自动收纳</em>
           </label>
+
+          <label class="row">
+            <span>全局模板目录</span>
+            <input
+              v-model="settings.templateDir"
+              class="tpl-dir-input"
+              placeholder="工作区外模板目录（v1 仅 Tauri 生效）"
+              spellcheck="false"
+              @change="onTemplateDirChange"
+            />
+          </label>
+          <p class="hint">模板目录结构：template/&lt;名称&gt;/&lt;名称&gt;.md（首行 doctype:名称）</p>
 
           <div class="row">
             <span>文件系统</span>
@@ -284,6 +301,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-surface-variant, #8a8f99);
 }
 select,
+.tpl-dir-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--chrome-border, #e5e6eb);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: inherit;
+  background: var(--chrome-surface, #fff);
+}
 input[type='checkbox'] {
   accent-color: var(--chrome-primary, #f5b301);
 }
