@@ -235,6 +235,8 @@ function onKeydown(e: KeyboardEvent) {
       props.menu.enterDir(entry.path)
       hoverIndex.value = 0
     } else {
+      // → 进入实体级同样记录返回位置（与 Enter/点击一致）
+      entityReturnIndex.value = hoverIndex.value
       props.menu.selectFile(entry.path, props.state.mode)
       hoverIndex.value = 0
     }
