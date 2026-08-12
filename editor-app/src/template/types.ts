@@ -40,14 +40,66 @@ export interface SuggestModule {
 
 // ---------- rules.ts ----------
 
+/** 表格单元格：文本 + 在文档中的位置（decorations 标注用） */
+export interface TableCell {
+  /** 单元格纯文本 */
+  text(): string
+  /** 单元格在文档中的位置（pos） */
+  pos: number
+}
+
+/** 表格行：单元格集合 */
+export interface TableRow {
+  /** 第 i 列单元格（越界返回空单元格，不抛错） */
+  cell(i: number): TableCell
+  /** 全部单元格 */
+  cells(): TableCell[]
+  /** 行在文档中的位置 */
+  pos: number
+}
+
+/** 表格上下文（dataRows 排除表头行） */
+export interface TableContext {
+  /** 表头行（无则 null） */
+  headerRow(): TableRow | null
+  /** 全部行 */
+  rows(): TableRow[]
+  /** 数据行（跳过表头） */
+  dataRows(): TableRow[]
+  /** 按行列取单元格（越界返回 null） */
+  cell(row: number, col: number): TableCell | null
+  /** 表格在文档中的位置 */
+  pos: number
+}
+
 /** rules.ts 提供给规则执行的结构查询上下文（M5 ValidateService 完整实现） */
 export interface ValidationContext {
-  /** 查找某个标题后的表格（返回表格上下文或 null） */
-  findTableAfterHeading(heading: string): unknown
+  /** 查找匹配正则/文本的标题后的第一个表格（标题可带 ## 前缀；无则 null） */
+  findTableAfterHeading(heading: string | RegExp): TableContext | null
+  /** 查找匹配文本/正则的标题位置（无则 null） */
+  findHeading(heading: string | RegExp): { level: number; text: string; pos: number } | null
+  /** 取第一个匹配正则的段落纯文本（无则 null） */
+  findText(re: RegExp): string | null
+  /** 文档纯文本（用于 count/正则检查） */
+  allText(): string
   /** 无位置的整体违规 */
   violation(message: string, level?: 'warning' | 'error'): void
-  /** 带位置的违规（decorations 标注用） */
+  /** 带位置的违规（decorations 标注用；pos 越界自动忽略） */
   violationAt(pos: number, message: string, level?: 'warning' | 'error'): void
+  /** 设置当前规则身份（service 执行前调用，用于违规归属） */
+  setRule(id: string, label: string): void
+}
+
+/** 校验结果（一次运行的全部违规） */
+export interface Violation {
+  /** 规则 id */
+  ruleId: string
+  /** 规则名 */
+  label: string
+  message: string
+  level: 'warning' | 'error'
+  /** decorations 标注位置；null = 整体违规（仅面板/报告） */
+  pos: number | null
 }
 
 export interface Rule {

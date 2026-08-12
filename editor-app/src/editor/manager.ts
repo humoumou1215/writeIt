@@ -4,6 +4,7 @@
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
+import { $prose } from '@milkdown/kit/utils'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
@@ -18,11 +19,20 @@ import {
 } from './ref/app-plugin'
 import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
-import { state, nextTabId, toast } from '../state/store'
+import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings } from '../state/settings'
 import type { Tab } from '../state/store'
 import { featureConfigs } from './features'
 import { templateService } from '../template/service'
+import {
+  validateDecorationsPlugin,
+} from '../validate/plugin'
+import {
+  validateEditor,
+  getValidationResult,
+  hasStrictBlock,
+  clearValidation,
+} from '../validate/service'
 
 interface Instance {
   crepe: Crepe
@@ -32,6 +42,61 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+
+// M5：编辑防抖实时校验（1.5s；规则简单/文档小无所谓，大文档后续可配置关闭）
+const validationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+function scheduleDebouncedValidation(tabId: string, inst: Instance) {
+  const prev = validationTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  validationTimers.set(
+    tabId,
+    setTimeout(() => {
+      validationTimers.delete(tabId)
+      void validateEditor(inst.crepe.editor, tabId, { silent: true })
+    }, 1500)
+  )
+}
+
+// M5：校验面板点击违规跳转到文档位置（打开/激活标签 + 滚动到 pos）
+export async function scrollToPos(tabId: string, pos: number): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (!tab) return
+  if (state.activeTabId !== tabId) {
+    await openTab(tabId)
+  }
+  const inst = instances.get(tabId)
+  if (!inst) return
+  await new Promise((r) => setTimeout(r, 120))
+  try {
+    await inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const dom = view.domAtPos(Math.min(pos, view.state.doc.content.size))
+      const el = (dom.node as HTMLElement)?.closest?.('td, th, p, li, h1, h2, h3, h4, pre') ?? (dom.node as HTMLElement)
+      const pane = inst.el.classList.contains('editor-pane')
+        ? inst.el
+        : (inst.el.querySelector('.editor-pane') as HTMLElement | null)
+      if (pane && el) {
+        const elRect = el.getBoundingClientRect()
+        const paneRect = pane.getBoundingClientRect()
+        const target =
+          pane.scrollTop + (elRect.top - paneRect.top) - pane.clientHeight * 0.15
+        pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+      }
+    })
+  } catch {
+    /* 编辑器已销毁 */
+  }
+}
+
+// M5：手动重新校验活动标签（面板 ⟳ 按钮）
+export async function refreshValidation(): Promise<void> {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  const res = await validateEditor(inst.crepe.editor, state.activeTabId!, { silent: true })
+  const n = res.violations.length
+  if (n === 0) toast('校验通过：未发现违规', 'success')
+  else toast(`校验完成：${n} 项违规（${res.violations.filter((v) => v.level === 'error').length} 错误）`, 'error')
+}
 
 // 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
 ;(window as unknown as { __editorDebug?: unknown }).__editorDebug = () => {
@@ -247,6 +312,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   })
   // 注册引用机制自定义节点与 stringify handler（必须在 create 之前）
   crepe.editor.use(refPlugin)
+  // M5：校验 decorations（违规位置 ⚠ 标注；getResult 绑定当前标签）
+  crepe.editor.use($prose(() => validateDecorationsPlugin(() => getValidationResult(tabId))))
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
   })
@@ -255,6 +322,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // 两段式解析：异步物化引用（容错：失败不影响编辑器）
   void resolveRefs(crepe.editor)
   void refreshBrokenState(crepe.editor)
+  // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
+  void validateEditor(crepe.editor, tabId, { silent: true })
 
   const inst: Instance = { crepe, el: container, suppressing: false }
   instances.set(tabId, inst)
@@ -267,6 +336,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const nowDirty = md !== t.savedContent
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
+      // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
+      scheduleDebouncedValidation(tabId, inst)
     })
   })
 
@@ -300,6 +371,21 @@ export async function saveTab(tabId: string): Promise<boolean> {
     tab.dirty = false
     return true
   }
+  // M5 strict 门禁：先确保校验结果新鲜（文档可能已编辑），mode strict + error 违规 → 需确认
+  const result = await validateEditor(inst.crepe.editor, tabId, { silent: true })
+  if (hasStrictBlock(result)) {
+    const errs = result.violations.filter((v) => v.level === 'error')
+    const ok = await confirmDialog({
+      title: '校验失败，确定保存？',
+      message: `存在 ${errs.length} 个错误级违规（模式：strict）。\n${errs
+        .slice(0, 3)
+        .map((v) => `• ${v.message}`)
+        .join('\n')}${errs.length > 3 ? `\n…等 ${errs.length} 项` : ''}`,
+      confirmText: '仍然保存',
+      danger: true,
+    })
+    if (!ok) return false
+  }
   const md = inst.crepe.getMarkdown()
   try {
     await fs.writeFile(tab.path, md)
@@ -328,6 +414,8 @@ export async function saveActiveTab(): Promise<boolean> {
 export async function closeTab(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
+  // 关闭标签时清理校验结果（订阅面板/报告不残留）
+  clearValidation(tabId)
   if (tab.dirty) {
     const ok = await confirmDiscard(tab)
     if (!ok) return

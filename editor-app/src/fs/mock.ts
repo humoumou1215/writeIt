@@ -73,8 +73,11 @@ v0.1.0
 `,
   'template/demo/demo.rules.ts': `import type { ValidationContext, Rule } from '@milkdown-note/validate'
 
-// 校验模式：hint 默认不阻止保存（M5 ValidateService 消费）
+// 校验模式：hint = 仅提示标注不阻止保存（默认）；strict = 保存前校验失败需确认
 export const mode: 'hint' | 'strict' = 'hint'
+
+// 报告落盘（§5.2 通道③）：每次校验后写 markdown 报告
+export const report = { enabled: true, path: '.validate/report.md' }
 
 export const rules: Rule[] = [
   {
@@ -83,6 +86,28 @@ export const rules: Rule[] = [
     run(ctx: ValidationContext) {
       const table = ctx.findTableAfterHeading('## 需求')
       if (!table) return ctx.violation('缺少「需求」表格')
+      // 逐行检查：前置已填而后置为空 → 在该单元格位置标注（decorations 通道）
+      table.dataRows().forEach((row, i) => {
+        const prev = row.cell(0).text().trim()
+        const next = row.cell(1).text().trim()
+        if (prev && !next) {
+          ctx.violationAt(
+            row.cell(1).pos,
+            \`第 \${i + 1} 行：前置已填写「\${prev}」，后置不能为空\`,
+            'warning'
+          )
+        }
+      })
+    },
+  },
+  {
+    id: 'require-version',
+    label: '必须存在「## 版本」章节',
+    run(ctx: ValidationContext) {
+      const v = ctx.findHeading('## 版本')
+      if (!v) return ctx.violation('缺少「## 版本」章节（版本号应记录在模板约定位置）', 'error')
+      const line = ctx.findText(/^v\\d/)
+      if (!line) ctx.violation('「## 版本」后缺少版本号（形如 v0.1.0）', 'warning')
     },
   },
 ]

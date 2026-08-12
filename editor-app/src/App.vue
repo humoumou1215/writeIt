@@ -23,6 +23,7 @@ import FileTree from './components/FileTree.vue'
 import NewInput from './components/NewInput.vue'
 import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
+import ValidatePanel from './components/ValidatePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
@@ -297,6 +298,7 @@ async function onOpenDir() {
     <!-- 浮层 -->
     <SettingsModal v-if="state.settingsOpen" @close="state.settingsOpen = false" />
     <ConfirmDialog />
+    <ValidatePanel />
     <ContextMenu @action="onMenuAction" />
     <TemplatePicker
       v-if="state.templatePick !== null"

@@ -119,3 +119,15 @@ body:has(.milkdown .ref-file-block.readonly:hover) .block-handle,
 body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
   display: none !important;
 }
+
+/* M5：校验 decorations（违规位置 ⚠ 徽标；不写入文档，保存即消失） */
+.validate-mark {
+  display: inline-block;
+  margin: 0 1px;
+  color: var(--chrome-warning, #b58900);
+  font-weight: 700;
+  cursor: help;
+}
+.validate-mark[data-level='error'] {
+  color: var(--chrome-error, #ba1a1a);
+}

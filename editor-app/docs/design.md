@@ -381,8 +381,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M4 已完成并全量回归通过**；M5（ValidateService）待做。
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
+> 状态：**M1-M5 已完成并全量回归通过**。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、**m5 9/9、m5-strict 3/3**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
 
 ### 里程碑状态
 
@@ -390,7 +390,7 @@ file_block : block,        content: 'block+',                    // ![[…]]
 2. **M2 触发菜单 ✅**：`@`/`[[`/`![[` 触发 + 三级递进菜单（模式选择器 / 文件树逐级发现 / 实体级懒加载）
 3. **M3 文件树联动 ✅**：chip 点击跳转（#片段平滑滚动）、断链检测+重选菜单、重命名引用联动、只读事务守卫
 4. **M4 模板机制 + 实体级 ✅**：TemplateService 双域扫描、esbuild-wasm 运行时加载 rules/suggest、`/` 菜单「模板」组、ref 菜单第二级实体（suggest 对象 + Obsidian 标题）、基于模板新建
-5. **M5 ValidateService ← 待做**：rules.ts 执行 + 三通道呈现（decorations 标注 / 聚合面板 / 报告落盘）+ strict 门禁
+5. **M5 ValidateService ✅**：rules.ts 执行 + 三通道呈现（decorations 标注 / 聚合面板 / 报告落盘）+ strict 门禁
 
 ### M4 完成清单（含用户反馈修复轮次）
 
@@ -421,9 +421,22 @@ file_block : block,        content: 'block+',                    // ![[…]]
 11. **esbuild-wasm**：初始化 + 首个 transform 各 ~450ms 一次性开销 → 启动后台预热
 12. **mock 示例升级**：SEED_VERSION 版本化 + 演示核心文件跨版本强制覆盖；`window.__mockFsDebug()` 诊断钩子
 
+### M5 实现记录（ValidateService）
+
+- `src/validate/`：service（执行/结果缓存/订阅广播/报告落盘）、validate-context（doc → 结构查询上下文）、plugin（decorations）
+- 类型补全：ValidationContext 完整（findTableAfterHeading/findHeading/findText/allText + violation/violationAt + TableContext/TableRow/TableCell）；Violation 结果类型
+- **三通道**：① decorations——`validateDecorationsPlugin`（$prose 包装 + PluginKey），违规位置 ⚠ widget（level 分色 + title 提示），service 完成后空事务 `setMeta('validateRefresh')` 触发重算，不写入 doc（保存即消失）；② 聚合面板——`ValidatePanel.vue` 浮动右下角（错误/警告计数、违规列表、点击跳转 scrollToPos、⟳ 刷新），无 doctype 时引导提示；③ 报告——`report = { enabled, path }` 声明 → 校验后写 markdown 报告（`.validate/report.md`）
+- **触发时机**：打开文档（mountEditor 后 silent）+ 编辑防抖（1.5s，markdownUpdated 挂载点；§5.1 默认关闭 → v1 内置，后续可加开关）+ 保存前（saveTab 重新校验保证新鲜）
+- **strict 门禁**：saveTab 里 `hasStrictBlock`（mode strict + error 违规）→ ConfirmDialog「校验失败，确定保存？」（可取消/仍然保存）；hint 模式不阻止
+- **§5.4 引用交互**：collect() 跳过 file_block 物化内容（源文件按自己 doctype 校验）；object_ref 不参与实时校验
+- **doctype 提取坑**：首行 `doctype:<value>` 被 M1 自定义 doctype 节点解析（textContent 为空！）→ 从 `node.attrs.value` 提取，不能从文本
+- **超时防护**：单条规则 >2s 标记 stale（同步 run 无法中断，仅告警跳过结果归属）
+- **demo.rules.ts**：需求表前置/后置联动（violationAt 单元格级标注）+ 必须存在版本章节（error 级）；mode/report 导出演示
+- 测试：m5-e2e 9/9（三通道 + 编辑触发 + hint 保存不阻止）、m5-strict 3/3（严格模式弹确认/取消不保存/确认仍保存）
+
 ### 记录缺口 / 待办
 
-- **M5**：ValidateService（rules 执行、decorations、聚合面板、报告、strict 门禁）
+- 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）
 - 占位符 `{{title}}` chip 渲染（v1 原样文本）
 - 全局模板域真实文件系统（外部目录需 Rust 命令）
 - 已打开编辑器不感知模板注册表变更（重开标签生效）
