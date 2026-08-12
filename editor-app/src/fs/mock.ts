@@ -231,8 +231,12 @@ function load(): MockData {
     const raw = localStorage.getItem(KEY)
     if (raw) {
       const data = JSON.parse(raw) as MockData
-      // 版本 < 2：合并模板示例等新文件（仅补缺，不覆盖用户改动）
-      if ((data.seededVersion ?? 1) < SEED_VERSION) {
+      // 版本旧 或 模板示例缺失 → 补缺（仅补缺失文件，不覆盖用户改动）。
+      // 兜底条件加「模板 demo.md 不存在」：防止旧数据（seededVersion=2 但缺模板）一直缺模板
+      const needMerge =
+        (data.seededVersion ?? 1) < SEED_VERSION ||
+        !('template/demo/demo.md' in (data.files ?? {}))
+      if (needMerge) {
         for (const [path, content] of Object.entries(SAMPLE)) {
           if (!(path in data.files)) data.files[path] = content
         }
@@ -260,6 +264,22 @@ function load(): MockData {
 
 function persist(data: MockData) {
   localStorage.setItem(KEY, JSON.stringify(data))
+}
+
+/** 诊断钩子（用户反馈 template 目录空时，可复制 console 输出提供） */
+;(window as unknown as { __mockFsDebug?: unknown }).__mockFsDebug = () => {
+  const data = load()
+  const tplFiles = Object.keys(data.files).filter((p) => p.startsWith('template/'))
+  const dirs = data.dirs.filter((d) => d.startsWith('template'))
+  console.log('[mock-fs] seededVersion=', data.seededVersion, 'dirs(template)=', JSON.stringify(dirs))
+  console.log('[mock-fs] 模板文件数=', tplFiles.length, '→', JSON.stringify(tplFiles.slice(0, 10)))
+  console.log('[mock-fs] 总文件数=', Object.keys(data.files).length)
+  return {
+    seededVersion: data.seededVersion,
+    templateFiles: tplFiles,
+    templateDirs: dirs,
+    totalFiles: Object.keys(data.files).length,
+  }
 }
 
 function buildTree(data: MockData, showAll: boolean): FsEntry[] {

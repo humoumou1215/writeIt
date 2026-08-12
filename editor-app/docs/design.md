@@ -415,6 +415,14 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 2（用户反馈五问题）**：
+
+1. **数据/template 目录回车后无匹配**：`treeChildren` 的 walk 未命中返回 `[]`（真值）→ 第一个目录未命中就短路返回，只有第一个目录能进入 → 改为未命中返回 `null` + `found !== null` 判断
+2. **中文输入法符号支持**：全角 `＠！【［】］` 归一化为半角后参与触发检测（`normalizeTriggers`，1:1 映射偏移不变；`recentTyped` 同步归一化）
+3. **实体级引用体验**：根因是问题 1 的导航 bug（进不了子目录）；修复后 `@` → 目录 → 文件（有 doctype+suggest 如 笔记/周报）→ Enter 进入实体级
+4. **快捷键调整**：Tab 切换模式；← 过滤模式清空过滤词回树 / 树模式返回上级（`back()` 只删过滤字符保留触发词）；→ 进入 hover 目录；Enter 选中（目录进入/文件插入）；Backspace 保留返回上级
+5. **template 目录空（旧数据）**：合并条件增加「模板示例缺失」兜底（`template/demo/demo.md` 不在数据中就补缺）；新增 `window.__mockFsDebug()` 诊断钩子（返回 seededVersion/模板文件清单/总数，供用户复制 console 输出）
+
 ## 12. 未来工作（v2）
 
 - 模板继承（extends）与规则合并优先级

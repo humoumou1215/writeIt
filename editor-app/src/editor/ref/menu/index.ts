@@ -79,7 +79,27 @@ interface TriggerMatch {
   start: number
 }
 
-function matchTrigger(text: string): TriggerMatch | null {
+// 全角符号 → 半角（中文输入法输出的 ＠！【 等也能触发对应功能）
+const FULLWIDTH_MAP: Record<string, string> = {
+  '＠': '@',
+  '！': '!',
+  '【': '[',
+  '［': '[',
+  '】': ']',
+  '］': ']',
+}
+
+function normalizeTriggers(text: string): string {
+  let out = text
+  for (const [fw, hw] of Object.entries(FULLWIDTH_MAP)) {
+    if (out.includes(fw)) out = out.split(fw).join(hw)
+  }
+  return out
+}
+
+function matchTrigger(raw: string): TriggerMatch | null {
+  // 检测层归一化全角符号（1:1 字符映射，偏移不变）；文档文本保持原样
+  const text = normalizeTriggers(raw)
   // 收集全部候选触发词，取「终点离光标最近」者（同终点取更长更具体的触发词）。
   // 这样段落里更早的旧 [[ 不会抢占新输入的 @ / [[（触发词后不能有 ] = 已完成引用）。
   const cands: TriggerMatch[] = []
@@ -293,13 +313,15 @@ class RefMenuView implements PluginView {
         }
         const m = matchTrigger(text)
         if (!m) return false
-        // 触发词必须是刚输入的（query 在最近键入窗口内；空 query 要求触发字符也在窗口内）
+        // 触发词必须是刚输入的（query 在最近键入窗口内；空 query 要求触发字符也在窗口内）。
+        // recentTyped 需归一化全角符号（中文输入法输入的 ！【 等）
+        const recentNorm = normalizeTriggers(refMenuState.recentTyped)
         if (m.query) {
-          if (!refMenuState.recentTyped.includes(m.query)) return false
+          if (!recentNorm.includes(m.query)) return false
         } else if (m.kind === '![[') {
-          if (!refMenuState.recentTyped.includes('![')) return false
+          if (!recentNorm.includes('![')) return false
         } else if (m.kind === '[[') {
-          if (!refMenuState.recentTyped.includes('[[')) return false
+          if (!recentNorm.includes('[[')) return false
         }
         // 触发词变化（如 [[ → ![[ 或新开菜单）才重置模式；用户手动切换后保持
         if (refMenuState.triggerKind !== m.kind) {
@@ -514,11 +536,30 @@ class RefMenuView implements PluginView {
     refMenuState.query = ''
   }
 
+
+
   /** 返回上级目录 */
   goUp = () => {
     refMenuState.currentDir = refMenuState.currentDir.includes('/')
       ? refMenuState.currentDir.slice(0, refMenuState.currentDir.lastIndexOf('/'))
       : ''
+  }
+
+  /**
+   * ← 键：过滤模式 → 一次性删除过滤字符（保留触发词）回到树模式；
+   * 树模式 → 返回上级目录
+   */
+  back = () => {
+    const q = refMenuState.query
+    const kindLen = refMenuState.triggerKind?.length ?? 0
+    if (q && refMenuState.triggerTo > refMenuState.triggerFrom + kindLen) {
+      const tr = this.#view.state.tr
+      tr.delete(refMenuState.triggerFrom + kindLen, refMenuState.triggerTo)
+      this.#view.dispatch(tr)
+      // shouldShow 会重新评估：触发词保留 → 回树模式
+      return
+    }
+    this.goUp()
   }
 
   /** 进入实体级（M4 suggest 服务填充） */

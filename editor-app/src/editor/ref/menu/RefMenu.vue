@@ -58,10 +58,11 @@ const treeChildren = computed<MenuEntry[]>(() => {
       if (e.kind === 'dir' && e.path === dir) return e.children ?? []
       if (e.kind === 'dir' && e.children) {
         const found = walk(e.children, dir)
-        if (found) return found
+        // 未命中必须返回 null（返回 [] 会被调用方当成"命中空目录"而短路）
+        if (found !== null) return found
       }
     }
-    return []
+    return null
   }
   const list = walk(props.state.tree, props.state.currentDir) ?? []
   return list
@@ -202,10 +203,26 @@ function onKeydown(e: KeyboardEvent) {
     hoverIndex.value = 0
     return
   }
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab') {
+  if (e.key === 'Tab') {
     e.preventDefault(); e.stopPropagation()
-    console.log('[menu-key] 切模式', e.key, '当前=', props.state.mode)
-    cycleMode(e.key === 'ArrowLeft' ? -1 : 1)
+    cycleMode(1)
+    return
+  }
+  if (e.key === 'ArrowLeft') {
+    // ←：过滤模式清空过滤词回树；树模式返回上级目录
+    e.preventDefault(); e.stopPropagation()
+    props.menu.back()
+    hoverIndex.value = 0
+    return
+  }
+  if (e.key === 'ArrowRight') {
+    // →：进入 hover 的目录（文件无下级，无操作）
+    e.preventDefault(); e.stopPropagation()
+    const entry = entries.value[hoverIndex.value]
+    if (entry && entry.kind === 'dir') {
+      props.menu.enterDir(entry.path)
+      hoverIndex.value = 0
+    }
     return
   }
   if (e.key === 'ArrowDown') {
