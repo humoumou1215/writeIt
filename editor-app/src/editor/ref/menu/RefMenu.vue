@@ -14,7 +14,7 @@ const props = defineProps<{
   menu: {
     select: (path: string, mode?: RefMode) => void
     selectFile: (path: string, mode: RefMode) => void
-    selectEntity: (objectId: string) => void
+    selectEntity: (entityId: string, kind: 'file' | 'object' | 'heading') => void
     setMode: (mode: RefMode) => void
     hide: () => void
     enterDir: (dir: string) => void
@@ -29,7 +29,7 @@ const props = defineProps<{
     tree: FsEntry[]
     currentDir: string
     selectedPath: string | null
-    entities: { id: string; label: string }[]
+    entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]
   }
 }>()
 
@@ -173,10 +173,14 @@ function onKeydown(e: KeyboardEvent) {
   const shown = host.value?.closest('[data-show]')?.getAttribute('data-show')
   if (shown === 'false') return
   if (inEntity.value) {
-    // 第二级：实体模式（M4 填充），←→/Esc/Backspace 返回文件级
-    if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // 第二级：实体模式（与目录展开同款视觉），Esc 关闭，←/Backspace 返回文件级
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation()
+      props.menu.hide()
+    } else if (e.key === 'Backspace' || e.key === 'ArrowLeft') {
       e.preventDefault(); e.stopPropagation()
       props.menu.closeEntities()
+      hoverIndex.value = 0
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); e.stopPropagation()
       const delta = e.key === 'ArrowDown' ? 1 : -1
@@ -185,7 +189,7 @@ function onKeydown(e: KeyboardEvent) {
     } else if (e.key === 'Enter') {
       e.preventDefault(); e.stopPropagation()
       const obj = props.state.entities[hoverIndex.value]
-      if (obj) props.menu.selectEntity(obj.id)
+      if (obj) props.menu.selectEntity(obj.id, obj.kind)
     }
     return
   }
@@ -216,11 +220,15 @@ function onKeydown(e: KeyboardEvent) {
     return
   }
   if (e.key === 'ArrowRight') {
-    // →：进入 hover 的目录（文件无下级，无操作）
+    // →：目录 → 进入下级；文件 → 进入实体级（标题/对象）
     e.preventDefault(); e.stopPropagation()
     const entry = entries.value[hoverIndex.value]
-    if (entry && entry.kind === 'dir') {
+    if (!entry) return
+    if (entry.kind === 'dir') {
       props.menu.enterDir(entry.path)
+      hoverIndex.value = 0
+    } else {
+      props.menu.selectFile(entry.path, props.state.mode)
       hoverIndex.value = 0
     }
     return
@@ -278,32 +286,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, { capture
           >
             <Icon :icon="entry.kind === 'dir' ? dirSvg : fileSvg" />
             <span>{{ entry.label }}</span>
-            <span v-if="entry.kind === 'dir'" class="ref-dir-arrow">▸</span>
+            <span class="ref-dir-arrow">{{ entry.kind === 'dir' ? '▸' : '›' }}</span>
           </li>
         </ul>
         <div v-if="!entries.length" class="ref-menu-empty">无匹配</div>
       </div>
     </div>
 
-    <!-- 第二级：模板实体（M4 suggest 服务填充） -->
-    <div v-else class="menu-groups">
+    <!-- 第二级：实体列表（suggest 对象 / Obsidian 标题）——与目录展开同款视觉 -->
+    <div v-else class="menu-groups" @pointermove="onPointerMove">
       <div class="menu-group">
-        <h6>📄 {{ state.selectedPath }} · 模板对象</h6>
+        <h6>📄 {{ state.selectedPath }} /</h6>
         <ul>
           <li
             v-for="(obj, i) in state.entities"
-            :key="obj.id"
+            :key="obj.kind + ':' + obj.id"
             :data-index="i"
             :class="{ hover: hoverIndex === i }"
             @pointerenter="getOnPointerEnter(i)"
             @pointerdown="activeIndex = i"
-            @pointerup="activeIndex = null; menu.selectEntity(obj.id)"
+            @pointerup="activeIndex = null; menu.selectEntity(obj.id, obj.kind)"
           >
-            <Icon :icon="objSvg" />
+            <Icon :icon="obj.kind === 'file' ? fileSvg : obj.kind === 'object' ? objSvg : headingSvg" />
             <span>{{ obj.label }}</span>
+            <span class="ref-dir-arrow">{{ obj.kind === 'object' ? '◆' : obj.kind === 'heading' ? '#' : '' }}</span>
           </li>
         </ul>
-        <div v-if="!state.entities.length" class="ref-menu-empty">无模板对象</div>
+        <div v-if="!state.entities.length" class="ref-menu-empty">无标题/对象可引用</div>
       </div>
     </div>
   </div>
@@ -343,4 +352,6 @@ const fileSvg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>`
 const objSvg = `
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H5V5h14v14zM9 7H7v2h2V7zm4 0h-2v2h2V7zm4 0h-2v2h2V7zM9 11H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zM9 15H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/></svg>`
+const headingSvg = `
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h2v6h10V4h2v16h-2v-6H7v6H5V4z"/></svg>`
 </script>

@@ -181,6 +181,34 @@ class TemplateService {
     return null
   }
 
+  /**
+   * 读取文件并返回标题实体列表（Obsidian 模式，设计文档 §6.2）：
+   * 无 suggest.ts 的文件按标题链接引用（# 标题）。
+   * 返回 [{ id: 标题文本, label: 标题文本, kind: 'heading' }]；读取失败返回 null。
+   */
+  async loadHeadingsForFile(path: string): Promise<Array<{ id: string; label: string; kind: 'heading' }> | null> {
+    const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
+    for (const c of candidates) {
+      try {
+        const content = await fs.readFile(c)
+        const headings: Array<{ id: string; label: string; kind: 'heading' }> = []
+        for (const line of content.split('\n')) {
+          const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line)
+          if (m) {
+            const text = m[2].trim()
+            if (text && !text.startsWith('doctype:')) {
+              headings.push({ id: text, label: text, kind: 'heading' })
+            }
+          }
+        }
+        return headings
+      } catch {
+        /* 继续尝试下一候选 */
+      }
+    }
+    return null
+  }
+
   /** 新建文件：从模板复制内容（继承 doctype → 自动关联 rules/suggest） */
   async createFromTemplate(path: string, doctype: string): Promise<void> {
     const tpl = this.get(doctype)

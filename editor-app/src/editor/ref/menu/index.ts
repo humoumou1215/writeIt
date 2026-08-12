@@ -16,7 +16,6 @@ import type { FsEntry } from '../../../fs/types'
 import { materializeBlock } from '../resolve'
 import { refreshBrokenState } from '../app-plugin'
 import { templateService } from '../../../template/service'
-import type { SuggestObject } from '../../../template/types'
 import RefMenu from './RefMenu.vue'
 
 export const refMenu = slashFactory('REF_MENU')
@@ -35,8 +34,8 @@ export interface RefMenuState {
   currentDir: string
   /** 第二级：选中文件（有 suggest 时进入实体级） */
   selectedPath: string | null
-  /** 第二级：模板对象列表（M4 suggest 服务填充） */
-  entities: { id: string; label: string }[]
+  /** 第二级：实体列表（首项=文件本身，其后 suggest 对象 / Obsidian 标题） */
+  entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]
   /** 最近键入的字符（验证触发词是刚输入的，避免段落里旧 [[ 误触发） */
   recentTyped: string
   /** 当前触发词类型（仅触发词变化时重置模式，不覆盖用户手动选择） */
@@ -134,11 +133,17 @@ function getTextBeforeCursor(view: EditorView): string | null {
 
 // ---------- 插入 ----------
 
-function insertFileRef(view: EditorView, path: string, triggerFrom: number, triggerTo: number) {
+function insertFileRef(
+  view: EditorView,
+  path: string,
+  triggerFrom: number,
+  triggerTo: number,
+  fragment?: string | null
+) {
   const schema = view.state.schema
   const tr = view.state.tr
   tr.delete(triggerFrom, triggerTo)
-  const node = schema.nodes.file_ref.create({ path })
+  const node = schema.nodes.file_ref.create({ path, fragment: fragment ?? null })
   tr.insert(triggerFrom, node)
   // 光标放到节点之后
   const pos = tr.doc.resolve(triggerFrom + node.nodeSize)
@@ -450,14 +455,34 @@ class RefMenuView implements PluginView {
   }
 
   /**
-   * M4：选中文件 → 检查目标 doctype + suggest；命中则进入实体级，否则按普通文件插入
-   * （异步检查，容错：失败回落为普通插入）
+   * 选中文件 → 进入实体级（设计文档 §6.2）：
+   *   有 suggest.ts → 模板对象实体；无 suggest → Obsidian 标题实体；
+   *   文件不存在/无内容 → 回落为普通插入
    */
   selectFile = async (path: string, mode: RefMode) => {
+    // 替换模式 / 嵌入模式（![[）：无实体级语义，直接插入/替换（标题/对象只针对链接）
+    if (refMenuState.replacePos != null || mode !== 'link') {
+      this.select(path, mode)
+      return
+    }
     try {
+      // 实体级首项 = 文件本身（整文件链接，Obsidian 模式）
+      const fileSelf = {
+        id: '',
+        label: path.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? path,
+        kind: 'file' as const,
+      }
       const objs = await templateService.loadSuggestForFile(path)
       if (objs && objs.length) {
-        this.openEntities(path, objs)
+        this.openEntities(
+          path,
+          [fileSelf, ...objs.map((o) => ({ id: o.id, label: o.label, kind: 'object' as const }))]
+        )
+        return
+      }
+      const headings = await templateService.loadHeadingsForFile(path)
+      if (headings && headings.length) {
+        this.openEntities(path, [fileSelf, ...headings])
         return
       }
     } catch {
@@ -466,8 +491,8 @@ class RefMenuView implements PluginView {
     this.select(path, mode)
   }
 
-  /** 选择实体（第二级）：插入 [[path#object]] 并触发 resolve 定型 */
-  selectEntity = (objectId: string) => {
+  /** 选择实体（第二级）：file → [[path]]；heading → [[path#标题]]；object → [[path#对象]] */
+  selectEntity = (entityId: string, kind: 'file' | 'object' | 'heading') => {
     const path = refMenuState.selectedPath
     if (!path) return
     const { triggerFrom, triggerTo, replacePos } = refMenuState
@@ -477,10 +502,15 @@ class RefMenuView implements PluginView {
       this.hide()
       return
     }
-    insertObjectRef(this.#view, path, objectId, triggerFrom, triggerTo)
-    this.hide()
-    // 触发 resolve 阶段填充 resolvedText
-    void import('../resolve').then((m) => m.resolveRefs(this.#editor))
+    if (kind === 'object') {
+      insertObjectRef(this.#view, path, entityId, triggerFrom, triggerTo)
+      this.hide()
+      // 触发 resolve 阶段填充 resolvedText
+      void import('../resolve').then((m) => m.resolveRefs(this.#editor))
+    } else {
+      insertFileRef(this.#view, path, triggerFrom, triggerTo, kind === 'heading' ? entityId : null)
+      this.hide()
+    }
   }
 
   /** 替换模式：按 replacePath 重查节点并替换（避免位置漂移） */
@@ -562,10 +592,10 @@ class RefMenuView implements PluginView {
     this.goUp()
   }
 
-  /** 进入实体级（M4 suggest 服务填充） */
-  openEntities = (path: string, objects: SuggestObject[]) => {
+  /** 进入实体级（suggest 对象 / Obsidian 标题） */
+  openEntities = (path: string, entities: { id: string; label: string; kind: 'file' | 'object' | 'heading' }[]) => {
     refMenuState.selectedPath = path
-    refMenuState.entities = objects.map((o) => ({ id: o.id, label: o.label }))
+    refMenuState.entities = entities
   }
 
   /** 返回文件级 */

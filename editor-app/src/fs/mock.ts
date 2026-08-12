@@ -89,7 +89,7 @@ export const rules: Rule[] = [
 `,
   'template/demo/demo.suggest.ts': `import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
 
-// 可被 [[path#greeting]] / [[path#version]] 引用的模板对象
+// 模板对象：可被 [[path#对象id]] 引用；名字（label）与展示内容（resolve）完全在 TS 中自定义
 export const objects: SuggestObject[] = [
   {
     id: 'greeting',
@@ -106,6 +106,28 @@ export const objects: SuggestObject[] = [
       return ctx.paragraphAfterHeading(2, /^版本/) ?? null
     },
   },
+  {
+    id: 'todo-count',
+    label: '待办数量',
+    resolve(ctx: SuggestContext) {
+      return ctx.taskCount() ?? null
+    },
+  },
+  {
+    id: 'progress',
+    label: '待办完成率',
+    resolve(ctx: SuggestContext) {
+      // 动态统计：2/5 这种
+      return ctx.taskProgress() ?? null
+    },
+  },
+  {
+    id: 'first-task',
+    label: '首个待办',
+    resolve(ctx: SuggestContext) {
+      return ctx.firstTask() ?? null
+    },
+  },
 ]
 `,
   '笔记/周报.md': `doctype:demo
@@ -120,7 +142,10 @@ v0.2.1
 
 ## 待办
 
-- [ ] 模板服务
+- [x] 引用语法与节点
+- [x] 触发菜单
+- [x] 文件树联动
+- [ ] 模板机制
 - [ ] 校验服务
 `,
   '引用演示.md': `doctype:demo
@@ -150,6 +175,12 @@ v0.2.1
 周报问候语：[[笔记/周报#greeting]]
 
 周报版本号：[[笔记/周报#version]]
+
+周报待办数：[[笔记/周报#todo-count]]
+
+周报完成率：[[笔记/周报#progress]]
+
+首个待办：[[笔记/周报#first-task]]
 
 ## 字面量转义
 
@@ -224,7 +255,18 @@ interface MockData {
   seededVersion?: number
 }
 
-const SEED_VERSION = 2
+const SEED_VERSION = 3
+
+/**
+ * 版本 3：演示核心文件（模板 suggest 样例 / 周报数据 / 引用演示页）强制更新，
+ * 让旧数据也能体验新样例。这些是演示基础设施；用户改过会被覆盖（可接受）。
+ */
+const FORCE_UPDATE_PATHS = [
+  'template/demo/demo.suggest.ts',
+  '笔记/周报.md',
+  '引用演示.md',
+  'template/demo/demo.md',
+]
 
 function load(): MockData {
   try {
@@ -237,8 +279,13 @@ function load(): MockData {
         (data.seededVersion ?? 1) < SEED_VERSION ||
         !('template/demo/demo.md' in (data.files ?? {}))
       if (needMerge) {
+        const prev = data.seededVersion ?? 1
         for (const [path, content] of Object.entries(SAMPLE)) {
           if (!(path in data.files)) data.files[path] = content
+          // 演示核心文件：跨版本强制覆盖（suggest 样例等）
+          else if (prev < SEED_VERSION && FORCE_UPDATE_PATHS.includes(path)) {
+            data.files[path] = content
+          }
         }
         for (const dir of SAMPLE_DIRS) {
           if (!data.dirs.includes(dir)) data.dirs.push(dir)

@@ -12,6 +12,16 @@ export interface SuggestContext {
   headingText(level: number, re: RegExp): string | null
   /** 取指定标题级别、匹配正则的标题之后的第一个段落文本；无匹配返回 null */
   paragraphAfterHeading(level: number, re: RegExp): string | null
+  /** 任务列表数量（- [ ] / - [x]；re 可选过滤）；无则 null */
+  taskCount(re?: RegExp): string | null
+  /** 任务完成率（如 "2/5"）；无任务则 null */
+  taskProgress(re?: RegExp): string | null
+  /** 首个任务文本（re 可选过滤）；无则 null */
+  firstTask(re?: RegExp): string | null
+  /** 首个表格指定单元格文本（re 可选过滤）；无则 null */
+  firstTableCell(rowIdx: number, colIdx: number, re?: RegExp): string | null
+  /** 全部段落纯文本拼接 */
+  allText(): string
 }
 
 /** suggest.ts 定义的一个可被 [[path#object]] 引用的对象 */

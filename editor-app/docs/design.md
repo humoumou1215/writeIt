@@ -415,6 +415,14 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 3（实体级完善，用户三需求）**：
+
+1. **标题实体（Obsidian 模式，§6.2 落地）**：无 suggest.ts 的文件选中后进入实体级，列表 = 文件本身 + 标题列表（`# 标题`，从 md 提取）——选标题插入 `[[path#标题]]`（file_ref + fragment）；有 suggest 的文件 = 文件本身 + 模板对象
+2. **UI 丝滑化**：实体级与目录展开同款视觉（h6 路径风格 `📄 笔记/周报 /` + 同款列表）；实体/标题/文件用小图标区分（◆/#/📄）；文件条目显示 › 箭头提示可展开；→ 在文件上同样进入实体级；← 返回文件级
+3. **suggest 自定义能力扩展**：SuggestContext 新增 `taskCount` / `taskProgress`（任务完成率）/ `firstTask` / `firstTableCell`（表格单元格）/ `allText`；demo 模板新增 3 个对象样例：待办数量、完成率（3/5 动态统计）、首个待办——名字（label）与展示内容（resolve）全部在 TS 中自定义
+4. **嵌入/替换模式不进实体级**：`![[`（embed/embed-ro）与断链替换直接插入/替换（标题/对象仅对链接模式有意义）
+5. **示例升级**：SEED_VERSION=3，演示核心文件（suggest.ts/周报/引用演示）跨版本强制覆盖（用户旧数据可体验新样例）
+
 **M4 后续修复 2（用户反馈五问题）**：
 
 1. **数据/template 目录回车后无匹配**：`treeChildren` 的 walk 未命中返回 `[]`（真值）→ 第一个目录未命中就短路返回，只有第一个目录能进入 → 改为未命中返回 `null` + `found !== null` 判断
