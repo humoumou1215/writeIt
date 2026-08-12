@@ -1,7 +1,7 @@
 // localStorage 模拟文件系统 —— 无需任何宿主即可在浏览器里完整体验
 // 数据结构：{ files: { [path]: content }, dirs: string[] }
 import type { FileSystem, FsEntry, FsBackendKind } from './types'
-import { isEditableFile, dirName, baseName } from './types'
+import { shouldShowInTree, dirName, baseName } from './types'
 import demoMd from '../editor/demo.md?raw'
 import mermaidMd from '../editor/mermaid.md?raw'
 
@@ -277,7 +277,7 @@ function buildTree(data: MockData, showAll: boolean): FsEntry[] {
   }
   for (const dir of data.dirs) ensureDir(dir)
   for (const path of Object.keys(data.files)) {
-    if (!showAll && !isEditableFile(path)) continue
+    if (!shouldShowInTree(path, baseName(path), showAll)) continue
     const parent = ensureDir(dirName(path))
     parent.children!.push({ name: baseName(path), path, kind: 'file' })
   }

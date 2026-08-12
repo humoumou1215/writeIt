@@ -401,6 +401,20 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 **M4 记录缺口**：① 占位符 `{{title}}` 以文本原样显示（chip 渲染待做）；② 全局模板域真实文件系统（外部目录）需 Rust 命令，v1 仅 mock 示例；③ 已打开编辑器不感知模板注册表变更（重开标签生效）
 
+**M4 后续修复（用户反馈四问题）**：
+
+1. **文件树 demo 目录无文件**：模板配套 `.rules.ts`/`.suggest.ts` 被 showAllFiles=false 隐藏 → 新增 `shouldShowInTree()`：模板域（`template/`）文件始终显示（mock/web/tauri 三端一致）
+2. **@ 菜单 Enter 目录直接插入文件（多标签双重触发）**：多标签时多个菜单实例共享 window keydown 监听 → 加 `hasFocus()` + 容器 data-show 双守卫，仅活动编辑器且可见的实例处理按键
+3. **文档尾部 @ 菜单位置在屏幕外**：
+   - 根因①：菜单内容 v-if 渲染在定位后才显示 → flip 测量到 0 高 → 改为**树加载完成后手动 computePosition 重定位**（fixed 策略 + flip/shift，绕开 provider.update 避免递归）
+   - 根因②：`.editor-pane`（滚动容器）与 offsetParent `.milkdown` 不一致 → absolute 坐标错乱 → `strategy: 'fixed'` 视口定位
+   - 根因③：`matchTrigger` 固定优先级使段落旧 `[[` 抢占新输入 `@` → 改为收集候选取「终点离光标最近」者
+   - 根因④：shouldShow 每次更新重置 mode 覆盖用户手动切换 → 加 `triggerKind`，仅触发词变化时重置
+4. **@ 菜单卡顿（性能）**：
+   - 锚点统计：`[menu-perf]` 控制台 + `window.__refMenuPerf`（每次打开耗时分布）—— 菜单打开 ~20-50ms（无卡点）
+   - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
+   - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
+
 ## 12. 未来工作（v2）
 
 - 模板继承（extends）与规则合并优先级

@@ -35,6 +35,8 @@ onMounted(async () => {
   await refreshTree()
   // M4：启动即扫描模板注册表（斜杠菜单「模板」组 / 基于模板新建依赖）
   void import('./template/service').then((m) => m.templateService.ready())
+  // 性能：后台预热 esbuild-wasm（模板 TS 转译），避免首次 suggest 加载卡顿
+  void import('./template/ts-loader').then((m) => m.warmupTsLoader())
   ensureAutoSaveLoop()
   window.addEventListener('keydown', onKeydown)
   // 点击按钮后 blur，避免空格/回车再次激活按钮（编辑器里按空格是输入）

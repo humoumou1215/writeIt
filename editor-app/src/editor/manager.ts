@@ -64,7 +64,9 @@ const instances = new Map<string, Instance>()
     const view = ctx.get(editorViewCtx)
     const pos = view.state.doc.content.size
     view.dispatch(
-      view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos)))
+      view.state.tr
+        .setSelection(TextSelection.near(view.state.doc.resolve(pos)))
+        .scrollIntoView()
     )
   })
 }

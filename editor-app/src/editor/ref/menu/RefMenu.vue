@@ -20,6 +20,7 @@ const props = defineProps<{
     enterDir: (dir: string) => void
     goUp: () => void
     closeEntities: () => void
+    hasFocus: () => boolean
   }
   state: {
     visible: boolean
@@ -152,6 +153,7 @@ function cycleMode(delta: number) {
 }
 
 function runEntry(entry: MenuEntry) {
+  if (!entry) return
   if (entry.kind === 'dir') {
     // 过滤模式下 Enter 目录 → 进入该目录并清空过滤
     props.menu.enterDir(entry.path)
@@ -162,7 +164,13 @@ function runEntry(entry: MenuEntry) {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  console.log('[menu-key]', e.key, 'visible=', props.state.visible, 'focus=', props.menu.hasFocus())
   if (!props.state.visible) return
+  // 多标签时多个菜单实例共享 window 监听：
+  // 仅「本编辑器持有焦点 且 本容器可见」的实例处理，避免 Enter 双重触发（展开目录+插入文件）
+  if (!props.menu.hasFocus()) return
+  const shown = host.value?.closest('[data-show]')?.getAttribute('data-show')
+  if (shown === 'false') return
   if (inEntity.value) {
     // 第二级：实体模式（M4 填充），←→/Esc/Backspace 返回文件级
     if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -196,6 +204,7 @@ function onKeydown(e: KeyboardEvent) {
   }
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab') {
     e.preventDefault(); e.stopPropagation()
+    console.log('[menu-key] 切模式', e.key, '当前=', props.state.mode)
     cycleMode(e.key === 'ArrowLeft' ? -1 : 1)
     return
   }
@@ -286,7 +295,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, { capture
 <style>
 /* 容器由 SlashProvider 定位；class 与 crepe / 菜单一致，主题 CSS 直接生效 */
 .milkdown-ref-menu {
-  position: absolute;
+  /* fixed 由 SlashProvider strategy:'fixed' 决定（视口定位，随光标准确） */
+  position: fixed;
   z-index: 10;
 }
 .milkdown-ref-menu[data-show='false'] {

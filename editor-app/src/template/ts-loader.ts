@@ -22,6 +22,15 @@ function ensureEsbuild(): Promise<typeof import('esbuild-wasm')> {
   return esbuildPromise
 }
 
+/** 后台预热 esbuild-wasm（避免首次 suggest/rules 加载卡顿） */
+export function warmupTsLoader(): void {
+  void (async () => {
+    const esbuild = await ensureEsbuild()
+    // 首个 transform 有 ~450ms 一次性开销（内部编译器初始化），一并预热
+    await esbuild.transform('export const _warmup = 1', { loader: 'ts', format: 'cjs' })
+  })().catch(() => undefined)
+}
+
 /**
  * 读取并执行一个模板 TS 文件（rules.ts / suggest.ts）。
  * 返回模块导出对象；任何失败返回 null（调用方降级）。

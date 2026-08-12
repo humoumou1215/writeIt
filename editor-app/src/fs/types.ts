@@ -34,6 +34,15 @@ export function isEditableFile(name: string): boolean {
   return lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.txt')
 }
 
+/**
+ * 文件树过滤：showAll 时全显示；否则仅可编辑文件 + 模板域配套 TS（rules/suggest，可信区）
+ */
+export function shouldShowInTree(path: string, name: string, showAll: boolean): boolean {
+  if (showAll) return true
+  if (isEditableFile(name)) return true
+  return path.startsWith('template/')
+}
+
 export function joinPath(dir: string, name: string): string {
   return dir ? `${dir.replace(/\/+$/, '')}/${name}` : name
 }

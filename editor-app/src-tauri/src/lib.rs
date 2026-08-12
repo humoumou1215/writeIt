@@ -62,7 +62,7 @@ fn walk(dir: &Path, root: &Path, show_all: bool) -> Vec<FsEntry> {
           kind: "dir",
           children: Some(walk(&e.path(), root, show_all)),
         });
-      } else if show_all || is_editable(&name) {
+      } else if show_all || is_editable(&name) || rel.starts_with("template/") {
         entries.push(FsEntry {
           name,
           path: rel,

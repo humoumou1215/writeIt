@@ -6,6 +6,7 @@ import type { Ctx } from '@milkdown/kit/ctx'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node } from '@milkdown/kit/prose/model'
 import { SlashProvider, slashFactory } from '@milkdown/kit/plugin/slash'
+import { computePosition, flip, offset, shift } from '@floating-ui/dom'
 import { TextSelection, type EditorState, type PluginView } from '@milkdown/kit/prose/state'
 import { editorCtx } from '@milkdown/kit/core'
 import { createApp, reactive, type App } from 'vue'
@@ -38,6 +39,8 @@ export interface RefMenuState {
   entities: { id: string; label: string }[]
   /** 最近键入的字符（验证触发词是刚输入的，避免段落里旧 [[ 误触发） */
   recentTyped: string
+  /** 当前触发词类型（仅触发词变化时重置模式，不覆盖用户手动选择） */
+  triggerKind: '@' | '[[' | '![[' | null
   /** 替换模式：非空时 select 替换该位置上的节点（断链重选） */
   replacePos: number | null
   /** 替换模式的输入起点（光标位置，用于计算过滤词与替换范围） */
@@ -46,6 +49,7 @@ export interface RefMenuState {
   replacePath: string | null
 }
 
+;(window as unknown as { __refMenuState?: unknown }).__refMenuState = null
 export const refMenuState = reactive<RefMenuState>({
   visible: false,
   mode: 'link',
@@ -57,10 +61,12 @@ export const refMenuState = reactive<RefMenuState>({
   selectedPath: null,
   entities: [],
   recentTyped: '',
+  triggerKind: null,
   replacePos: null,
   replaceStart: 0,
   replacePath: null,
 })
+;(window as unknown as { __refMenuState?: unknown }).__refMenuState = refMenuState
 
 // ---------- 触发检测 ----------
 
@@ -74,24 +80,27 @@ interface TriggerMatch {
 }
 
 function matchTrigger(text: string): TriggerMatch | null {
-  // 取最后一个触发词（避免命中段落里更早的 [[），且触发词后不能有 ]（视为已完成引用）
-  // ![[ 优先（嵌入）
+  // 收集全部候选触发词，取「终点离光标最近」者（同终点取更长更具体的触发词）。
+  // 这样段落里更早的旧 [[ 不会抢占新输入的 @ / [[（触发词后不能有 ] = 已完成引用）。
+  const cands: TriggerMatch[] = []
   const embedIdx = text.lastIndexOf('![[')
   if (embedIdx >= 0 && !text.slice(embedIdx + 3).includes(']')) {
-    return { mode: 'embed', query: text.slice(embedIdx + 3), start: embedIdx, kind: '![[' }
+    cands.push({ mode: 'embed', query: text.slice(embedIdx + 3), start: embedIdx, kind: '![[' })
   }
-  // [[（链接）
   const linkIdx = text.lastIndexOf('[[')
   if (linkIdx >= 0 && !text.slice(linkIdx + 2).includes(']')) {
-    return { mode: 'link', query: text.slice(linkIdx + 2), start: linkIdx, kind: '[[' }
+    cands.push({ mode: 'link', query: text.slice(linkIdx + 2), start: linkIdx, kind: '[[' })
   }
   // @（边界感知：块首或前一字符为空白）
   const at = /(?:^|\s)@([^\s]*)$/.exec(text)
   if (at) {
     const atStart = text.length - at[1].length - 1
-    return { mode: 'link', query: at[1], start: atStart, kind: '@' }
+    cands.push({ mode: 'link', query: at[1], start: atStart, kind: '@' })
   }
-  return null
+  if (!cands.length) return null
+  const end = (t: TriggerMatch) => t.start + (t.kind?.length ?? 0)
+  cands.sort((a, b) => end(b) - end(a) || (b.kind?.length ?? 0) - (a.kind?.length ?? 0))
+  return cands[0]
 }
 
 function getTextBeforeCursor(view: EditorView): string | null {
@@ -256,6 +265,13 @@ class RefMenuView implements PluginView {
     this.#slashProvider = new SlashProvider({
       content: this.#content,
       debounce: 20,
+      // fixed 定位：滚动容器（.editor-pane）与 offsetParent（.milkdown）不一致时
+      // absolute 坐标会错乱（菜单不跟随光标）；fixed 直接视口定位。
+      // flip/shift：内容常驻渲染后尺寸真实，溢出时翻转到上方/避让边缘。
+      floatingUIOptions: {
+        strategy: 'fixed',
+        middleware: [flip({ padding: 8 }), shift({ padding: 8 }), offset(8)],
+      },
       shouldShow(this: SlashProvider, v: EditorView) {
         // 替换模式（断链重选）：query 取 replaceStart 到光标的文档文本（兼容 IME 组合输入）
         if (refMenuState.replacePos != null) {
@@ -285,18 +301,29 @@ class RefMenuView implements PluginView {
         } else if (m.kind === '[[') {
           if (!refMenuState.recentTyped.includes('[[')) return false
         }
-        refMenuState.mode = m.mode
+        // 触发词变化（如 [[ → ![[ 或新开菜单）才重置模式；用户手动切换后保持
+        if (refMenuState.triggerKind !== m.kind) {
+          refMenuState.mode = m.mode
+          refMenuState.triggerKind = m.kind
+        }
         refMenuState.query = m.query
         refMenuState.triggerFrom = sel.from - (text.length - m.start)
         refMenuState.triggerTo = sel.from
+        perfMark('trigger')
         return true
       },
       offset: 8,
     })
 
     this.#slashProvider.onShow = () => {
+      perfMark('show')
       refMenuState.visible = true
-      void loadTree()
+      // 树加载后手动重新定位（flip 用真实高度测量溢出）。
+      // 不走 provider.update() —— 那会再次触发 show → onShow 形成递归循环
+      void loadTree().then(() => {
+        perfMark('treeDone')
+        this.#reposition()
+      })
     }
     this.#slashProvider.onHide = () => {
       refMenuState.visible = false
@@ -305,11 +332,47 @@ class RefMenuView implements PluginView {
       refMenuState.selectedPath = null
       refMenuState.entities = []
       refMenuState.recentTyped = ''
+      refMenuState.triggerKind = null
       refMenuState.replacePos = null
       refMenuState.replaceStart = 0
       refMenuState.replacePath = null
     }
     this.update(view)
+  }
+
+  /** 手动重定位：与 SlashProvider 相同的 fixed+flip 策略，基于光标坐标 */
+  #reposition = () => {
+    const view = this.#view
+    const sel = view.state.selection
+    const from = Math.min(sel.from, sel.to)
+    const to = Math.max(sel.from, sel.to)
+    const start = view.coordsAtPos(from)
+    const end = view.coordsAtPos(to, -1)
+    const rect = {
+      x: start.left,
+      y: start.top,
+      top: start.top,
+      bottom: end.bottom,
+      left: start.left,
+      right: end.right,
+      width: end.right - start.left,
+      height: end.bottom - start.top,
+    }
+    computePosition(
+      { getBoundingClientRect: () => rect },
+      this.#content,
+      {
+        placement: 'bottom-start',
+        strategy: 'fixed',
+        middleware: [flip({ padding: 8 }), shift({ padding: 8 }), offset(8)],
+      }
+    )
+      .then(({ x, y }) => {
+        Object.assign(this.#content.style, { left: `${x}px`, top: `${y}px` })
+        perfMark('reposDone')
+        perfFlush('menu-open')
+      })
+      .catch(() => undefined)
   }
 
   #trackInput = (e: Event) => {
@@ -438,6 +501,9 @@ class RefMenuView implements PluginView {
     void loadTree()
   }
 
+  /** 本菜单所属编辑器是否持有焦点（多标签时只有活动编辑器处理键盘） */
+  hasFocus = () => this.#view.hasFocus()
+
   setMode = (mode: RefMode) => {
     refMenuState.mode = mode
   }
@@ -468,9 +534,42 @@ class RefMenuView implements PluginView {
   }
 }
 
+// ---------- 性能锚点（issue 4）----------
+// window.__refMenuPerf 收集每次菜单打开的耗时分布；debug 模式下输出到 console
+let perfMarks: Array<[string, number]> = []
+function perfMark(name: string, ms?: number) {
+  perfMarks.push([name, ms ?? performance.now()])
+}
+const PERF_DEBUG = true
+function perfFlush(label: string) {
+  if (!PERF_DEBUG && !(window as unknown as { __refMenuPerf?: unknown }).__refMenuPerf) return
+  const t0 = perfMarks[0]?.[1] ?? 0
+  const parts = perfMarks.map(([n, t]) => `${n}:${t - t0 >= 0 ? Math.round(t - t0) : Math.round(t)}ms`).join(' ')
+  const total = perfMarks.length ? Math.round((perfMarks[perfMarks.length - 1][1] as number) - t0) : 0
+  const record = { label, parts, totalMs: total }
+  ;(window as unknown as { __refMenuPerf?: unknown[] }).__refMenuPerf = [
+    ...(((window as unknown as { __refMenuPerf?: unknown[] }).__refMenuPerf ?? []) as unknown[]),
+    record,
+  ]
+  if (PERF_DEBUG) console.log(`[menu-perf] ${label} → ${parts} | 共 ${total}ms`)
+  perfMarks = []
+}
+
+// 树缓存：菜单打开不再每次都 readTree（按 app 的 treeVersion 失效）
+let menuTreeCache: { version: number; tree: FsEntry[] } | null = null
+
 async function loadTree() {
   try {
-    refMenuState.tree = await fs.readTree(true)
+    const v = (await import('../../../state/store')).state.treeVersion
+    if (menuTreeCache && menuTreeCache.version === v) {
+      refMenuState.tree = menuTreeCache.tree
+      return
+    }
+    const t0 = performance.now()
+    const tree = await fs.readTree(true)
+    perfMark('readTree', performance.now() - t0)
+    menuTreeCache = { version: v, tree }
+    refMenuState.tree = tree
   } catch {
     refMenuState.tree = []
   }
