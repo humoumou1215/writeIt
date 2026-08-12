@@ -430,6 +430,7 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - **strict 门禁**：saveTab 里 `hasStrictBlock`（mode strict + error 违规）→ ConfirmDialog「校验失败，确定保存？」（可取消/仍然保存）；hint 模式不阻止
 - **§5.4 引用交互**：collect() 跳过 file_block 物化内容（源文件按自己 doctype 校验）；object_ref 不参与实时校验
 - **doctype 提取坑**：首行 `doctype:<value>` 被 M1 自定义 doctype 节点解析（textContent 为空！）→ 从 `node.attrs.value` 提取，不能从文本
+- **单元格 pos 坑**：`table.pos + 1 + rowOff + cellOff` 少加 1（cell 相对 row 还有一层边界）→ ⚠ 会标到前一格（A 单元格）内 → 应为 `pos + 2 + rowOff + cellOff`（用户反馈：需求表提示位置不对）
 - **超时防护**：单条规则 >2s 标记 stale（同步 run 无法中断，仅告警跳过结果归属）
 - **demo.rules.ts**：需求表前置/后置联动（violationAt 单元格级标注）+ 必须存在版本章节（error 级）；mode/report 导出演示
 - 测试：m5-e2e 9/9（三通道 + 编辑触发 + hint 保存不阻止）、m5-strict 3/3（严格模式弹确认/取消不保存/确认仍保存）

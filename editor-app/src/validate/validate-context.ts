@@ -49,7 +49,8 @@ function collect(doc: Node): { headings: HeadingInfo[]; tables: TableInfo[]; par
         row.forEach((cell, cellOff) => {
           cells.push({
             text: cell.textContent.trim(),
-            pos: pos + 1 + rowOff + cellOff,
+            // 绝对位置 = table.pos + 1（table 内容起点）+ rowOff + 1（row 内容起点）+ cellOff
+            pos: pos + 2 + rowOff + cellOff,
           })
         })
         if (cells.length) rows.push(cells)
