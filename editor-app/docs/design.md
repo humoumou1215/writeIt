@@ -415,6 +415,12 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 6（统一引用 UI + 自定义浮窗）**：
+
+1. **跳转失败修复**：示例数据 `[[会议记录#待办清单]]` 指向不存在的标题 → 改为真实标题 `2026-08-11 周会`；找不到标题时 toast 提示
+2. **引用 UI 统一**：file_ref / object_ref / 断链 同款 chip + hover 加深 + `cursor: pointer`（object_ref 之前是默认光标）
+3. **自定义浮窗**（`ref-tooltip.ts`，替换原生 title，主题化）：file_ref → `📄 路径 — 点击打开/跳转到「标题」`；object_ref → `🔗 对象名（路径）— 点击跳转`（object_ref attrs 新增 label）；断链 → `⚠️ 文件不存在：路径 — 点击重新选择`
+
 **M4 后续修复 5（引用显示与跳转完善）**：
 
 1. **file_ref 显示完整路径**：chip 文字从文件名改为完整路径（`笔记/会议记录#待办清单`）

@@ -16,6 +16,7 @@ import {
   resolveRefPath,
   notifyBroken,
 } from './ref/app-plugin'
+import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
 import { state, nextTabId, toast } from '../state/store'
 import { settings } from '../state/settings'
@@ -75,6 +76,9 @@ const instances = new Map<string, Instance>()
   })
 }
 
+// M3：引用 chip 悬停浮窗（自定义 tooltip，幂等初始化）
+initRefTooltip()
+
 // M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）
 registerOpenRefHandler(async (path, fragment) => {
   const real = await resolveRefPath(path)
@@ -100,6 +104,7 @@ async function scrollToHeading(fragment: string) {
   const tab = state.tabs.find((t) => t.id === state.activeTabId)
   const inst = tab ? instances.get(tab.id) : null
   if (!inst) return
+  const targetTab = tab
   await new Promise((r) => setTimeout(r, 300))
   const { editorViewCtx } = await import('@milkdown/kit/core')
   inst.crepe.editor.action((ctx) => {
@@ -119,6 +124,9 @@ async function scrollToHeading(fragment: string) {
       // 无锚点（对象引用未声明 fragment）→ 平滑滚动到文件顶部
       const pane = inst.el.querySelector('.editor-pane') as HTMLElement | null
       pane?.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      // 有锚点但找不到标题 → 提示
+      toast(`未找到标题「${fragment}」（${targetTab?.name ?? ''}）`, 'error')
     }
   })
   // 光标移到标题

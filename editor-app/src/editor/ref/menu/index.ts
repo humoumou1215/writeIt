@@ -199,12 +199,13 @@ function insertObjectRef(
   object: string,
   triggerFrom: number,
   triggerTo: number,
-  fragment?: string | null
+  fragment?: string | null,
+  label?: string | null
 ) {
   const schema = view.state.schema
   const tr = view.state.tr
   tr.delete(triggerFrom, triggerTo)
-  const node = schema.nodes.object_ref.create({ path, object, resolvedText: null, fragment: fragment ?? null })
+  const node = schema.nodes.object_ref.create({ path, object, resolvedText: null, fragment: fragment ?? null, label: label ?? null })
   tr.insert(triggerFrom, node)
   const pos = tr.doc.resolve(triggerFrom + node.nodeSize)
   tr.setSelection(TextSelection.near(pos))
@@ -522,7 +523,7 @@ class RefMenuView implements PluginView {
     }
     if (kind === 'object') {
       const ent = refMenuState.entities.find((e) => e.id === entityId)
-      insertObjectRef(this.#view, path, entityId, triggerFrom, triggerTo, ent?.fragment)
+      insertObjectRef(this.#view, path, entityId, triggerFrom, triggerTo, ent?.fragment, ent?.label)
       this.hide()
       // 触发 resolve 阶段填充 resolvedText
       void import('../resolve').then((m) => m.resolveRefs(this.#editor))

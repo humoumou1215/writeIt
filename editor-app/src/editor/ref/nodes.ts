@@ -89,9 +89,6 @@ export const fileRefSchema = $nodeSchema('file_ref', (_ctx) => {
         'data-path': node.attrs.path,
         ...(node.attrs.fragment ? { 'data-fragment': node.attrs.fragment } : {}),
         class: 'ref-file',
-        title: node.attrs.fragment
-          ? `跳转到 ${node.attrs.path}#${node.attrs.fragment}`
-          : node.attrs.path,
       },
       node.attrs.fragment
         ? `${node.attrs.path}#${node.attrs.fragment}`
@@ -138,6 +135,8 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
       path: { default: '' },
       object: { default: '' },
       resolvedText: { default: null },
+      /** 对象展示名（suggest 对象的 label，浮窗显示用） */
+      label: { default: null },
       /** 点击跳转的标题锚点（suggest 对象声明的 fragment；null = 顶部） */
       fragment: { default: null },
     },
@@ -148,6 +147,7 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
           path: dom.getAttribute('data-path') ?? '',
           object: dom.getAttribute('data-object') ?? '',
           resolvedText: dom.getAttribute('data-text'),
+          label: dom.getAttribute('data-label'),
           fragment: dom.getAttribute('data-fragment'),
         }),
       },
@@ -159,9 +159,9 @@ export const objectRefSchema = $nodeSchema('object_ref', (_ctx) => {
         'data-path': node.attrs.path,
         'data-object': node.attrs.object,
         ...(node.attrs.resolvedText ? { 'data-text': node.attrs.resolvedText } : {}),
+        ...(node.attrs.label ? { 'data-label': node.attrs.label } : {}),
         ...(node.attrs.fragment ? { 'data-fragment': node.attrs.fragment } : {}),
         class: 'ref-object',
-        title: `跳转到 ${node.attrs.path}`,
       },
       node.attrs.resolvedText ?? `[[${node.attrs.path}#${node.attrs.object}]]`,
     ],

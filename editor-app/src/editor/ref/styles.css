@@ -31,13 +31,40 @@ a.ref-file:hover {
   background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
 }
 
-/* object_ref：对象值字符串 */
+/* object_ref：对象值字符串（与 file_ref 同款 chip，可点击跳转） */
 span.ref-object {
   color: var(--chrome-primary, #f5b301);
   background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 90%);
   border-radius: 5px;
   padding: 0 5px;
+  margin: 0 1px;
   font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+span.ref-object:hover {
+  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+}
+
+/* 自定义悬停浮窗（替换原生 title） */
+.ref-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 240px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface, #1f2329);
+  border: 1px solid var(--chrome-border, #e5e6eb);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.ref-tooltip-visible {
+  opacity: 1;
 }
 
 /* file_block：卡片容器 */
