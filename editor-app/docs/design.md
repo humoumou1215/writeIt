@@ -415,6 +415,11 @@ file_block : block,        content: 'block+',                    // ![[…]]
    - 真实卡点：**esbuild-wasm 首次初始化 ~1.5s**（suggest/rules 加载）→ 启动时后台预热（initialize + 首个 transform ~450ms 一次性开销）→ 首次 suggest 加载 1.5s → **~100ms**
    - 菜单打开不再每次 `fs.readTree`（按 treeVersion 缓存树）
 
+**M4 后续修复 7（跳转时序 + 重复嵌入物化）**：
+
+1. **标题跳转时序**：scrollToHeading 原来固定 300ms 后执行——机器慢时编辑器（mountEditor 异步）尚未挂载（instances 里没有）→ 静默不滚 → 改为 `waitForInstance` 轮询等待挂载（最长 5s）后再滚
+2. **重复嵌入物化**：定位新块改用「dispatch 前收集旧块节点对象」（ProseMirror 持久化，未修改的旧块对象不变）——位置方案会因插入内容导致旧块位置漂移、误判为新块 → 文档已有同 path 嵌入时新块物化失败（需重开才显示）
+
 **M4 后续修复 6（统一引用 UI + 自定义浮窗）**：
 
 1. **跳转失败修复**：示例数据 `[[会议记录#待办清单]]` 指向不存在的标题 → 改为真实标题 `2026-08-11 周会`；找不到标题时 toast 提示

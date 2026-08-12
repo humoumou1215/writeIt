@@ -177,12 +177,18 @@ function insertFileBlock(
   } else {
     tr.insert(pos, block)
   }
+  // dispatch 前收集同 path 旧块「节点对象」（ProseMirror 持久化：未修改的旧块对象不变）。
+  // 不能用位置：插入内容会使旧块位置漂移，被误判为新块。
+  const oldBlockNodes = new Set<Node>()
+  view.state.doc.descendants((n) => {
+    if (n.type.name === 'file_block' && n.attrs.path === path) oldBlockNodes.add(n)
+    return true
+  })
   view.dispatch(tr)
-  // 重新定位刚插入的块：空段落被替换（replaceWith）时块在 $pos.before()，位置偏移 1。
-  // 从 tr 的最终 doc 里找触发位置附近的同 path 块，用其真实位置物化
+  // 新块 = dispatch 后出现的同 path 且对象不同的块（空段落被替换时位置偏移 1 也能正确定位）
   let blockPos = -1
-  tr.doc.descendants((n, p) => {
-    if (n.type.name === 'file_block' && n.attrs.path === path && p >= triggerFrom - 3) {
+  view.state.doc.descendants((n, p) => {
+    if (n.type.name === 'file_block' && n.attrs.path === path && !oldBlockNodes.has(n)) {
       blockPos = p
       return false
     }

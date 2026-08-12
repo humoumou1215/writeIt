@@ -99,10 +99,25 @@ registerReSelectHandler((path) => {
   )
 })
 
+// 等待编辑器实例挂载（mountEditor 异步；标签刚打开时实例可能还没建）
+function waitForInstance(tabId: string, timeout = 5000): Promise<Instance | null> {
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const check = () => {
+      const inst = instances.get(tabId)
+      if (inst) return resolve(inst)
+      if (Date.now() - start > timeout) return resolve(null)
+      setTimeout(check, 100)
+    }
+    check()
+  })
+}
+
 // M3：滚动到标题（#片段）
 async function scrollToHeading(fragment: string) {
   const tab = state.tabs.find((t) => t.id === state.activeTabId)
-  const inst = tab ? instances.get(tab.id) : null
+  if (!tab) return
+  const inst = await waitForInstance(tab.id)
   if (!inst) return
   const targetTab = tab
   await new Promise((r) => setTimeout(r, 300))
