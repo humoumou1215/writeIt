@@ -127,7 +127,133 @@ body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
   color: var(--chrome-warning, #b58900);
   font-weight: 700;
   cursor: help;
+  /* 纯视觉标记：鼠标点击/选中穿透到编辑器（不拦截输入） */
+  pointer-events: none;
+  user-select: none;
 }
 .validate-mark[data-level='error'] {
   color: var(--chrome-error, #ba1a1a);
+}
+
+/* ========== 批注（M6）========== */
+
+/* 持久化批注节点：<mark data-note> —— 高亮锚定文本，note 内容只在批注卡显示 */
+mark.annotation {
+  background: color-mix(in srgb, #f5d76e, transparent 65%);
+  border-bottom: 1px dashed #b58900;
+  padding: 0 1px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+mark.annotation:hover {
+  background: color-mix(in srgb, #f5d76e, transparent 40%);
+}
+
+/* 运行时批注（校验违规）：inline 高亮 / 锚定行整块高亮 */
+.annotation-dynamic {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 78%);
+  border-bottom: 1px dotted var(--chrome-warning, #b58900);
+  cursor: pointer;
+}
+.annotation-dynamic.annotation-level-error {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 82%);
+  border-bottom-color: var(--chrome-error, #ba1a1a);
+}
+.annotation-dynamic.annotation-level-error:hover {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 65%);
+}
+.annotation-dynamic.annotation-level-warning:hover,
+.annotation-dynamic.annotation-level-info:hover {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 55%);
+}
+
+/* 锚定行（空范围降级）：node decoration 整块高亮 */
+tr.annotation-dynamic {
+  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 85%);
+}
+tr.annotation-dynamic.annotation-level-error {
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
+}
+
+/* 批注卡（点击展开，默认展开；再点/点外部收起） */
+.annotation-card {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 320px;
+  border-radius: 8px;
+  background: var(--chrome-panel-bg, #fff);
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+  display: none;
+}
+.annotation-card-visible {
+  display: block;
+}
+.annotation-card-head {
+  padding: 6px 10px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--chrome-border-light, #eee);
+  color: var(--chrome-text, #333);
+}
+.annotation-card-body {
+  padding: 8px 10px;
+  line-height: 1.5;
+  color: var(--chrome-text, #333);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.annotation-card-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 8px;
+  justify-content: flex-end;
+}
+.annotation-card-actions .mini.danger {
+  color: var(--chrome-error, #ba1a1a);
+}
+.annotation-card-edit {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  background: var(--chrome-input-bg, #fff);
+  color: var(--chrome-text, #333);
+}
+
+/* 添加批注输入浮窗（Toolbar 入口） */
+.annotation-input {
+  position: fixed;
+  z-index: 1100;
+  width: 240px;
+  border-radius: 8px;
+  background: var(--chrome-panel-bg, #fff);
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  padding: 8px;
+  display: none;
+}
+.annotation-input-visible {
+  display: block;
+}
+.annotation-input-ta {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  min-height: 52px;
+  resize: vertical;
+  background: var(--chrome-input-bg, #fff);
+  color: var(--chrome-text, #333);
+}
+.annotation-input-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
 }

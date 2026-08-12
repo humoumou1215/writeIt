@@ -4,7 +4,6 @@
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
-import { $prose } from '@milkdown/kit/utils'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
@@ -25,14 +24,16 @@ import type { Tab } from '../state/store'
 import { featureConfigs } from './features'
 import { templateService } from '../template/service'
 import {
-  validateDecorationsPlugin,
-} from '../validate/plugin'
-import {
   validateEditor,
-  getValidationResult,
   hasStrictBlock,
   clearValidation,
 } from '../validate/service'
+import { annotationSchema } from '../annotations/nodes'
+import { remarkAnnotation } from '../annotations/remark-annotation'
+import { bindAnnotationDecorations } from '../annotations'
+import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
+import { clearAnnotations } from '../annotations/service'
+import { $remark } from '@milkdown/kit/utils'
 
 interface Instance {
   crepe: Crepe
@@ -143,6 +144,8 @@ export async function refreshValidation(): Promise<void> {
 
 // M3：引用 chip 悬停浮窗（自定义 tooltip，幂等初始化）
 initRefTooltip()
+// M6：批注卡（点击展开/收起，幂等初始化）
+initAnnotationCard()
 
 // M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）
 registerOpenRefHandler(async (path, fragment) => {
@@ -312,12 +315,16 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   })
   // 注册引用机制自定义节点与 stringify handler（必须在 create 之前）
   crepe.editor.use(refPlugin)
-  // M5：校验 decorations（违规位置 ⚠ 标注；getResult 绑定当前标签）
-  crepe.editor.use($prose(() => validateDecorationsPlugin(() => getValidationResult(tabId))))
+  // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，绑定当前标签）
+  crepe.editor.use($remark('annotationRemark', () => remarkAnnotation as never))
+  crepe.editor.use(annotationSchema)
+  crepe.editor.use(bindAnnotationDecorations(tabId))
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
   })
   await crepe.create()
+  // M6：批注卡上下文（tabId + 编辑器引用）
+  setAnnotationCardContext(tabId, crepe.editor)
 
   // 两段式解析：异步物化引用（容错：失败不影响编辑器）
   void resolveRefs(crepe.editor)
@@ -416,6 +423,8 @@ export async function closeTab(tabId: string): Promise<void> {
   if (!tab) return
   // 关闭标签时清理校验结果（订阅面板/报告不残留）
   clearValidation(tabId)
+  clearAnnotations(tabId)
+  setAnnotationCardContext(tabId, null)
   if (tab.dirty) {
     const ok = await confirmDiscard(tab)
     if (!ok) return

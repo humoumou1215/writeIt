@@ -8,6 +8,7 @@ import { templateService } from '../template/service'
 import { extractDoctype } from '../template/service'
 import type { RulesModule, Violation } from '../template/types'
 import { createValidationContext } from './validate-context'
+import { setRuntimeAnnotations } from '../annotations/service'
 
 export interface ValidationResult {
   doctype: string | null
@@ -114,17 +115,20 @@ export async function validateEditor(
     }
     result.violations = ctx.violations
 
+    // M6：违规 → 运行时批注（persist=false，decorations 高亮/锚定行；不落盘）
+    const anns = ctx.violations
+      .filter((v) => v.pos != null)
+      .map((v, i) => ({
+        id: `${v.ruleId}-${v.pos}-${i}`,
+        from: v.pos!,
+        to: v.pos!,
+        content: v.message,
+        level: v.level,
+        persist: false,
+      }))
+    setRuntimeAnnotations(tabId, anns, editor)
+
     results.set(tabId, result)
-    // 触发 decorations 重算（空事务；不改文档）
-    try {
-      await editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx)
-        const tr = view.state.tr.setMeta('validateRefresh', true)
-        view.dispatch(tr)
-      })
-    } catch {
-      /* 编辑器可能已销毁 */
-    }
 
     // 报告落盘（§5.2 通道③；失败仅 toast 降级）
     if (result.report?.enabled && result.report.path && tpl) {

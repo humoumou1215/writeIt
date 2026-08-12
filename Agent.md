@@ -158,10 +158,12 @@ _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri）
 ## 9. 研发经验（editor-app 开发，供后续 agent 直接使用）
 
 ### 项目状态（截至 2026-08-11）
-- **里程碑 M1-M4 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级）；**M5（ValidateService）待做**。
-- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、M4 完成清单、12 条关键技术坑、缺口清单——**开发前先读**。
+- **里程碑 M1-M6 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级 → 校验三通道 → 批注插件）；M7（v2 方向）未定。
+- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、各里程碑实现记录、关键技术坑、缺口清单——**开发前先读**。
 
 ### 架构速览（相对上文的补充）
+- `src/annotations/`：批注插件（M6，独立于校验）——remark-annotation（`<mark data-note>` 语法）、nodes（annotation schema）、service（AnnotationService：运行时批注 persist=false / 人工批注 persist=true 节点插入）、plugin（decorations：非空 inline 高亮 / 空范围锚定行）、card（批注卡 + 添加批注输入浮窗）、styles
+- `src/validate/`：校验服务（M5）——service（rules 执行/三通道/strict 门禁）、validate-context（ValidationContext 表格/标题查询）；违规标注走批注体系（setRuntimeAnnotations）
 - `src/editor/ref/`：引用机制核心——`nodes.ts`（4 自定义节点 schema）、`remark-ref.ts`（mdast 解析）、`stringify.ts`（防转义）、`resolve.ts`（两段式物化+对象消歧）、`file-block-view.ts`（嵌入卡片 NodeView）、`app-plugin.ts`（点击跳转/只读守卫/断链装饰）、`menu/`（三级菜单 index.ts + RefMenu.vue）、`ref-tooltip.ts`（自定义悬停浮窗）、`styles.css`
 - `src/template/`：模板机制——`service.ts`（双域扫描/注册表）、`ts-loader.ts`（esbuild-wasm 转译 TS 并隔离执行）、`suggest-context.ts`（结构查询工具）、`types.ts`（SuggestObject/Rule 类型）
 - `src/editor/features.ts`：每个 Crepe 实例的 featureConfigs 组合（Mermaid + 模板组）
