@@ -14,6 +14,7 @@ import {
   broadcastBlockRefresh,
   hasBlockChanges,
   collectBlockContentsSync,
+  cacheRefFileContent,
 } from './ref/writeback'
 import {
   registerOpenRefHandler,
@@ -476,12 +477,15 @@ export async function saveTab(tabId: string): Promise<boolean> {
   tab.lastModified = Date.now()
   // 等一帧再解除抑制，避免保存后的 markdownUpdated 误判
   setTimeout(() => (inst.suppressing = false), 0)
-  // 广播：其他打开这些源文件的标签刷新物化内容（失败不影响保存结果）
+  // 广播①：其他打开这些源文件的标签刷新物化内容（失败不影响保存结果）
   if (written.length) {
     for (const p of written) {
       void broadcastBlockRefresh(p, tabId, instances)
     }
   }
+  // 广播②：本文档保存后，若它是某嵌入块的源文件 → 其他标签的块刷新物化 + 更新缓存
+  cacheRefFileContent(tab.path, md)
+  void broadcastBlockRefresh(tab.path, tabId, instances)
   return true
 }
 
