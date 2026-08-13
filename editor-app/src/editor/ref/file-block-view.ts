@@ -117,14 +117,12 @@ export class FileBlockView implements NodeView {
     // 普通文本插入 + IME 组合文本：拦截默认（浏览器改 DOM）→ 手动 dispatch 到 doc。
     // 根因：NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不把块内文本变化同步到 doc。
     if ((inputType === 'insertText' || inputType === 'insertCompositionText') && ev.data) {
-      console.log('[fbv] intercept:', inputType, 'data=', ev.data)
       e.preventDefault()
       try {
         const { from, to } = view.state.selection
         view.dispatch(view.state.tr.insertText(ev.data, from, to).scrollIntoView())
-        console.log('[fbv] dispatched at', from, '-', to, 'docSize', view.state.doc.content.size)
-      } catch (err) {
-        console.log('[fbv] dispatch error:', String(err).slice(0, 100))
+      } catch {
+        /* 忽略 */
       }
     }
     // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截

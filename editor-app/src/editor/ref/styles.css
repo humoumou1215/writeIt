@@ -257,3 +257,73 @@ tr.annotation-dynamic.annotation-level-error {
   justify-content: flex-end;
   margin-top: 6px;
 }
+
+/* ========== Gutter 侧边条 + 批注卡连线（M6 v2）========== */
+
+/* 编辑器右侧标记条（零遮挡；挂在 .editor-pane 内） */
+.annotation-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: 10px;
+  z-index: 20;
+  pointer-events: none;
+}
+.annotation-gutter-marker {
+  position: absolute;
+  right: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  opacity: 0.75;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.annotation-gutter-marker:hover {
+  opacity: 1;
+  transform: scale(1.35);
+}
+
+/* marker 悬停摘要浮窗 */
+.annotation-gutter-summary {
+  position: fixed;
+  z-index: 1200;
+  max-width: 220px;
+  border-radius: 6px;
+  background: var(--chrome-panel-bg, #fff);
+  border: 1px solid var(--chrome-border, #d0d0d0);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--chrome-text, #333);
+  display: none;
+  pointer-events: none;
+  word-break: break-word;
+}
+.annotation-gutter-summary-visible {
+  display: block;
+}
+
+/* 批注卡 ↔ 锚点连线（SVG 全屏 overlay；默认淡化，悬停突出） */
+.annotation-connector {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 998;
+  display: none;
+}
+.annotation-connector-path {
+  fill: none;
+  stroke-width: 1.5;
+  opacity: 0.22;
+  stroke-linecap: round;
+  transition: opacity 0.18s;
+}
+.annotation-connector.annotation-connector-strong .annotation-connector-path {
+  opacity: 0.95;
+  stroke-width: 2;
+}

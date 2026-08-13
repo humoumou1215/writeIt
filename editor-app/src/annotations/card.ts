@@ -1,17 +1,18 @@
 // 批注卡：点击批注锚点（动态高亮 / 持久化 <mark> 节点）展开，再点或点外部收起。
+// 定位：固定屏幕右侧（right 16px），top 跟随锚点；SVG 连线关联到被批注文字——
+//   线条默认淡化，悬停批注卡或被批注文字时突出（用户决策 v2）。
 // 动态批注（校验）：只显示消息；人工批注：显示内容 + 删除 + 内联编辑。
-// 定位：@floating-ui（placement right + flip，尽量靠右不遮正文）。
-import { computePosition, flip, offset, shift } from '@floating-ui/dom'
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { getRuntimeAnnotations, removeAnnotationNode, updateAnnotationNode, addAnnotation } from './service'
 import type { Annotation } from './service'
 
-let cardEl: HTMLDivElement | null = null
-let activeTabId = ''
-let activePos = -1
-let activeContent = ''
-let editorRef: Editor | null = null
+export const LEVEL_COLOR: Record<Annotation['level'], string> = {
+  info: '#8a8a8a',
+  warning: '#e6a23c',
+  error: '#d9534f',
+  comment: '#b58900',
+}
 
 const ICONS: Record<Annotation['level'], string> = {
   info: 'ℹ️',
@@ -19,6 +20,89 @@ const ICONS: Record<Annotation['level'], string> = {
   error: '⛔',
   comment: '💬',
 }
+
+let cardEl: HTMLDivElement | null = null
+let activeTabId = ''
+let activePos = -1
+let activeLevel: Annotation['level'] = 'info'
+let activeContent = ''
+let editorRef: Editor | null = null
+let activeAnchor: HTMLElement | null = null
+let activeAnchorId: string | null = null
+
+/** 锚点标识（元素可能因渲染重建——用属性标识而非元素引用判断"同一锚点"） */
+function anchorId(anchor: HTMLElement): string {
+  return (
+    anchor.getAttribute('data-annotation-id') ??
+    anchor.getAttribute('data-note') ??
+    ''
+  )
+}
+
+// ---------- 连线（SVG 贝塞尔，卡左 → 锚点右）----------
+let connectorSvg: SVGSVGElement | null = null
+let connectorPath: SVGPathElement | null = null
+
+function ensureConnector() {
+  if (connectorSvg) return
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('class', 'annotation-connector')
+  svg.setAttribute('aria-hidden', 'true')
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  path.setAttribute('class', 'annotation-connector-path')
+  svg.appendChild(path)
+  document.body.appendChild(svg)
+  connectorSvg = svg
+  connectorPath = path
+  // 悬停批注卡 → 连线突出
+  cardEl?.addEventListener('mouseenter', () => connectorSvg?.classList.add('annotation-connector-strong'))
+  cardEl?.addEventListener('mouseleave', () => connectorSvg?.classList.remove('annotation-connector-strong'))
+}
+
+function updateConnector() {
+  if (!connectorSvg || !connectorPath || !cardEl || !activeAnchor) return
+  const cardRect = cardEl.getBoundingClientRect()
+  let anchorRect = activeAnchor.getBoundingClientRect()
+  // 锚点无布局尺寸（如装饰 tr 元素）→ 用 coordsAtPos 计算虚拟矩形
+  if (!anchorRect.width && editorRef && activePos >= 0) {
+    editorRef.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const c = view.coordsAtPos(Math.min(activePos, view.state.doc.content.size))
+      anchorRect = {
+        left: c.left,
+        right: c.right,
+        top: c.top,
+        bottom: c.bottom,
+        width: c.right - c.left,
+        height: c.bottom - c.top,
+      } as DOMRect
+    })
+  }
+  if (!cardRect.width || !cardRect.height || !anchorRect.width) return
+  const x1 = cardRect.left
+  const y1 = cardRect.top + cardRect.height / 2
+  const x2 = anchorRect.right
+  const y2 = anchorRect.top + Math.min(anchorRect.height, 24) / 2
+  const cx = (x1 + x2) / 2
+  connectorPath.setAttribute('d', `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`)
+  connectorPath.setAttribute('stroke', LEVEL_COLOR[activeLevel])
+  connectorSvg.style.display = 'block'
+}
+
+function removeConnector() {
+  if (connectorSvg) connectorSvg.style.display = 'none'
+}
+
+function attachAnchorHover(anchor: HTMLElement) {
+  if (anchor.dataset.connectorBound === '1') return
+  anchor.dataset.connectorBound = '1'
+  const on = () => connectorSvg?.classList.add('annotation-connector-strong')
+  const off = () => connectorSvg?.classList.remove('annotation-connector-strong')
+  anchor.addEventListener('mouseenter', on)
+  anchor.addEventListener('mouseleave', off)
+}
+
+// ---------- 卡片 ----------
 
 function buildCard(): HTMLDivElement {
   const el = document.createElement('div')
@@ -29,23 +113,21 @@ function buildCard(): HTMLDivElement {
   return el
 }
 
+/** 固定屏幕右侧，top 跟随锚点（clamp 在视口内） */
 function positionCard(anchor: HTMLElement) {
   if (!cardEl) return
-  computePosition(anchor, cardEl, {
-    placement: 'right',
-    middleware: [offset(10), flip(), shift({ padding: 8 })],
-    strategy: 'fixed',
-  })
-    .then(({ x, y }) => {
-      cardEl!.style.left = `${x}px`
-      cardEl!.style.top = `${y}px`
-    })
-    .catch(() => undefined)
+  const rect = anchor.getBoundingClientRect()
+  const cardW = 264
+  const x = Math.max(8, window.innerWidth - cardW - 16)
+  const top = Math.min(Math.max(8, rect.top - 24), window.innerHeight - 220)
+  cardEl.style.left = `${x}px`
+  cardEl.style.top = `${top}px`
 }
 
 function renderCard(anchor: HTMLElement, ann: Annotation) {
   if (!cardEl) return
   activeContent = ann.content
+  activeLevel = ann.level
   cardEl.innerHTML = ''
   const head = document.createElement('div')
   head.className = 'annotation-card-head'
@@ -76,8 +158,12 @@ function renderCard(anchor: HTMLElement, ann: Annotation) {
   }
   cardEl.appendChild(actions)
 
+  activeAnchor = anchor
+  ensureConnector()
+  attachAnchorHover(anchor)
   positionCard(anchor)
   cardEl.classList.add('annotation-card-visible')
+  requestAnimationFrame(updateConnector)
 }
 
 function startEdit(body: HTMLElement) {
@@ -144,13 +230,15 @@ function showCard(anchor: HTMLElement) {
   const id = anchor.getAttribute('data-annotation-id') ?? ''
   const ann = getRuntimeAnnotations(activeTabId).find((a) => a.id === id)
   if (!ann) return
-  activePos = -1
+  activePos = ann.from
   renderCard(anchor, ann)
 }
 
 function hideCard() {
   if (!cardEl) return
   cardEl.classList.remove('annotation-card-visible')
+  activeAnchor = null
+  removeConnector()
 }
 
 function onDocumentClick(e: MouseEvent) {
@@ -161,16 +249,16 @@ function onDocumentClick(e: MouseEvent) {
     if (cardEl?.classList.contains('annotation-card-visible')) hideCard()
     return
   }
-  // 同一锚点再点 → 收起；否则展开
-  if (cardEl?.classList.contains('annotation-card-visible') && activeAnchor === anchor) {
+  // 同一锚点再点 → 收起（用标识比较，元素渲染重建不影响）；否则展开
+  const id = anchorId(anchor)
+  if (cardEl?.classList.contains('annotation-card-visible') && activeAnchorId !== null && activeAnchorId === id) {
     hideCard()
+    activeAnchorId = null
     return
   }
-  activeAnchor = anchor
+  activeAnchorId = id
   showCard(anchor)
 }
-
-let activeAnchor: HTMLElement | null = null
 
 export function initAnnotationCard(): void {
   if (cardEl) return
@@ -182,6 +270,19 @@ export function setAnnotationCardContext(tabId: string, editor: Editor | null): 
   activeTabId = tabId
   editorRef = editor
   if (cardEl?.classList.contains('annotation-card-visible')) hideCard()
+}
+
+/** Gutter/外部按位置打开批注卡（滚动到锚点后调用） */
+export function openAnnotationAt(editor: Editor, pos: number): void {
+  editorRef = editor
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const dom = view.domAtPos(Math.min(pos, view.state.doc.content.size))
+    const el = (dom.node as HTMLElement)?.closest?.('mark.annotation, .annotation-dynamic') as HTMLElement | null
+    if (!el) return
+    if (cardEl?.classList.contains('annotation-card-visible') && activeAnchor === el) return
+    showCard(el)
+  })
 }
 
 // ---------- 添加批注输入浮窗（Toolbar 入口）----------
