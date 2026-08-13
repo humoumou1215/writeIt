@@ -189,7 +189,33 @@ pub fn run() {
       create_dir,
       rename,
       remove,
+      git_user_name,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+// ---------- git 用户名（批注评论）----------
+// 工作目录是 git 仓库 → 返回 `git config user.name`；否则 null
+
+#[tauri::command]
+fn git_user_name(state: State<AppState>) -> Option<String> {
+  let root = state.root.lock().ok()?.clone()?;
+  // git 仓库检测：目录含 .git（或 git rev-parse 可用）
+  let has_git = root.join(".git").exists();
+  if !has_git {
+    return None;
+  }
+  let out = std::process::Command::new("git")
+    .args(["config", "user.name"])
+    .current_dir(&root)
+    .output()
+    .ok()?;
+  if out.status.success() {
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !name.is_empty() {
+      return Some(name);
+    }
+  }
+  None
 }

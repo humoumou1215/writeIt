@@ -103,6 +103,10 @@ export interface AppSettings {
   sidebarPinned: boolean
   /** 全局模板目录（真实文件系统：外部目录；mock：忽略，用内置示例） */
   templateDir: string
+  /** 批注用户名（web/mock 无 git 时使用；Tauri 下优先 git user.name） */
+  annotationUsername: string
+  /** 批注抽屉默认宽度（px） */
+  annotationDrawerWidth: number
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
 }
@@ -115,6 +119,8 @@ const defaultSettings: AppSettings = {
   sidebarWidth: 250,
   sidebarPinned: false,
   templateDir: '',
+  annotationUsername: '我',
+  annotationDrawerWidth: 300,
   shortcuts: { ...defaultShortcuts },
 }
 
