@@ -10,6 +10,11 @@ import { fs } from '../../fs'
 import { toast } from '../../state/store'
 import { readRefFile, cacheContent, collectBlocks, materializeBlock } from './resolve'
 
+/** 保存后更新源内容缓存（broadcastBlockRefresh 物化时读缓存） */
+export function cacheRefFileContent(path: string, content: string): void {
+  cacheContent(path, content)
+}
+
 export interface BlockEntry {
   pos: number
   path: string
