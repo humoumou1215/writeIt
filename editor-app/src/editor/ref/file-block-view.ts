@@ -2,7 +2,8 @@
 // 内容区是 contentDOM，ProseMirror 原生渲染容器内的块；只读变体禁用编辑
 import type { NodeView, NodeViewConstructor } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
-import type { ViewMutationRecord } from 'prosemirror-view'
+import type { ViewMutationRecord, EditorView } from 'prosemirror-view'
+import { TextSelection } from '@milkdown/kit/prose/state'
 import type { Ctx } from '@milkdown/kit/ctx'
 
 export class FileBlockView implements NodeView {
@@ -10,7 +11,7 @@ export class FileBlockView implements NodeView {
   contentDOM: HTMLElement | null
   private readonly header: HTMLElement
 
-  constructor(node: ProseNode, _view: unknown, _getPos: () => number | undefined) {
+  constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.dom = document.createElement('div')
     this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '')
 
@@ -28,7 +29,41 @@ export class FileBlockView implements NodeView {
 
     const content = document.createElement('div')
     content.className = 'ref-file-block-content'
-    content.contentEditable = node.attrs.readonly ? 'false' : 'true'
+    // 只读变体禁编辑；可编辑块不显式设 contenteditable（继承编辑器根的可编辑性——
+    // 显式 'true' 造成嵌套 contenteditable，可能干扰 ProseMirror 的输入/IME 组合同步）
+    if (node.attrs.readonly) content.contentEditable = 'false'
+
+    // 点击块任意部分（含头部徽标/边缘）→ 强制聚焦编辑器并把光标移入块内容。
+    // 用户反馈：点击块内有时编辑器未获焦点（输入丢失、userEditedAt 无更新）。
+    const focusIntoBlock = () => {
+      if (node.attrs.readonly) return
+      const pos = getPosRef()
+      if (pos == null) return
+      const editorView = editorViewRef as unknown as EditorView | null
+      if (!editorView) return
+      editorView.focus()
+      // 若点击的是头部/非内容区（ProseMirror 未自行设置 selection），把光标移到块内开头
+      try {
+        const doc = editorView.state.doc
+        const block = doc.nodeAt(pos)
+        if (!block || block.type.name !== 'file_block') return
+        const $pos = doc.resolve(pos + 1)
+        const sel = TextSelection.near($pos)
+        if (!editorView.state.selection.eq(sel)) {
+          editorView.dispatch(editorView.state.tr.setSelection(sel))
+        }
+      } catch {
+        /* 忽略 */
+      }
+    }
+    this.header.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      focusIntoBlock()
+    })
+    // 内容区：延后聚焦，避免与 ProseMirror 自身的 click selection 处理冲突
+    content.addEventListener('mousedown', () => {
+      setTimeout(focusIntoBlock, 0)
+    })
 
     this.dom.append(this.header, content)
     this.contentDOM = content
