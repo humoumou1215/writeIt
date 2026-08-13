@@ -390,7 +390,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M6 已完成并全量回归通过**。M6 后修复：块内输入不进 doc 的根因（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步 → FileBlockView 拦截 beforeinput insertText/insertCompositionText 手动 dispatch）。
+> 状态：**M1-M6 已完成并全量回归通过**（M6 含 v2：gutter 侧边条 + 批注卡连线）。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 7/7、m6-toolbar 7/7、**m6b 10/10**、app 28/28
 > 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、**m6 7/7、m6-toolbar 7/7**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
 
 ### 里程碑状态
@@ -454,9 +455,15 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - **坑**：① schema marks 名称是 emphasis/inlineCode 而非 em/code（Unknown mark type）；② ToolbarItem 必须提供 active()（checker 渲染抛错）；③ posAtDOM 对 inline 节点返回内容位置（偏移 1）→ 减 1 找 annotation 节点；④ onRun 类型缺口（ToolbarItem 未声明但运行时使用）→ 断言 addItem 参数类型
 - 测试：m6-e2e 7/7（round-trip/批注卡/动态高亮）、m6-toolbar 7/7（Toolbar 添加/删除/编辑）；m5-e2e 同步更新（校验标注改走批注体系）
 
+**M6 v2（gutter 侧边条 + 批注卡连线）**：
+
+1. **gutter 侧边条**（`annotations/gutter.ts`）：编辑器右侧垂直标记条（挂在 .editor-pane 内，position:absolute，零遮挡）——每个批注/校验违规对应彩色小圆点（error 红 / warning 橙 / comment 黄），top 由 `view.coordsAtPos` 计算；hover → 摘要浮窗；点击 → scrollToPos + `openAnnotationAt` 展开批注卡。更新时机：批注变化订阅（subscribeAnnotations）/ pane scroll（rAF 节流）/ resize / 标签激活（activateTab rAF）
+2. **批注卡右侧 + 连线**：卡片固定屏幕右侧（right 16px，top 跟随锚点 clamp）；SVG 贝塞尔连线（卡左边缘 → 锚点右边缘，`.annotation-connector` 全屏 fixed pointer-events:none）；**默认淡化（opacity 0.22），悬停批注卡或被批注文字时突出（0.95 + 加粗）**
+3. **锚点虚拟矩形兜底**：装饰 tr 等元素 `getBoundingClientRect` 返回 0（无布局）→ 用 `coordsAtPos` 计算虚拟锚点矩形
+4. 测试：m6b-e2e 10/10（marker 数量/滚动跟随/摘要/点击展开/连线显隐/淡化/悬停突出/右侧定位）
+
 ### 记录缺口 / 待办
 
-- gutter 侧边条（v2 决策：批注卡点击展开替代）
 - 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）
 - 占位符 `{{title}}` chip 渲染（v1 原样文本）
 - 全局模板域真实文件系统（外部目录需 Rust 命令）
