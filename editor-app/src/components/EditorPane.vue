@@ -33,6 +33,7 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: auto;
+  position: relative;  /* gutter 绝对定位基准 */
   /* 顶部无内边距：Crepe TopBar 紧贴标签栏，不留空隙 */
   padding: 0 4px 24px;
 }
