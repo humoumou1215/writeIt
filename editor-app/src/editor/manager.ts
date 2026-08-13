@@ -613,6 +613,18 @@ export async function saveTab(tabId: string): Promise<boolean> {
     if (!ok) return false
   }
   const md = inst.crepe.getMarkdown()
+  // IME 防御：组合输入未提交时先强制上屏（blur→focus 触发 compositionend），
+  // 否则组合文本不在 doc 里——保存/写回都会丢用户输入
+  try {
+    const view = inst.crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+    if (view.composing) {
+      view.dom.blur()
+      ;(view.dom as HTMLElement).focus()
+      await new Promise((r) => setTimeout(r, 60))
+    }
+  } catch {
+    /* 编辑器可能未就绪 */
+  }
   // §6.7 写回事务：可编辑 file_block 内容写回源文件（失败降级不阻断保存）
   const written = await writeBackBlocks(inst.crepe.editor)
   try {
