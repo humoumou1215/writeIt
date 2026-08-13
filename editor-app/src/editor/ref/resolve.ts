@@ -42,6 +42,8 @@ async function readRefFile(path: string): Promise<string> {
   throw lastErr instanceof Error ? lastErr : new Error(`文件不存在: ${path}`)
 }
 
+export { readRefFile, cacheContent, collectBlocks }
+
 /** 物化一个 file_block（基于编辑器 ctx） */
 export async function materializeBlock(
   editor: Editor,

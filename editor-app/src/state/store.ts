@@ -9,6 +9,8 @@ export interface Tab {
   savedContent: string
   dirty: boolean
   lastModified: number
+  /** §6.7：可编辑 file_block 内容快照（保存时记录；脏检测第二条件用） */
+  blockSnapshot: Map<string, string> | null
 }
 
 export interface Toast {
