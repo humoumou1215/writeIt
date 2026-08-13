@@ -5,7 +5,7 @@
 //  - 评论不可删除、仅创建人可标记已解决（按用户名判断）
 //  - 内容纯文本（v3 决策：不做 markdown 渲染）
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { state, toast } from '../state/store'
+import { state } from '../state/store'
 import { settings } from '../state/settings'
 import {
   subscribeAnnotations,
@@ -14,7 +14,6 @@ import {
   getAllAnnotations,
   addComment,
   setCommentResolved,
-  removeAnnotationNode,
   type Annotation,
   type Comment,
 } from '../annotations/service'
@@ -26,6 +25,7 @@ const width = ref(Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
 const anns = ref<Annotation[]>([])
 const activeId = ref<string | null>(null)
 const draft = ref<Record<string, string>>({}) // 卡 id → 回复草稿
+const collapsed = ref<Record<string, boolean>>({}) // 卡 id → 折叠（折叠时不显示评论输入框）
 let unsub: (() => void) | null = null
 
 const activeTabId = computed(() => state.activeTabId)
@@ -100,28 +100,16 @@ async function toggleResolved(ann: Annotation, c: Comment) {
   setCommentResolved(inst.crepe.editor as never, ann.from, c.id, !c.resolved, userName.value)
 }
 
+/** 点击批注卡 = 定位 + 展开（再点折叠）；无锚点（from<0）仅展开 */
 async function locate(ann: Annotation) {
-  const tabId = state.activeTabId
-  if (!tabId) return
-  const { scrollToPos } = await import('../editor/manager')
-  await scrollToPos(tabId, ann.from)
-}
-
-async function removeAnn(ann: Annotation) {
-  if (!ann.persist) return // 校验违规只读
-  const { getActiveInstance } = await import('../editor/manager')
-  const inst = getActiveInstance()
-  if (!inst) return
-  const { confirmDialog } = await import('../state/store')
-  const ok = await confirmDialog({
-    title: '删除批注？',
-    message: `将移除锚定「${ann.anchorText || '(空)'}」的批注线程（保留锚定文本）。`,
-    confirmText: '删除批注',
-    danger: true,
-  })
-  if (!ok) return
-  removeAnnotationNode(inst.crepe.editor, ann.from)
-  toast('批注已删除', 'success')
+  if (ann.from >= 0) {
+    const tabId = state.activeTabId
+    if (tabId) {
+      const { scrollToPos } = await import('../editor/manager')
+      await scrollToPos(tabId, ann.from)
+    }
+  }
+  collapsed.value[ann.id] = !collapsed.value[ann.id]
 }
 
 async function revalidate() {
@@ -271,7 +259,7 @@ function onAnchorHover(strong: boolean) {
           暂无批注。<br />选中文本后使用工具栏「添加批注」，或从模板文件触发校验。
         </div>
 
-        <!-- 校验违规卡（只读） -->
+        <!-- 校验违规卡（只读；点击卡片 = 定位） -->
         <div
           v-for="a in anns.filter(x => x.level !== 'comment')"
           :key="a.id"
@@ -279,60 +267,64 @@ function onAnchorHover(strong: boolean) {
           :class="{ active: a.id === activeId }"
           @mouseenter="onCardHover(true)"
           @mouseleave="onCardHover(false)"
+          @click="locate(a)"
+          :title="a.from >= 0 ? '点击定位到违规位置' : ''"
         >
           <div class="ad-card-head">
             <span class="ad-ic" :class="a.level">{{ a.level === 'error' ? '⛔' : '⚠️' }}</span>
             <span class="ad-card-title">校验提示</span>
-            <button v-if="a.from >= 0" class="mini" title="定位到违规位置" @click="locate(a)">定位</button>
           </div>
           <div class="ad-card-content">{{ a.thread[0]?.content }}</div>
         </div>
 
-        <!-- 人工批注卡（评论线程） -->
+        <!-- 人工批注卡（评论线程；点击头部 = 定位 + 展开/折叠；折叠不显示输入框） -->
         <div
           v-for="a in anns.filter(x => x.level === 'comment')"
           :key="a.id"
           class="ad-card"
-          :class="{ active: a.id === activeId, resolved: a.thread.every(c => c.resolved) }"
+          :class="{ active: a.id === activeId, resolved: a.thread.every(c => c.resolved), collapsed: collapsed[a.id] }"
           @mouseenter="onCardHover(true)"
           @mouseleave="onCardHover(false)"
         >
-          <div class="ad-card-head">
+          <div class="ad-card-head" :title="a.from >= 0 ? '点击定位到锚点' : ''" @click="locate(a)">
             <span class="ad-ic comment">💬</span>
             <span class="ad-anchor" :title="a.anchorText">{{ a.anchorText || '（无锚定文本）' }}</span>
-            <button class="mini" title="定位到锚点" @click="locate(a)">定位</button>
+            <span class="ad-comment-count">{{ a.thread.length }} 条</span>
+            <span class="ad-fold">{{ collapsed[a.id] ? '▸' : '▾' }}</span>
           </div>
-          <div class="ad-thread">
-            <div v-for="c in a.thread" :key="c.id" class="ad-comment" :class="{ resolved: c.resolved }">
-              <span class="ad-avatar" :style="{ background: LEVEL_COLOR[a.level] }">{{ initials(c.author) }}</span>
-              <div class="ad-comment-main">
-                <div class="ad-comment-meta">
-                  <span class="ad-author">{{ c.author || '未知' }}</span>
-                  <span class="ad-time">{{ fmtTime(c.createdAt) }}</span>
-                  <span v-if="c.resolved" class="ad-resolved-tag">✓ 已解决</span>
-                </div>
-                <div class="ad-comment-content" :class="{ struck: c.resolved }">{{ c.content }}</div>
-                <div v-if="canResolve(c)" class="ad-comment-actions">
-                  <button class="mini" @click="toggleResolved(a, c)">
-                    {{ c.resolved ? '重新打开' : '标记已解决' }}
-                  </button>
+          <template v-if="!collapsed[a.id]">
+            <div class="ad-thread">
+              <div v-for="c in a.thread" :key="c.id" class="ad-comment" :class="{ resolved: c.resolved }">
+                <span class="ad-avatar" :style="{ background: LEVEL_COLOR[a.level] }">{{ initials(c.author) }}</span>
+                <div class="ad-comment-main">
+                  <div class="ad-comment-meta">
+                    <span class="ad-author">{{ c.author || '未知' }}</span>
+                    <span class="ad-time">{{ fmtTime(c.createdAt) }}</span>
+                    <!-- 已解决状态圆：空圆=未解决，✔圆=已解决；仅创建人可点击切换 -->
+                    <span
+                      class="ad-resolve-dot"
+                      :class="{ resolved: c.resolved, mine: canResolve(c) }"
+                      :title="canResolve(c) ? (c.resolved ? '点击重新打开' : '点击标记已解决') : ''"
+                      @click.stop="toggleResolved(a, c)"
+                    >{{ c.resolved ? '✔' : '' }}</span>
+                  </div>
+                  <div class="ad-comment-content" :class="{ struck: c.resolved }">{{ c.content }}</div>
                 </div>
               </div>
             </div>
-          </div>
-          <!-- 回复输入 -->
-          <div class="ad-reply">
-            <textarea
-              v-model="draft[a.id]"
-              rows="2"
-              placeholder="回复…（纯文本）"
-              @keydown.enter.exact.prevent="reply(a)"
-            ></textarea>
-            <div class="ad-reply-actions">
-              <button class="mini primary" @click="reply(a)">发送</button>
-              <button class="mini danger" @click="removeAnn(a)">删除批注</button>
+            <!-- 回复输入（Ctrl+Enter 提交；回车换行） -->
+            <div class="ad-reply">
+              <textarea
+                v-model="draft[a.id]"
+                rows="2"
+                placeholder="回复…（Ctrl+Enter 发送，纯文本）"
+                @keydown.ctrl.enter.prevent="reply(a)"
+              ></textarea>
+              <div class="ad-reply-actions">
+                <button class="mini primary" @click="reply(a)">发送</button>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </div>
     </div>
@@ -499,7 +491,6 @@ function onAnchorHover(strong: boolean) {
 }
 .ad-author { font-weight: 600; }
 .ad-time { color: #999; font-size: 11px; }
-.ad-resolved-tag { color: #4caf50; font-size: 11px; }
 .ad-comment-content {
   margin-top: 2px;
   line-height: 1.5;
@@ -510,8 +501,50 @@ function onAnchorHover(strong: boolean) {
   opacity: 0.55;
   text-decoration: line-through;
 }
-.ad-comment-actions {
-  margin-top: 3px;
+/* 已解决状态圆：空圆=未解决；✔绿圆=已解决；仅创建人（mine）可点击 */
+.ad-resolve-dot {
+  margin-left: auto;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid #bbb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #fff;
+  line-height: 1;
+  opacity: 0.45;
+  user-select: none;
+}
+.ad-resolve-dot.mine {
+  opacity: 1;
+  cursor: pointer;
+}
+.ad-resolve-dot.mine:hover {
+  border-color: var(--chrome-accent, #3a6ea5);
+}
+.ad-resolve-dot.resolved {
+  background: #4caf50;
+  border-color: #4caf50;
+}
+.ad-resolve-dot.resolved:not(.mine) {
+  opacity: 0.7;
+}
+/* 评论计数 + 折叠箭头 */
+.ad-comment-count {
+  color: #999;
+  font-size: 11px;
+  margin-left: auto;
+}
+.ad-fold {
+  color: #999;
+  font-size: 11px;
+  margin-left: 4px;
+}
+.ad-card.collapsed .ad-card-head {
+  border-bottom: none;
 }
 .ad-reply {
   padding: 6px 8px;
