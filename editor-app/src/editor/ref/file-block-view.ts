@@ -11,7 +11,9 @@ export class FileBlockView implements NodeView {
   contentDOM: HTMLElement | null
   private readonly header: HTMLElement
 
+  private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
+    this.editorView = editorViewRef
     this.dom = document.createElement('div')
     this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '')
 
@@ -33,37 +35,50 @@ export class FileBlockView implements NodeView {
     // 显式 'true' 造成嵌套 contenteditable，可能干扰 ProseMirror 的输入/IME 组合同步）
     if (node.attrs.readonly) content.contentEditable = 'false'
 
-    // 点击块任意部分（含头部徽标/边缘）→ 强制聚焦编辑器并把光标移入块内容。
-    // 用户反馈：点击块内有时编辑器未获焦点（输入丢失、userEditedAt 无更新）。
-    const focusIntoBlock = () => {
+    // 头部点击（非编辑区，ProseMirror 不自行处理）→ 聚焦 + 光标移入块内开头，
+    // 并同步 DOM selection（否则 DOM 光标与 view selection 不一致，ProseMirror 丢弃输入）。
+    // 注意：内容区点击不要干预（ProseMirror 自然处理 selection——干预会破坏 DOM/view 一致性，
+    // 导致输入进 DOM 但不进 doc）。
+    this.header.addEventListener('mousedown', (e) => {
       if (node.attrs.readonly) return
+      e.preventDefault()
       const pos = getPosRef()
-      if (pos == null) return
       const editorView = editorViewRef as unknown as EditorView | null
-      if (!editorView) return
-      editorView.focus()
-      // 若点击的是头部/非内容区（ProseMirror 未自行设置 selection），把光标移到块内开头
+      if (pos == null || !editorView) return
       try {
         const doc = editorView.state.doc
         const block = doc.nodeAt(pos)
         if (!block || block.type.name !== 'file_block') return
-        const $pos = doc.resolve(pos + 1)
+        const target = pos + 1
+        const $pos = doc.resolve(target)
         const sel = TextSelection.near($pos)
         if (!editorView.state.selection.eq(sel)) {
           editorView.dispatch(editorView.state.tr.setSelection(sel))
         }
+        editorView.focus()
+        // DOM selection 同步到块内开头（确保与 view selection 一致）
+        const dom = editorView.domAtPos(target)
+        const range = document.createRange()
+        try {
+          range.setStart(dom.node, dom.offset)
+        } catch {
+          range.selectNodeContents(editorView.dom)
+          range.collapse(true)
+        }
+        range.collapse(true)
+        const sel2 = window.getSelection()
+        if (sel2) {
+          sel2.removeAllRanges()
+          sel2.addRange(range)
+        }
       } catch {
         /* 忽略 */
       }
-    }
-    this.header.addEventListener('mousedown', (e) => {
-      e.preventDefault()
-      focusIntoBlock()
     })
-    // 内容区：延后聚焦，避免与 ProseMirror 自身的 click selection 处理冲突
-    content.addEventListener('mousedown', () => {
-      setTimeout(focusIntoBlock, 0)
-    })
+
+    // 实验：dom 仅含 contentDOM（header 分离——验证 header 元素干扰输入映射的假设）
+    // 拦截内容区文本输入（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步）
+    content.addEventListener('beforeinput', this.handleContentBeforeInput)
 
     this.dom.append(this.header, content)
     this.contentDOM = content
@@ -83,6 +98,32 @@ export class FileBlockView implements NodeView {
       return this.contentDOM.contains(target) && !this.header.contains(target)
     }
     return false
+  }
+
+  /**
+   * 兜底：拦截块内容区的文本输入（beforeinput insertText），手动 dispatch 到 doc。
+   * 根因：物化（replaceWith）后的 NodeView 内容 DOM 没有 pmViewDesc，ProseMirror 的
+   * DOMObserver 无法把块内 DOM 文本变化同步到 doc（表格/宿主段落正常——它们有 desc）。
+   * 这里在浏览器把文本插入 DOM 前拦截，直接用 ProseMirror 事务插入 → doc 与 DOM 一致。
+   */
+  private handleContentBeforeInput = (e: Event) => {
+    const ev = e as InputEvent
+    const inputType = ev.inputType || ''
+    const view = this.editorView as unknown as EditorView | null
+    if (!view) return
+    // 普通文本插入 + IME 组合文本：拦截默认（浏览器改 DOM）→ 手动 dispatch 到 doc。
+    // 根因：NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不把块内文本变化同步到 doc。
+    if ((inputType === 'insertText' || inputType === 'insertCompositionText') && ev.data) {
+      e.preventDefault()
+      try {
+        const { from, to } = view.state.selection
+        view.dispatch(view.state.tr.insertText(ev.data, from, to).scrollIntoView())
+      } catch {
+        /* 忽略 */
+      }
+    }
+    // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截
+    // deleteContentBackward 等由 ProseMirror keymap 处理（keydown → dispatch）
   }
 
   destroy() {

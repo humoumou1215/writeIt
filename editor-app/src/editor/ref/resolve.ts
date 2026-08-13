@@ -75,6 +75,15 @@ export async function materializeBlock(
     const to = pos + atPos.nodeSize - 1
     const tr = view.state.tr.replaceWith(from, to, parsed.content)
     view.dispatch(tr)
+    // 物化 dispatch 后强制完整渲染：replaceWith 更新已创建的 NodeView 时
+    // 内容 DOM 不会建立 pmViewDesc（块内输入因此失效）——强制重建视图
+    try {
+      view.updateState(view.state)
+      const ob = (view as unknown as { domObserver?: { forceFlush?: () => void } }).domObserver
+      ob?.forceFlush?.()
+    } catch {
+      /* 忽略 */
+    }
   })
 }
 

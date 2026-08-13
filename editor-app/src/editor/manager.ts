@@ -5,6 +5,7 @@
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { replaceAll } from '@milkdown/kit/utils'
+
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
@@ -227,6 +228,116 @@ export async function refreshValidation(): Promise<void> {
   const diag = { tabs: out, fsKind: (await import('../fs')).fs.kind }
   console.log('[diag]', JSON.stringify(diag, null, 1))
   return diag
+}
+;(window as unknown as { __editorWatchMutations?: unknown }).__editorWatchMutations = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = 'no-view'
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const ob = (view as unknown as { domObserver?: unknown }).domObserver as {
+      constructor: { prototype: { registerMutation?: (mut: unknown, added: unknown[]) => unknown } }
+    } | null
+    if (ob && ob.constructor?.prototype?.registerMutation) {
+      const proto = ob.constructor.prototype as { registerMutation?: (mut: unknown, added: unknown[]) => unknown }
+      const orig = proto.registerMutation
+      if (orig) {
+        const bound = orig.bind(ob)
+        ;(window as unknown as { __mutReg: unknown[] }).__mutReg = []
+        proto.registerMutation = (mut: unknown, added: unknown[]) => {
+          const r = bound(mut, added)
+          const m = mut as { type?: string; target?: { nodeName?: string } }
+          ;(window as unknown as { __mutReg: unknown[] }).__mutReg.push({ type: m.type, target: m.target?.nodeName, result: r })
+          return r
+        }
+        out = 'patched'
+      } else {
+        out = 'no-register'
+      }
+    } else {
+      out = 'no-prototype'
+    }
+  })
+  return out
+}
+;(window as unknown as { __editorForceSync?: unknown }).__editorForceSync = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = 'no-view'
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const ob = (view as unknown as { domObserver?: { flush?: () => void } }).domObserver
+    if (ob?.flush) {
+      ob.flush()
+      out = 'flushed'
+    } else {
+      out = 'no-flush'
+    }
+  })
+  return out
+}
+;(window as unknown as { __editorPosAtDOM?: unknown }).__editorPosAtDOM = (pathSubstr: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = null
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const b = Array.from(document.querySelectorAll('.ref-file-block')).find((x) =>
+      (x.querySelector('.ref-file-block-path')?.textContent || '').includes(pathSubstr)
+    )
+    const li = b?.querySelector('.ref-file-block-content li')
+    out = {
+      hasLi: !!li,
+      posAtDOM: li ? view.posAtDOM(li as HTMLElement, 0) : -2,
+      posAtDOMText: li?.firstChild && li.firstChild.nodeType === 3 ? view.posAtDOM(li.firstChild as Node, 0) : -3,
+      docLen: view.state.doc.content.size,
+    }
+  })
+  return out
+}
+;(window as unknown as { __editorDocNodes?: unknown }).__editorDocNodes = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = null
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const names: string[] = []
+    view.state.doc.descendants((n, p) => {
+      if (p === 0 || (view.state.doc.nodeAt(p - 1) === n)) names.push(`${n.type.name}:${n.textContent.slice(0, 15)}`)
+      return true
+    })
+    out = { activeTab: state.activeTabId, topNames: names.slice(0, 30) }
+  })
+  return out
+}
+;(window as unknown as { __editorSelection?: unknown }).__editorSelection = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = null
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const sel = view.state.selection
+    // 找 selection 是否在块内
+    let inBlock = false
+    let blockPath = ''
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_block' && p < sel.from && sel.from < p + n.nodeSize) {
+        inBlock = true
+        blockPath = n.attrs.path as string
+        return false
+      }
+      return true
+    })
+    out = {
+      from: sel.from,
+      to: sel.to,
+      docLen: view.state.doc.content.size,
+      inBlock,
+      blockPath,
+      focusEl: (document.activeElement as HTMLElement | null)?.className?.slice?.(0, 40) ?? 'none',
+    }
+  })
+  return out
 }
 ;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
