@@ -390,8 +390,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M6 已完成并全量回归通过**（M6 含 v2：gutter 侧边条 + 批注卡连线）。
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 7/7、m6-toolbar 7/7、**m6b 10/10**、app 28/28
+> 状态：**M1-M6 已完成并全量回归通过**（M6 v3：批注抽屉 + 评论线程；gutter 已移除）。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 7/7、**m6c 17/17**、app 28/28
 > 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、**m6 7/7、m6-toolbar 7/7**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
 
 ### 里程碑状态
@@ -461,6 +461,18 @@ file_block : block,        content: 'block+',                    // ![[…]]
 2. **批注卡右侧 + 连线**：卡片固定屏幕右侧（right 16px，top 跟随锚点 clamp）；SVG 贝塞尔连线（卡左边缘 → 锚点右边缘，`.annotation-connector` 全屏 fixed pointer-events:none）；**默认淡化（opacity 0.22），悬停批注卡或被批注文字时突出（0.95 + 加粗）**
 3. **锚点虚拟矩形兜底**：装饰 tr 等元素 `getBoundingClientRect` 返回 0（无布局）→ 用 `coordsAtPos` 计算虚拟锚点矩形
 4. 测试：m6b-e2e 10/10（marker 数量/滚动跟随/摘要/点击展开/连线显隐/淡化/悬停突出/右侧定位）
+
+**M6 v3（批注抽屉 + 评论线程；按用户拍板重构）**：
+
+1. **移除 gutter 侧边条**（用户决策：不再需要）
+2. **右侧抽屉**（`AnnotationDrawer.vue`，替代浮层批注卡 + ValidatePanel）：固定右侧，默认宽 300px、拖拽 50-480（复用 resizer 模式，宽度存 settings）；头部统一折叠/展开（折叠为窄把手）；批注计数（error/warning/comment）
+3. **批注卡 = 抽屉内卡片**：人工批注卡（锚定文本 + 评论线程列表 + 回复输入 + 标记已解决）+ 校验违规只读卡（无回复/删除）；点击正文锚点 → 激活卡 + 展开抽屉
+4. **评论线程**：`<mark data-note>` 的 note 存线程 JSON（短字段 a/c/t/r/rt/rb；&quot; 转义；remark 路径 value 需 unescape 再 JSON.parse；兼容旧纯文本 note）；**评论不可删除、仅创建人（用户名匹配）可标记已解决/重新打开**；markdown 不渲染（v3 决策，纯文本）
+5. **连线保留**：抽屉左边缘 → 激活批注锚点（默认淡化，悬停卡或锚点突出）；折叠时隐藏
+6. **git 用户名**：Tauri 下目录是 git 仓库（.git 存在）→ Rust 命令 `git_user_name`（git config user.name）；web/mock → 设置「批注用户名」（默认「我」）
+7. **无位置整体违规**（如缺需求表）也进抽屉展示（from=-1 无定位按钮）；decorations 跳过
+8. 移除 ValidatePanel.vue（校验违规全部走抽屉只读卡）
+9. 测试：m6c 17/17（抽屉/线程/权限/连线/拖拽/折叠）；m5-e2e/m6-e2e/m6-toolbar 同步更新
 
 ### 记录缺口 / 待办
 

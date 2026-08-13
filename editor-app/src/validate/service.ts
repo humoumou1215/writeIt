@@ -115,17 +115,25 @@ export async function validateEditor(
     }
     result.violations = ctx.violations
 
-    // M6：违规 → 运行时批注（persist=false，decorations 高亮/锚定行；不落盘）
-    const anns = ctx.violations
-      .filter((v) => v.pos != null)
-      .map((v, i) => ({
-        id: `${v.ruleId}-${v.pos}-${i}`,
-        from: v.pos!,
-        to: v.pos!,
-        content: v.message,
-        level: v.level,
-        persist: false,
-      }))
+    // M6：违规 → 运行时批注（persist=false，抽屉只读卡；有位置的进 decorations 高亮/锚定行）
+    // 无位置的整体违规（如「缺少需求表」）也进抽屉展示，from=-1 标记无锚点
+    const anns = ctx.violations.map((v, i) => ({
+      id: `${v.ruleId}-${v.pos ?? 'doc'}-${i}`,
+      from: v.pos ?? -1,
+      to: v.pos ?? -1,
+      anchorText: '',
+      level: v.level,
+      thread: [
+        {
+          id: `v-${i}`,
+          author: '校验',
+          content: v.message,
+          createdAt: Date.now(),
+          resolved: false,
+        },
+      ],
+      persist: false,
+    }))
     setRuntimeAnnotations(tabId, anns, editor)
 
     results.set(tabId, result)

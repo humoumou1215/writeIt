@@ -42,9 +42,8 @@ import { annotationSchema } from '../annotations/nodes'
 import { remarkAnnotation } from '../annotations/remark-annotation'
 import { bindAnnotationDecorations } from '../annotations'
 import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
-import { clearAnnotations, subscribeAnnotations } from '../annotations/service'
+import { clearAnnotations } from '../annotations/service'
 import { $remark } from '@milkdown/kit/utils'
-import { initGutter, updateGutter, disposeGutter } from '../annotations/gutter'
 
 interface Instance {
   crepe: Crepe
@@ -54,19 +53,6 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
-let gutterSub: (() => void) | null = null
-
-// M6 v2：gutter 侧边条更新（rAF 节流：滚动 / 批注变化 / 标签激活）
-let gutterScrollRaf = 0
-function scheduleGutterUpdate() {
-  if (gutterScrollRaf) return
-  gutterScrollRaf = requestAnimationFrame(() => {
-    gutterScrollRaf = 0
-    const id = state.activeTabId
-    const inst = id ? instances.get(id) : null
-    if (id && inst) updateGutter(id, inst.crepe.editor)
-  })
-}
 
 // M5：编辑防抖实时校验（1.5s；规则简单/文档小无所谓，大文档后续可配置关闭）
 const validationTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -121,6 +107,11 @@ export async function refreshValidation(): Promise<void> {
   const n = res.violations.length
   if (n === 0) toast('校验通过：未发现违规', 'success')
   else toast(`校验完成：${n} 项违规（${res.violations.filter((v) => v.level === 'error').length} 错误）`, 'error')
+}
+
+/** 当前活动标签的编辑器实例（抽屉/批注卡读取 doc 用） */
+export function getActiveInstance(): Instance | null {
+  return state.activeTabId ? (instances.get(state.activeTabId) ?? null) : null
 }
 
 // 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
@@ -569,8 +560,6 @@ export function activateTab(id: string) {
     const inst = instances.get(id)
     const viewEl = inst?.el.querySelector('.ProseMirror') as HTMLElement | null
     viewEl?.focus()
-    // M6 v2：gutter 绑定到新活动标签
-    scheduleGutterUpdate()
   })
 }
 
@@ -604,14 +593,6 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   await crepe.create()
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)
-  // M6 v2：gutter 侧边条（容器即滚动容器；滚动时重算标记位置）
-  initGutter(container)
-  container.addEventListener('scroll', scheduleGutterUpdate, { passive: true })
-  if (!gutterSub) {
-    gutterSub = subscribeAnnotations(scheduleGutterUpdate)
-    window.addEventListener('resize', scheduleGutterUpdate)
-  }
-  scheduleGutterUpdate()
 
   // 两段式解析：异步物化引用（容错：失败不影响编辑器）
   void resolveRefs(crepe.editor).then(() => {
@@ -671,7 +652,6 @@ export function unmountEditor(tabId: string) {
   inst.crepe.destroy().catch(() => undefined)
   inst.el.remove()
   instances.delete(tabId)
-  disposeGutter()
 }
 
 // ---------- 保存 ----------
