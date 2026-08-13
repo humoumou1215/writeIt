@@ -11,10 +11,10 @@ export interface Tab {
   lastModified: number
   /** §6.7：可编辑 file_block 内容快照（保存时记录；脏检测第二条件用） */
   blockSnapshot: Map<string, string> | null
-  /** §6.7：内容是否来自外部嵌入块联动刷新（区分用户编辑；保存源标签时用） */
-  externallySynced: boolean
-  /** §6.7：联动刷新后的应然内容（round-trip 稳定值；B 保存时以此落盘与源标签对齐） */
-  syncedValue: string | null
+  /** §6.7：用户真实输入时间戳（区分用户编辑 vs 程序化刷新；0 = 无用户编辑） */
+  userEditedAt: number
+  /** §6.7：最近一次外部联动/写回刷新时间戳（保存/联动时判断用户是否编辑过） */
+  lastExternalSyncAt: number
 }
 
 export interface Toast {
