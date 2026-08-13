@@ -298,6 +298,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 > 写回：保存时收集可编辑块内容（serializer 包 doc 序列化，勿用 getMarkdown(range)——嵌套上下文会输出标记行）→
 > resolveRealPath 补扩展名（块 attrs.path 常缺 .md，直接写会创建无扩展名新文件）→ 对比源文件仅写差异 →
 > 更新缓存 → broadcastBlockRefresh 其他标签物化同步（路径匹配 sameSource 忽略扩展名差异）。
+> 保存后双向广播：① 嵌入内容写回的源文件 → 其他标签刷新物化；② 宿主文档自身保存后，若它是某嵌入块的源文件
+> （其他文档 `![[本文档]]`），也广播刷新 + 更新内容缓存（否则物化读到旧缓存）。
 
 > **【缺口记录 · M1 暴露】只读变体拖拽缺口**：`contenteditable=false` + `stopEvent` 只拦截打字，
 > block 拖拽把手在 ProseMirror 事务层操作，可绕过 DOM 层修改只读容器内容。加固方案（M2/M3 实施）：
