@@ -14,7 +14,6 @@ export class FileBlockView implements NodeView {
   private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.editorView = editorViewRef
-    ;(window as unknown as { __fbvCount: number }).__fbvCount = ((window as unknown as { __fbvCount?: number }).__fbvCount ?? 0) + 1
     this.dom = document.createElement('div')
     this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '')
 
