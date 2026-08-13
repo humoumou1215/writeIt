@@ -10,6 +10,12 @@ import { fs, useRealDirFs } from '../fs'
 import { refPlugin, resolveRefs } from './ref'
 import { registerRefStringify } from './ref/stringify'
 import {
+  writeBackBlocks,
+  broadcastBlockRefresh,
+  hasBlockChanges,
+  collectBlockContentsSync,
+} from './ref/writeback'
+import {
   registerOpenRefHandler,
   registerReSelectHandler,
   refreshBrokenState,
@@ -123,6 +129,59 @@ export async function refreshValidation(): Promise<void> {
     tr.setNodeMarkup(pos, undefined, { path: newPath })
     view.dispatch(tr)
   })
+}
+;(window as unknown as { __editorGoBlockEnd?: unknown }).__editorGoBlockEnd = (pathSubstr: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const doc = view.state.doc
+    let blockPos = -1
+    doc.descendants((n, p) => {
+      if (n.type.name === 'file_block' && (n.attrs.path as string).includes(pathSubstr)) {
+        blockPos = p
+        return false
+      }
+      return true
+    })
+    if (blockPos < 0) return 'no-block'
+    const node = doc.nodeAt(blockPos)
+    if (!node) return 'no-node'
+    const end = blockPos + node.nodeSize - 1
+    const sel = TextSelection.near(doc.resolve(end), -1)
+    const tr = view.state.tr.setSelection(sel)
+    view.dispatch(tr)
+    ;(view.dom as HTMLElement)?.focus?.()
+    return JSON.stringify({ blockPos, end, selFrom: sel.from, selTo: sel.to, node: node.type.name })
+  })
+  return inst
+}
+;(window as unknown as { __editorBlockAppend?: unknown }).__editorBlockAppend = (pathSubstr: string, text: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let res = 'no-block'
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const doc = view.state.doc
+    let blockPos = -1
+    doc.descendants((n, p) => {
+      if (n.type.name === 'file_block' && (n.attrs.path as string).includes(pathSubstr)) {
+        blockPos = p
+        return false
+      }
+      return true
+    })
+    if (blockPos < 0) return
+    const node = doc.nodeAt(blockPos)
+    if (!node) return
+    const end = blockPos + node.nodeSize - 1
+    // 块内末尾插入新段落
+    const para = view.state.schema.nodes.paragraph.create(null, view.state.schema.text(text))
+    const tr = view.state.tr.insert(end, para)
+    view.dispatch(tr)
+    res = 'inserted'
+  })
+  return res
 }
 ;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
@@ -276,6 +335,7 @@ export async function openTab(path: string): Promise<void> {
     savedContent: content,
     dirty: false,
     lastModified: Date.now(),
+    blockSnapshot: null,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -327,7 +387,11 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   setAnnotationCardContext(tabId, crepe.editor)
 
   // 两段式解析：异步物化引用（容错：失败不影响编辑器）
-  void resolveRefs(crepe.editor)
+  void resolveRefs(crepe.editor).then(() => {
+    // §6.7：物化完成后建立初始块快照（此后嵌入编辑通过双条件脏检测识别）
+    const t = state.tabs.find((x) => x.id === tabId)
+    if (t) t.blockSnapshot = collectBlockContentsSync(crepe.editor)
+  })
   void refreshBrokenState(crepe.editor)
   // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
   void validateEditor(crepe.editor, tabId, { silent: true })
@@ -340,7 +404,9 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       if (inst.suppressing) return
       const t = state.tabs.find((x) => x.id === tabId)
       if (!t) return
-      const nowDirty = md !== t.savedContent
+      // §6.7 脏检测双条件：markdown 变化 || 可编辑嵌入内容 ≠ 保存时快照
+      const blockDirty = hasBlockChanges(inst.crepe.editor, t.blockSnapshot)
+      const nowDirty = md !== t.savedContent || blockDirty
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
       // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
@@ -394,6 +460,8 @@ export async function saveTab(tabId: string): Promise<boolean> {
     if (!ok) return false
   }
   const md = inst.crepe.getMarkdown()
+  // §6.7 写回事务：可编辑 file_block 内容写回源文件（失败降级不阻断保存）
+  const written = await writeBackBlocks(inst.crepe.editor)
   try {
     await fs.writeFile(tab.path, md)
   } catch (e) {
@@ -402,10 +470,18 @@ export async function saveTab(tabId: string): Promise<boolean> {
   }
   inst.suppressing = true
   tab.savedContent = md
+  // §6.7：保存后记录块内容快照（脏检测第二条件）
+  tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
   tab.dirty = false
   tab.lastModified = Date.now()
   // 等一帧再解除抑制，避免保存后的 markdownUpdated 误判
   setTimeout(() => (inst.suppressing = false), 0)
+  // 广播：其他打开这些源文件的标签刷新物化内容（失败不影响保存结果）
+  if (written.length) {
+    for (const p of written) {
+      void broadcastBlockRefresh(p, tabId, instances)
+    }
+  }
   return true
 }
 
