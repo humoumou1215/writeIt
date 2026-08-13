@@ -260,6 +260,51 @@ export async function refreshValidation(): Promise<void> {
   })
   return out
 }
+;(window as unknown as { __editorDescInfo?: unknown }).__editorDescInfo = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  let out: unknown = null
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const docView = (view as unknown as { docView?: unknown }).docView as {
+      children?: unknown[]
+    } | null
+    const findDesc = (desc: unknown, depth: number): unknown => {
+      const d = desc as {
+        node?: { type?: { name?: string } }
+        children?: unknown[]
+        dirty?: number
+        contentDOM?: HTMLElement | null
+      }
+      if (d?.node?.type?.name === 'file_block') {
+        return {
+          dirty: d.dirty,
+          childrenCount: d.children?.length ?? -1,
+          contentDOMChildren: d.contentDOM?.childNodes.length ?? -1,
+        }
+      }
+      if (depth < 8) {
+        for (const c of d?.children ?? []) {
+          const r = findDesc(c, depth + 1)
+          if (r) return r
+        }
+      }
+      return null
+    }
+    const walkAll = (desc: unknown, depth: number, acc: string[]) => {
+      const d = desc as { node?: { type?: { name?: string } }; children?: unknown[]; dirty?: number }
+      if (!d) return
+      const name = d.node?.type?.name ?? (d as { type?: string }).type ?? '?'
+      const kids = d.children?.length ?? 0
+      acc.push(`${name}(kids=${kids}${d.dirty !== undefined ? ',dirty=' + d.dirty : ''})`)
+      if (depth < 6) for (const c of d.children ?? []) walkAll(c, depth + 1, acc)
+    }
+    const tree: string[] = []
+    walkAll(docView, 0, tree)
+    out = { tree: tree.slice(0, 60), find: findDesc(docView?.children?.[0], 0) }
+  })
+  return out
+}
 ;(window as unknown as { __editorForceSync?: unknown }).__editorForceSync = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return 'no-inst'

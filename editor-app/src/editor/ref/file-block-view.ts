@@ -14,6 +14,7 @@ export class FileBlockView implements NodeView {
   private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.editorView = editorViewRef
+    ;(window as unknown as { __fbvCount: number }).__fbvCount = ((window as unknown as { __fbvCount?: number }).__fbvCount ?? 0) + 1
     this.dom = document.createElement('div')
     this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '')
 
@@ -101,7 +102,9 @@ export class FileBlockView implements NodeView {
   }
 
   /**
-   * 兜底：拦截块内容区的文本输入（beforeinput insertText），手动 dispatch 到 doc。
+   * 兜底：拦截块内容区的文本输入（beforeinput insertText/insertCompositionText），
+   * 手动 dispatch 到 doc（NodeView 内容 DOM 的 DOMObserver 同步不可靠）。
+   * 不再强制 update() 重建（频繁重建会引发监听竞态）。
    * 根因：物化（replaceWith）后的 NodeView 内容 DOM 没有 pmViewDesc，ProseMirror 的
    * DOMObserver 无法把块内 DOM 文本变化同步到 doc（表格/宿主段落正常——它们有 desc）。
    * 这里在浏览器把文本插入 DOM 前拦截，直接用 ProseMirror 事务插入 → doc 与 DOM 一致。
@@ -114,12 +117,14 @@ export class FileBlockView implements NodeView {
     // 普通文本插入 + IME 组合文本：拦截默认（浏览器改 DOM）→ 手动 dispatch 到 doc。
     // 根因：NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不把块内文本变化同步到 doc。
     if ((inputType === 'insertText' || inputType === 'insertCompositionText') && ev.data) {
+      console.log('[fbv] intercept:', inputType, 'data=', ev.data)
       e.preventDefault()
       try {
         const { from, to } = view.state.selection
         view.dispatch(view.state.tr.insertText(ev.data, from, to).scrollIntoView())
-      } catch {
-        /* 忽略 */
+        console.log('[fbv] dispatched at', from, '-', to, 'docSize', view.state.doc.content.size)
+      } catch (err) {
+        console.log('[fbv] dispatch error:', String(err).slice(0, 100))
       }
     }
     // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截
