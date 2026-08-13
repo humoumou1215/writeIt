@@ -189,6 +189,38 @@ export async function refreshValidation(): Promise<void> {
 ;(window as unknown as { __editorOpenPath?: unknown }).__editorOpenPath = (path: string) => {
   void openTab(path)
 }
+;(window as unknown as { __writebackDiag?: unknown }).__writebackDiag = async () => {
+  // 诊断：输出所有标签的完整状态机 + 写回相关日志，供用户复制反馈
+  const out: unknown[] = []
+  for (const t of state.tabs) {
+    const inst = instances.get(t.id)
+    let mdLen = -1
+    let blockSnapshot: Record<string, number> = {}
+    let cur = ''
+    if (inst) {
+      cur = inst.crepe.getMarkdown()
+      mdLen = cur.length
+      blockSnapshot = Object.fromEntries(
+        [...(t.blockSnapshot?.entries() ?? [])].map(([k, v]) => [k, v.length])
+      )
+    }
+    out.push({
+      tab: t.path,
+      dirty: t.dirty,
+      mdLen,
+      savedContentLen: t.savedContent.length,
+      curEqSaved: cur === t.savedContent,
+      userEditedAt: t.userEditedAt,
+      lastExternalSyncAt: t.lastExternalSyncAt,
+      noUserEditsSinceSync: t.userEditedAt <= t.lastExternalSyncAt,
+      blockSnapshot,
+      lastModified: t.lastModified,
+    })
+  }
+  const diag = { tabs: out, fsKind: (await import('../fs')).fs.kind }
+  console.log('[diag]', JSON.stringify(diag, null, 1))
+  return diag
+}
 ;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return
@@ -342,8 +374,8 @@ export async function openTab(path: string): Promise<void> {
     dirty: false,
     lastModified: Date.now(),
     blockSnapshot: null,
-    externallySynced: false,
-    syncedValue: null,
+    userEditedAt: 0,
+    lastExternalSyncAt: 0,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -398,7 +430,11 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   void resolveRefs(crepe.editor).then(() => {
     // §6.7：物化完成后建立初始块快照（此后嵌入编辑通过双条件脏检测识别）
     const t = state.tabs.find((x) => x.id === tabId)
-    if (t) t.blockSnapshot = collectBlockContentsSync(crepe.editor)
+    if (t) {
+      t.blockSnapshot = collectBlockContentsSync(crepe.editor)
+      // 打开时的物化 dispatch 不是用户编辑——重置时间戳基线
+      t.userEditedAt = 0
+    }
   })
   void refreshBrokenState(crepe.editor)
   // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
@@ -406,6 +442,13 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 
   const inst: Instance = { crepe, el: container, suppressing: false }
   instances.set(tabId, inst)
+  // §6.7：真实用户输入（键盘/粘贴/IME）→ 记录时间戳。
+  // 用 DOM input 事件而非 markdownUpdated（校验空事务/物化等程序化 dispatch 不触发 input）
+  const onInput = () => {
+    const t = state.tabs.find((x) => x.id === tabId)
+    if (t) t.userEditedAt = Date.now()
+  }
+  container.addEventListener('input', onInput)
 
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, md) => {
@@ -417,8 +460,6 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const nowDirty = md !== t.savedContent || blockDirty
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
-      // 用户编辑（非联动刷新）→ 清除外部同步标记
-      if (t.externallySynced && !blockDirty) t.externallySynced = false
       // §6.7：块编辑 → 源文件标签联动刷新（防抖）
       if (blockDirty) scheduleExternalSync(tabId)
       // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
@@ -450,8 +491,10 @@ export function unmountEditor(tabId: string) {
 // ---------- §6.7 源文件联动（嵌入块编辑 → 源标签刷新/脏联动）----------
 
 /** 把标签内容替换为指定 markdown（replaceAll）+ 重新物化引用。
- * diskUpdated=true：磁盘已更新（写回后）→ savedContent 同步 + 脏灭；
- * diskUpdated=false：磁盘未更新（联动预览）→ savedContent 保持旧磁盘值 → 脏亮（待保存）。
+ * diskUpdated=true（保存写回后）：replaceAll → canonical（round-trip 稳定值）→ 以 canonical 落盘
+ *   → savedContent = canonical + 脏灭（保证 磁盘 == 编辑器内容，彻底消除 round-trip 差异）；
+ * diskUpdated=false（联动预览）：仅 replaceAll + 脏亮（savedContent 保持旧磁盘值，待保存）。
+ * 两种都在 suppressing 期内完成（否则 markdownUpdated 误标用户编辑）。
  */
 async function refreshTabToContent(
   srcInst: Instance,
@@ -463,19 +506,21 @@ async function refreshTabToContent(
   try {
     srcInst.crepe.editor.action(replaceAll(content))
     // replaceAll 后块标记行重新出现——重新物化引用；物化 dispatch 需在 suppressing 期内
-    // （否则 markdownUpdated 会误清 externallySynced 标志）
     await resolveRefs(srcInst.crepe.editor)
-    const now = srcInst.crepe.getMarkdown()
+    const canonical = srcInst.crepe.getMarkdown()
     if (diskUpdated) {
-      srcTab.savedContent = now
+      try {
+        await fs.writeFile(srcTab.path, canonical)
+      } catch (e) {
+        console.warn('[sync] 应然内容落盘失败:', srcTab.path, e)
+      }
+      srcTab.savedContent = canonical
       srcTab.dirty = false
-      srcTab.externallySynced = false
-      srcTab.syncedValue = null
+      srcTab.lastExternalSyncAt = Date.now()
     } else {
       // 磁盘还是旧内容：A 内容 ≠ 磁盘 → 脏（保存后才写盘）
-      srcTab.dirty = now !== srcTab.savedContent
-      srcTab.externallySynced = true
-      srcTab.syncedValue = now
+      srcTab.dirty = canonical !== srcTab.savedContent
+      srcTab.lastExternalSyncAt = Date.now()
     }
     srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
     srcTab.lastModified = Date.now()
@@ -589,28 +634,15 @@ export async function saveTab(tabId: string): Promise<boolean> {
     const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === p)
     if (srcTab) {
       const srcInst = instances.get(srcTab.id)
-      // A 无自身编辑的判断：当前内容 == 写回内容（一致）或 == 旧磁盘值（未联动未编辑）
-      // 或 == 联动应然值（A 内容 = round-trip 后的块内容，与块原样序列化差末尾换行——以应然值落盘对齐）。
-      // 不能用 externallySynced（防抖校验的空事务会触发 markdownUpdated 误清标志）
-      const srcCur = srcInst ? srcInst.crepe.getMarkdown() : null
+      // A 无用户编辑：userEditedAt <= lastExternalSyncAt（联动/写回刷新后无用户输入）或从未编辑（0）。
+      // 用时间戳区分用户编辑（内容比较会被 round-trip 差异坑）
       const noUserEdits =
-        srcInst !== null &&
-        srcInst !== undefined &&
-        (srcCur === content || srcCur === srcTab.savedContent || srcCur === srcTab.syncedValue)
-
-      if (noUserEdits && srcCur) {
-        // 以源标签的应然内容（round-trip 稳定值）落盘，保证 磁盘 == 源标签编辑器内容
-        if (srcCur !== content) {
-          try {
-            await fs.writeFile(p, srcCur)
-          } catch (e) {
-            console.warn('[sync] 应然值落盘失败:', p, e)
-          }
-        }
-        // 同步源标签：savedContent = 当前内容 + 脏灭
-        await refreshTabToContent(srcInst, srcTab, srcCur, true)
+        srcInst !== null && srcInst !== undefined && srcTab.userEditedAt <= srcTab.lastExternalSyncAt
+      if (noUserEdits) {
+        // replaceAll(块内容) → canonical 落盘 → savedContent 同步 + 脏灭
+        await refreshTabToContent(srcInst, srcTab, content, true)
       }
-      // A 有自身编辑 → 不刷新（最后保存者胜，脏保持）
+      // A 有用户编辑 → 不刷新（最后保存者胜，脏保持）
     }
     void broadcastBlockRefresh(p, tabId, instances)
   }
