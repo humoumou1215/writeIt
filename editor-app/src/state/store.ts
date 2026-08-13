@@ -13,6 +13,8 @@ export interface Tab {
   blockSnapshot: Map<string, string> | null
   /** §6.7：内容是否来自外部嵌入块联动刷新（区分用户编辑；保存源标签时用） */
   externallySynced: boolean
+  /** §6.7：联动刷新后的应然内容（round-trip 稳定值；B 保存时以此落盘与源标签对齐） */
+  syncedValue: string | null
 }
 
 export interface Toast {
