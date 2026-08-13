@@ -293,14 +293,15 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - 冲突：同源被多文档编辑 → **最后保存者胜** + toast（不做三方合并）
 - 只读变体不参与步骤 2-3
 
-> **【缺口记录 · M1 暴露】脏检测双条件**：序列化只输出标记行，`getMarkdown()` 不感知嵌入块内的编辑，
-> 基于 markdown 对比的脏检测会失效。修复：
-> `dirty = markdown 变化 || 任一可编辑嵌入容器内容 ≠ 其源文件快照`
-> 语义统一为「保存 = 提交文档 + 全部被引用文件变更（原子）」
+> **【已实现】脏检测双条件 + 写回事务**（writeback.ts）：
+> `dirty = markdown 变化 || 任一可编辑嵌入容器内容 ≠ 其源文件快照`（物化完成后建立初始快照，保存时更新）。
+> 写回：保存时收集可编辑块内容（serializer 包 doc 序列化，勿用 getMarkdown(range)——嵌套上下文会输出标记行）→
+> resolveRealPath 补扩展名（块 attrs.path 常缺 .md，直接写会创建无扩展名新文件）→ 对比源文件仅写差异 →
+> 更新缓存 → broadcastBlockRefresh 其他标签物化同步（路径匹配 sameSource 忽略扩展名差异）。
 
 > **【缺口记录 · M1 暴露】只读变体拖拽缺口**：`contenteditable=false` + `stopEvent` 只拦截打字，
 > block 拖拽把手在 ProseMirror 事务层操作，可绕过 DOM 层修改只读容器内容。加固方案（M2/M3 实施）：
-> ① NodeView 拦截拖拽/选择事件；② 事务层编辑守卫（只读容器拒绝修改事务）；③ 对只读容器隐藏块手柄
+> ① NodeView 拦截拖拽/选择事件；② 事务层编辑守卫（只读容器拒绝修改事务）；③ 对只读容器隐藏块手柄 —— ②③ 已实施（app-plugin readonlyGuardPlugin + styles.css）
 
 ### 6.8 嵌套与循环
 
