@@ -100,16 +100,31 @@ async function toggleResolved(ann: Annotation, c: Comment) {
   setCommentResolved(inst.crepe.editor as never, ann.from, c.id, !c.resolved, userName.value)
 }
 
-/** 点击批注卡 = 定位 + 展开（再点折叠）；无锚点（from<0）仅展开 */
+/** 点击批注卡 = 定位 + 激活（显示该卡连线）+ 展开/折叠 */
 async function locate(ann: Annotation) {
   if (ann.from >= 0) {
     const tabId = state.activeTabId
     if (tabId) {
+      setActiveAnnotation(tabId, ann.id)
       const { scrollToPos } = await import('../editor/manager')
       await scrollToPos(tabId, ann.from)
     }
+  } else {
+    // 无锚点（如缺需求表整体违规）：仅激活 + 展开
+    const tabId = state.activeTabId
+    if (tabId) setActiveAnnotation(tabId, ann.id)
   }
   collapsed.value[ann.id] = !collapsed.value[ann.id]
+}
+
+/** 回复输入：Ctrl/Cmd+Enter 提交；Enter 换行；ESC 清空草稿 */
+function onReplyKeydown(ann: Annotation, e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault()
+    void reply(ann)
+  } else if (e.key === 'Escape') {
+    draft.value[ann.id] = ''
+  }
 }
 
 async function revalidate() {
@@ -292,8 +307,7 @@ function onAnchorHover(strong: boolean) {
             <span class="ad-comment-count">{{ a.thread.length }} 条</span>
             <span class="ad-fold">{{ collapsed[a.id] ? '▸' : '▾' }}</span>
           </div>
-          <template v-if="!collapsed[a.id]">
-            <div class="ad-thread">
+          <div class="ad-thread">
               <div v-for="c in a.thread" :key="c.id" class="ad-comment" :class="{ resolved: c.resolved }">
                 <span class="ad-avatar" :style="{ background: LEVEL_COLOR[a.level] }">{{ initials(c.author) }}</span>
                 <div class="ad-comment-main">
@@ -312,19 +326,18 @@ function onAnchorHover(strong: boolean) {
                 </div>
               </div>
             </div>
-            <!-- 回复输入（Ctrl+Enter 提交；回车换行） -->
-            <div class="ad-reply">
+            <!-- 回复输入（折叠时隐藏；Ctrl+Enter 提交 / Enter 换行 / ESC 清空） -->
+            <div v-if="!collapsed[a.id]" class="ad-reply">
               <textarea
                 v-model="draft[a.id]"
                 rows="2"
-                placeholder="回复…（Ctrl+Enter 发送，纯文本）"
-                @keydown.ctrl.enter.prevent="reply(a)"
+                placeholder="回复…（Ctrl+Enter 发送，ESC 取消）"
+                @keydown="onReplyKeydown(a, $event)"
               ></textarea>
               <div class="ad-reply-actions">
                 <button class="mini primary" @click="reply(a)">发送</button>
               </div>
             </div>
-          </template>
         </div>
       </div>
     </div>

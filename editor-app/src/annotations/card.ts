@@ -82,6 +82,12 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
     cancel.className = 'mini'
     cancel.textContent = '取消'
     cancel.addEventListener('click', hideAnnotationInput)
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        hideAnnotationInput()
+      }
+    })
     const ok = document.createElement('button')
     ok.className = 'mini primary'
     ok.textContent = '添加批注'

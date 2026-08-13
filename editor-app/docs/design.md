@@ -483,6 +483,13 @@ file_block : block,        content: 'block+',                    // ![[…]]
 5. **已解决状态 = 状态圆**：评论人-时间行右侧空圆（○）= 未解决 → 点击变 ✔绿圆 = 已解决；仅创建人（mine）可点，非创建人圆淡化不可点
 6. 测试：m6c 19/19、m6-toolbar 7/7（含 Ctrl+Enter/Ctrl+R）；m5-e2e/m6-e2e 同步
 
+**M6 v5（折叠/快捷键/连线细化）**：
+
+1. **折叠状态**：折叠时仍显示评论列表，只隐藏输入框和发送按钮；展开显示输入框（评论列表常显）
+2. **评论输入**：Enter 换行 / **Ctrl+Enter（或 Cmd+Enter）提交** / **ESC 清空草稿**——改为显式 @keydown 处理（onReplyKeydown），不再依赖 Vue 修饰符；添加批注浮窗（showAnnotationInput）也支持 ESC 关闭
+3. **点击批注卡 = 定位 + 激活（显示该卡连线）+ 折叠切换**：locate() 增加 setActiveAnnotation（连线跟随点击的卡片）；无锚点整体违规仅激活+展开
+4. 测试：m6c 20/20、m6-toolbar 9/9（含 Enter 换行/ESC/Ctrl+Enter/Ctrl+R）
+
 ### 记录缺口 / 待办
 
 - 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）
