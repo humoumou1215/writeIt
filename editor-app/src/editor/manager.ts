@@ -190,19 +190,25 @@ export async function refreshValidation(): Promise<void> {
   void openTab(path)
 }
 ;(window as unknown as { __writebackDiag?: unknown }).__writebackDiag = async () => {
-  // 诊断：输出所有标签的完整状态机 + 写回相关日志，供用户复制反馈
+  // 诊断：输出所有标签的完整状态机 + 每个块「当前内容 vs 快照」对比（决定性证据）
   const out: unknown[] = []
   for (const t of state.tabs) {
     const inst = instances.get(t.id)
     let mdLen = -1
-    let blockSnapshot: Record<string, number> = {}
     let cur = ''
+    let currentBlocks: Record<string, { len: number; head: string; eqSnapshot: boolean }> = {}
     if (inst) {
       cur = inst.crepe.getMarkdown()
       mdLen = cur.length
-      blockSnapshot = Object.fromEntries(
-        [...(t.blockSnapshot?.entries() ?? [])].map(([k, v]) => [k, v.length])
-      )
+      try {
+        const now = collectBlockContentsSync(inst.crepe.editor)
+        for (const [p, v] of now) {
+          const snap = t.blockSnapshot?.get(p)
+          currentBlocks[p] = { len: v.length, head: v.slice(0, 50), eqSnapshot: v === snap }
+        }
+      } catch (e) {
+        currentBlocks = { err: { len: -1, head: String(e), eqSnapshot: false } }
+      }
     }
     out.push({
       tab: t.path,
@@ -213,7 +219,8 @@ export async function refreshValidation(): Promise<void> {
       userEditedAt: t.userEditedAt,
       lastExternalSyncAt: t.lastExternalSyncAt,
       noUserEditsSinceSync: t.userEditedAt <= t.lastExternalSyncAt,
-      blockSnapshot,
+      snapshotLen: t.blockSnapshot ? Object.fromEntries([...(t.blockSnapshot.entries())].map(([k, v]) => [k, v.length])) : {},
+      currentBlocks,
       lastModified: t.lastModified,
     })
   }
