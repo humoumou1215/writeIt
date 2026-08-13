@@ -343,6 +343,7 @@ export async function openTab(path: string): Promise<void> {
     lastModified: Date.now(),
     blockSnapshot: null,
     externallySynced: false,
+    syncedValue: null,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -469,10 +470,12 @@ async function refreshTabToContent(
       srcTab.savedContent = now
       srcTab.dirty = false
       srcTab.externallySynced = false
+      srcTab.syncedValue = null
     } else {
       // 磁盘还是旧内容：A 内容 ≠ 磁盘 → 脏（保存后才写盘）
       srcTab.dirty = now !== srcTab.savedContent
       srcTab.externallySynced = true
+      srcTab.syncedValue = now
     }
     srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
     srcTab.lastModified = Date.now()
@@ -586,13 +589,26 @@ export async function saveTab(tabId: string): Promise<boolean> {
     const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === p)
     if (srcTab) {
       const srcInst = instances.get(srcTab.id)
-      // A 无自身编辑的判断：当前内容 == 写回内容（联动已刷新/一致）或 == 旧磁盘值（未联动未编辑）。
+      // A 无自身编辑的判断：当前内容 == 写回内容（一致）或 == 旧磁盘值（未联动未编辑）
+      // 或 == 联动应然值（A 内容 = round-trip 后的块内容，与块原样序列化差末尾换行——以应然值落盘对齐）。
       // 不能用 externallySynced（防抖校验的空事务会触发 markdownUpdated 误清标志）
       const srcCur = srcInst ? srcInst.crepe.getMarkdown() : null
-      const noUserEdits = srcInst !== null && srcInst !== undefined && (srcCur === content || srcCur === srcTab.savedContent)
-      if (noUserEdits) {
-        // A 无自身编辑 → 同步为写回内容 + 脏灭（磁盘已更新）
-        await refreshTabToContent(srcInst, srcTab, content, true)
+      const noUserEdits =
+        srcInst !== null &&
+        srcInst !== undefined &&
+        (srcCur === content || srcCur === srcTab.savedContent || srcCur === srcTab.syncedValue)
+
+      if (noUserEdits && srcCur) {
+        // 以源标签的应然内容（round-trip 稳定值）落盘，保证 磁盘 == 源标签编辑器内容
+        if (srcCur !== content) {
+          try {
+            await fs.writeFile(p, srcCur)
+          } catch (e) {
+            console.warn('[sync] 应然值落盘失败:', p, e)
+          }
+        }
+        // 同步源标签：savedContent = 当前内容 + 脏灭
+        await refreshTabToContent(srcInst, srcTab, srcCur, true)
       }
       // A 有自身编辑 → 不刷新（最后保存者胜，脏保持）
     }

@@ -295,15 +295,17 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 > **【已实现】脏检测双条件 + 写回事务 + 源文件联动**（writeback.ts + manager.ts）：
 > `dirty = markdown 变化 || 任一可编辑嵌入容器内容 ≠ 其源文件快照`（物化完成后建立初始快照，保存时更新）。
-> 写回：保存时收集可编辑块内容（serializer 包 doc 序列化，勿用 getMarkdown(range)——嵌套上下文会输出标记行）→
-> resolveRealPath 补扩展名（块 attrs.path 常缺 .md，直接写会创建无扩展名新文件）→ 对比源文件仅写差异 →
-> 更新缓存 → broadcastBlockRefresh 其他标签物化同步（路径匹配 sameSource 忽略扩展名差异）。
+> 写回：保存时收集可编辑块内容（serializer 包 doc 序列化 + **round-trip 稳定化**——否则与源标签
+> replaceAll 后的值差末尾换行，保存时误判"源标签有用户编辑"）→ resolveRealPath 补扩展名（块 attrs.path 常缺
+> .md，直接写会创建无扩展名新文件）→ 对比源文件仅写差异 → 更新缓存 → broadcastBlockRefresh 其他标签物化同步
+> （路径匹配 sameSource 忽略扩展名差异）。
 > **源文件联动（嵌入块编辑 → 源标签实时刷新）**：B 块编辑 → 防抖 600ms → 源文件 A 标签（打开且无自身编辑）内容
-> replaceAll 为块内容（块内容 = A 应然内容）+ A 脏灯亮（savedContent 保持旧磁盘值）；A 有自身编辑 → 不刷新
-> （最后保存者胜）。**保存语义**：保存 B = 写 B + 写回块到 A 磁盘 + A 标签（无自身编辑）同步为写回内容 + A 脏灭；
+> replaceAll 为块内容 + A 脏灯亮（savedContent 保持旧磁盘值）+ `syncedValue` 记录应然值（round-trip 后内容）；
+> A 有自身编辑 → 不刷新（最后保存者胜）。**保存语义**：保存 B = 写 B + 写回块到 A 磁盘 + A 标签无自身编辑
+> （内容==写回值 或 ==旧磁盘 或 ==syncedValue）→ 以应然值落盘（保证磁盘==A 编辑器）+ A 脏灭；
 > 保存 A = 写 A 磁盘 + 广播 B 块物化刷新 + B 块快照同步（仅块改动的 B 脏灭）。坑：联动刷新后的物化 dispatch
-> 必须压在 suppressing 期内（否则 markdownUpdated 误清标志）；"无自身编辑"判断用 内容==写回内容 或 ==旧磁盘
-> （不能用 externallySynced 标志——防抖校验空事务会误清）。
+> 必须压在 suppressing 期内（否则 markdownUpdated 误清标志）；"无自身编辑"判断不能用 externallySynced
+> （防抖校验空事务会误清）——用内容比较 + syncedValue。
 
 > **【缺口记录 · M1 暴露】只读变体拖拽缺口**：`contenteditable=false` + `stopEvent` 只拦截打字，
 > block 拖拽把手在 ProseMirror 事务层操作，可绕过 DOM 层修改只读容器内容。加固方案（M2/M3 实施）：

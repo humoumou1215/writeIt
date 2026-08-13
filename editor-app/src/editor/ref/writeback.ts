@@ -5,7 +5,7 @@
 //   3. 写回后更新内容缓存 + 广播其他打开该源的标签刷新物化
 // 只读变体不参与；失败降级 toast，不中断保存主流程（§7.1）。
 import type { Editor } from '@milkdown/kit/core'
-import { editorViewCtx, schemaCtx, serializerCtx } from '@milkdown/kit/core'
+import { editorViewCtx, parserCtx, schemaCtx, serializerCtx } from '@milkdown/kit/core'
 import { fs } from '../../fs'
 import { toast } from '../../state/store'
 import { readRefFile, cacheContent, collectBlocks, materializeBlock } from './resolve'
@@ -53,12 +53,20 @@ export function collectBlockContentsSync(editor: Editor): Map<string, string> {
       const content = editor.action((ctx) => {
         const view = ctx.get(editorViewCtx)
         const schema = ctx.get(schemaCtx)
+        const parser = ctx.get(parserCtx)
         const serializer = ctx.get(serializerCtx)
         const node = view.state.doc.nodeAt(b.pos)
         if (!node || node.type.name !== 'file_block') return ''
         const doc = schema.topNodeType.createAndFill(null, node.content)
         if (!doc) return ''
-        return serializer(doc)
+        // round-trip 稳定化：序列化 → 再解析 → 再序列化。
+        // 否则「块序列化值」与「源标签 replaceAll 后的 round-trip 值」差末尾换行，
+        // 导致保存时误判"源标签有用户编辑"而跳过刷新。
+        const md = serializer(doc)
+        const reparsed = parser(md)
+        const stable = reparsed ? serializer(reparsed) : md
+        if (md.length !== stable.length) console.log('[writeback] roundtrip diff:', md.length, '->', stable.length, JSON.stringify(md.slice(-30)), '|', JSON.stringify(stable.slice(-30)))
+        return stable
       })
       byPath.set(b.path, content)
     } catch (e) {
