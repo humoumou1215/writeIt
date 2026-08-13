@@ -70,10 +70,10 @@ export function collectBlockContentsSync(editor: Editor): Map<string, string> {
 
 /**
  * 写回事务：对比源文件，仅写有差异的可编辑块（§6.7 步骤 1-3）。
- * 返回写回的文件路径列表（供广播刷新）。
+ * 返回写回的 { 真实路径 → 内容 }（供源标签刷新/广播）。
  */
-export async function writeBackBlocks(editor: Editor): Promise<string[]> {
-  const written: string[] = []
+export async function writeBackBlocks(editor: Editor): Promise<Map<string, string>> {
+  const written = new Map<string, string>()
   try {
     const byPath = collectBlockContentsSync(editor)
     for (const [path, content] of byPath) {
@@ -90,7 +90,7 @@ export async function writeBackBlocks(editor: Editor): Promise<string[]> {
         if (!real) continue
         await fs.writeFile(real, content)
         cacheContent(real, content) // 更新缓存，避免广播刷新读到旧内容
-        written.push(real)
+        written.set(real, content)
         console.log('[writeback] 写回:', real)
       } catch (e) {
         toast(`嵌入内容写回失败：${path}`, 'error')
@@ -101,6 +101,17 @@ export async function writeBackBlocks(editor: Editor): Promise<string[]> {
     toast('嵌入内容写回异常（已降级）', 'error')
   }
   return written
+}
+
+/** 本标签所有可编辑块的源真实路径（写回/联动目标） */
+export async function collectSourcePaths(editor: Editor): Promise<Set<string>> {
+  const entries = collectBlockEntries(editor).filter((b) => !b.readonly)
+  const paths = new Set<string>()
+  for (const b of entries) {
+    const real = await resolveRealPath(b.path)
+    if (real) paths.add(real)
+  }
+  return paths
 }
 
 /** 判断两个引用路径是否指向同一源文件（忽略扩展名差异，如 笔记/待办清单 vs 笔记/待办清单.md） */
@@ -129,7 +140,8 @@ export async function broadcastBlockRefresh<P extends { crepe: { editor: Editor 
   path: string,
   exceptTabId: string,
   instances: Map<string, P>
-): Promise<void> {
+): Promise<string[]> {
+  const refreshed: string[] = []
   for (const [tabId, inst] of instances) {
     if (tabId === exceptTabId) continue
     try {
@@ -138,13 +150,17 @@ export async function broadcastBlockRefresh<P extends { crepe: { editor: Editor 
       const targets = blocks
         .filter((b) => sameSource(b.path, path))
         .sort((a, b) => b.pos - a.pos)
-      for (const b of targets) {
-        await materializeBlock(inst.crepe.editor, b.pos, b.path, b.readonly)
+      if (targets.length) {
+        for (const b of targets) {
+          await materializeBlock(inst.crepe.editor, b.pos, b.path, b.readonly)
+        }
+        refreshed.push(tabId)
       }
     } catch {
       /* 单个标签刷新失败不影响其他 */
     }
   }
+  return refreshed
 }
 
 /** 脏检测第二条件：任一可编辑块内容 ≠ 保存时快照（§6.7 缺口修复） */
