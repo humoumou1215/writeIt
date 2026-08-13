@@ -390,7 +390,7 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M6 已完成并全量回归通过**。
+> 状态：**M1-M6 已完成并全量回归通过**。M6 后修复：块内输入不进 doc 的根因（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步 → FileBlockView 拦截 beforeinput insertText/insertCompositionText 手动 dispatch）。
 > 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、**m6 7/7、m6-toolbar 7/7**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
 
 ### 里程碑状态
