@@ -4,6 +4,7 @@
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
+import { replaceAll } from '@milkdown/kit/utils'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
@@ -15,6 +16,7 @@ import {
   hasBlockChanges,
   collectBlockContentsSync,
   cacheRefFileContent,
+  collectSourcePaths,
 } from './ref/writeback'
 import {
   registerOpenRefHandler,
@@ -184,6 +186,9 @@ export async function refreshValidation(): Promise<void> {
   })
   return res
 }
+;(window as unknown as { __editorOpenPath?: unknown }).__editorOpenPath = (path: string) => {
+  void openTab(path)
+}
 ;(window as unknown as { __editorGoEnd?: unknown }).__editorGoEnd = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return
@@ -337,6 +342,7 @@ export async function openTab(path: string): Promise<void> {
     dirty: false,
     lastModified: Date.now(),
     blockSnapshot: null,
+    externallySynced: false,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -410,6 +416,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const nowDirty = md !== t.savedContent || blockDirty
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
+      // 用户编辑（非联动刷新）→ 清除外部同步标记
+      if (t.externallySynced && !blockDirty) t.externallySynced = false
+      // §6.7：块编辑 → 源文件标签联动刷新（防抖）
+      if (blockDirty) scheduleExternalSync(tabId)
       // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
       scheduleDebouncedValidation(tabId, inst)
     })
@@ -435,6 +445,100 @@ export function unmountEditor(tabId: string) {
 }
 
 // ---------- 保存 ----------
+
+// ---------- §6.7 源文件联动（嵌入块编辑 → 源标签刷新/脏联动）----------
+
+/** 把标签内容替换为指定 markdown（replaceAll）+ 重新物化引用。
+ * diskUpdated=true：磁盘已更新（写回后）→ savedContent 同步 + 脏灭；
+ * diskUpdated=false：磁盘未更新（联动预览）→ savedContent 保持旧磁盘值 → 脏亮（待保存）。
+ */
+async function refreshTabToContent(
+  srcInst: Instance,
+  srcTab: Tab,
+  content: string,
+  diskUpdated: boolean
+): Promise<void> {
+  srcInst.suppressing = true
+  try {
+    srcInst.crepe.editor.action(replaceAll(content))
+    // replaceAll 后块标记行重新出现——重新物化引用；物化 dispatch 需在 suppressing 期内
+    // （否则 markdownUpdated 会误清 externallySynced 标志）
+    await resolveRefs(srcInst.crepe.editor)
+    const now = srcInst.crepe.getMarkdown()
+    if (diskUpdated) {
+      srcTab.savedContent = now
+      srcTab.dirty = false
+      srcTab.externallySynced = false
+    } else {
+      // 磁盘还是旧内容：A 内容 ≠ 磁盘 → 脏（保存后才写盘）
+      srcTab.dirty = now !== srcTab.savedContent
+      srcTab.externallySynced = true
+    }
+    srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
+    srcTab.lastModified = Date.now()
+  } catch (e) {
+    console.warn('[sync] 源标签刷新失败:', srcTab.path, e)
+  } finally {
+    setTimeout(() => (srcInst.suppressing = false), 0)
+  }
+}
+
+/** 广播物化刷新后：目标标签块快照同步 + 脏重算（块脏灭；自身编辑保持） */
+function syncBlockSnapshots(tabIds: string[]): void {
+  for (const tid of tabIds) {
+    const t = state.tabs.find((x) => x.id === tid)
+    const inst = instances.get(tid)
+    if (!t || !inst) continue
+    t.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+    const blockDirty = hasBlockChanges(inst.crepe.editor, t.blockSnapshot)
+    const md = inst.crepe.getMarkdown()
+    t.dirty = md !== t.savedContent || blockDirty
+  }
+}
+
+/** 块编辑防抖联动：本标签块变更 → 源文件标签实时刷新（源标签无自身编辑时） */
+const externalSyncTimers = new Map<string, ReturnType<typeof setTimeout>>()
+function scheduleExternalSync(tabId: string) {
+  const prev = externalSyncTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  externalSyncTimers.set(
+    tabId,
+    setTimeout(() => {
+      externalSyncTimers.delete(tabId)
+      void syncSourceTabs(tabId)
+    }, 600)
+  )
+}
+
+/** B 块编辑 → 源文件 A 标签（打开且无自身编辑）内容刷新为最新（块内容 = A 应然内容） */
+async function syncSourceTabs(tabId: string): Promise<void> {
+  const inst = instances.get(tabId)
+  if (!inst) return
+  try {
+    const sources = await collectSourcePaths(inst.crepe.editor)
+    for (const path of sources) {
+      const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === path)
+      if (!srcTab) continue
+      const srcInst = instances.get(srcTab.id)
+      if (!srcInst) continue
+      // A 有自身编辑 → 不刷新（最后保存者胜）；无编辑 → 刷新为块内容（本标签同源块的最新内容）
+      if (srcInst.crepe.getMarkdown() !== srcTab.savedContent) continue
+      const blockContent = collectBlockContentsSync(inst.crepe.editor)
+      const content = [...blockContent.entries()].find(([p]) => sameSourceCheck(p, path))?.[1]
+      if (content === undefined) continue
+      if (srcInst.crepe.getMarkdown() === content) continue // 已是最新
+      await refreshTabToContent(srcInst, srcTab, content, false)
+    }
+  } catch (e) {
+    console.warn('[sync] 源标签联动失败:', e)
+  }
+}
+
+function sameSourceCheck(a: string, b: string): boolean {
+  if (a === b) return true
+  const norm = (p: string) => p.replace(/\.(md|markdown|txt)$/i, '')
+  return norm(a) === norm(b)
+}
 
 export async function saveTab(tabId: string): Promise<boolean> {
   const inst = instances.get(tabId)
@@ -477,15 +581,27 @@ export async function saveTab(tabId: string): Promise<boolean> {
   tab.lastModified = Date.now()
   // 等一帧再解除抑制，避免保存后的 markdownUpdated 误判
   setTimeout(() => (inst.suppressing = false), 0)
-  // 广播①：其他打开这些源文件的标签刷新物化内容（失败不影响保存结果）
-  if (written.length) {
-    for (const p of written) {
-      void broadcastBlockRefresh(p, tabId, instances)
+  // 广播①：写回的源文件 → 源标签（若打开且无自身编辑）刷新为最新 + 脏灭；其他引用标签块物化刷新
+  for (const [p, content] of written) {
+    const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === p)
+    if (srcTab) {
+      const srcInst = instances.get(srcTab.id)
+      // A 无自身编辑的判断：当前内容 == 写回内容（联动已刷新/一致）或 == 旧磁盘值（未联动未编辑）。
+      // 不能用 externallySynced（防抖校验的空事务会触发 markdownUpdated 误清标志）
+      const srcCur = srcInst ? srcInst.crepe.getMarkdown() : null
+      const noUserEdits = srcInst !== null && srcInst !== undefined && (srcCur === content || srcCur === srcTab.savedContent)
+      if (noUserEdits) {
+        // A 无自身编辑 → 同步为写回内容 + 脏灭（磁盘已更新）
+        await refreshTabToContent(srcInst, srcTab, content, true)
+      }
+      // A 有自身编辑 → 不刷新（最后保存者胜，脏保持）
     }
+    void broadcastBlockRefresh(p, tabId, instances)
   }
-  // 广播②：本文档保存后，若它是某嵌入块的源文件 → 其他标签的块刷新物化 + 更新缓存
+  // 广播②：本文档保存后，若它是某嵌入块的源文件 → 其他标签的块刷新物化 + 更新缓存 + 块快照同步
   cacheRefFileContent(tab.path, md)
-  void broadcastBlockRefresh(tab.path, tabId, instances)
+  const refreshed = await broadcastBlockRefresh(tab.path, tabId, instances)
+  syncBlockSnapshots(refreshed)
   return true
 }
 

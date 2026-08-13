@@ -11,6 +11,8 @@ export interface Tab {
   lastModified: number
   /** §6.7：可编辑 file_block 内容快照（保存时记录；脏检测第二条件用） */
   blockSnapshot: Map<string, string> | null
+  /** §6.7：内容是否来自外部嵌入块联动刷新（区分用户编辑；保存源标签时用） */
+  externallySynced: boolean
 }
 
 export interface Toast {
