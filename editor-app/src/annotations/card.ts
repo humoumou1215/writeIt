@@ -38,6 +38,20 @@ function onDocumentClick(e: MouseEvent) {
 
 export function initAnnotationCard(): void {
   document.addEventListener('click', onDocumentClick, true)
+  // Ctrl+R（选中文字后）：快速弹出评论输入框
+  document.addEventListener('keydown', onKeydown, true)
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'r') return
+  if (!editorRef) return
+  editorRef.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { from, to } = view.state.selection
+    if (to <= from) return
+    e.preventDefault()
+    showAnnotationInput(editorRef!, from, to)
+  })
 }
 
 export function setAnnotationCardContext(tabId: string, editor: Editor | null): void {
