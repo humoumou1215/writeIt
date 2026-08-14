@@ -11,7 +11,8 @@ import { RULES_FILE_SUFFIX, SUGGEST_FILE_SUFFIX } from './types'
 import { loadTsModule } from './ts-loader'
 
 const WORKSPACE_TEMPLATE_DIR = 'template'
-const DOCTYPE_RE = /^doctype\s*:\s*([A-Za-z0-9_\-]+)\s*$/
+// doctype 支持中文与任意非空白字符（中文模板名是普通用户常态；排除 # 防与 markdown 标题冲突）
+const DOCTYPE_RE = /^doctype\s*:\s*([^\s#]+)\s*$/
 
 /** 取文件内容的首行 doctype；无则返回 null */
 export function extractDoctype(content: string): string | null {
@@ -43,8 +44,26 @@ class TemplateService {
     return this.scanPromise
   }
 
-  /** 强制重新扫描（设置模板目录变化 / 手动刷新） */
-  async rescan(): Promise<void> {
+  private pendingRescan: Promise<void> | null = null
+
+  /** 强制重新扫描（文件树变化时自动调用；并发调用合并为一次，末尾重扫兜底） */
+  rescan(): Promise<void> {
+    if (this.pendingRescan) return this.pendingRescan
+    this.pendingRescan = this.doRescan().finally(() => {
+      this.pendingRescan = null
+    })
+    return this.pendingRescan
+  }
+
+  private async doRescan(): Promise<void> {
+    // 等待进行中的扫描完成后再重扫（避免与 ready() 并发重复扫描）
+    if (this.scanPromise) {
+      try {
+        await this.scanPromise
+      } catch {
+        /* 忽略 */
+      }
+    }
     this.scanPromise = null
     await this.ready()
   }
