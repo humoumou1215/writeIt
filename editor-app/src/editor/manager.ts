@@ -976,4 +976,7 @@ export async function refreshTree() {
   } catch (e) {
     toast(`读取目录失败: ${(e as Error).message}`, 'error')
   }
+  // 模板注册表跟随文件树变化自动重扫（新建/删除/重命名 template/ 下的内容即时生效，
+  // 无需刷新页面；斜杠菜单每次打开时重新执行 buildMenu，自动读到最新注册表）
+  void import('../template/service').then((m) => m.templateService.rescan())
 }

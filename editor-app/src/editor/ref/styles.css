@@ -202,13 +202,6 @@ tr.annotation-dynamic.annotation-level-error {
   background: var(--chrome-input-bg, #fff);
   color: var(--chrome-text, #333);
 }
-.annotation-input-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-  margin-top: 6px;
-}
-
 /* ========== Gutter 侧边条 + 批注卡连线（M6 v2）========== */
 
 /* 编辑器右侧标记条（零遮挡；挂在 .editor-pane 内） */

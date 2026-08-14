@@ -3,6 +3,7 @@
 //   批注内容展示/评论线程/连线全部在 AnnotationDrawer.vue；本模块保留锚点激活 + 添加批注输入浮窗。
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
+import { TextSelection } from '@milkdown/kit/prose/state'
 import { setActiveAnnotation, addAnnotation } from './service'
 
 let activeTabId = ''
@@ -66,25 +67,49 @@ let inputFrom = -1
 let inputTo = -1
 
 // Enter 确认提交（Ctrl+R / Toolbar 共用逻辑）
-async function submitAnnotation(text: string): Promise<void> {
-  if (!inputEditor || inputTo <= inputFrom) return
+// 返回新批注节点在 doc 中的位置（其后的光标恢复用；doc 已插入节点，原选区已漂移）
+async function submitAnnotation(
+  text: string
+): Promise<{ pos: number; nodeSize: number } | null> {
+  if (!inputEditor || inputTo <= inputFrom) return null
   const { resolveUserName } = await import('./user-name')
   const name = await resolveUserName()
   addAnnotation(inputEditor, inputFrom, inputTo, text, name)
   // 激活新批注（抽屉展开定位）
+  let info: { pos: number; nodeSize: number } | null = null
   inputEditor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const doc = view.state.doc
-    let found = -1
     doc.descendants((n, p) => {
       if (n.type.name === 'annotation' && p >= inputFrom - 5 && p <= inputTo + 5) {
-        found = p
+        info = { pos: p, nodeSize: n.nodeSize }
+        setActiveAnnotation('', `p-${p}`)
         return false
       }
       return true
     })
-    if (found >= 0) setActiveAnnotation('', `p-${found}`)
   })
+  return info
+}
+
+// 关闭浮窗后把焦点还给编辑器，并把选区恢复到原选中文本（或新批注文本）
+// 注意：Editor.action 是同步方法（返回 T 而非 Promise），同步异常用 try/catch 兜底
+function restoreEditorFocusSeq(from: number, to: number): void {
+  const editor = inputEditor
+  if (!editor) return
+  try {
+    editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const doc = view.state.doc
+      const max = doc.content.size
+      const f = Math.min(Math.max(from, 0), max)
+      const t = Math.min(Math.max(to, from), max)
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(doc, f, t)))
+      view.focus()
+    })
+  } catch {
+    /* 编辑器可能已销毁 */
+  }
 }
 
 export function showAnnotationInput(editor: Editor, from: number, to: number): void {
@@ -102,13 +127,33 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
       if (e.key === 'Escape') {
         e.preventDefault()
         hideAnnotationInput()
+        // doc 未变：选区直接恢复到原选中文本
+        restoreEditorFocusSeq(inputFrom, inputTo)
       } else if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         const text = ta.value.trim()
-        if (text && inputEditor && inputTo > inputFrom) {
-          submitAnnotation(text)
-        }
         hideAnnotationInput()
+        if (text && inputEditor && inputTo > inputFrom) {
+          // 提交是异步的（用户名解析）：恢复选区要等插入完成后，定位到新批注文本内部
+          void submitAnnotation(text)
+            .then((info) => {
+              if (info) {
+                restoreEditorFocusSeq(info.pos + 1, info.pos + info.nodeSize - 1)
+              } else {
+                restoreEditorFocusSeq(inputFrom, inputTo)
+              }
+            })
+            .catch(() => {
+              try {
+                restoreEditorFocusSeq(inputFrom, inputTo)
+              } catch {
+                /* 编辑器已销毁 */
+              }
+            })
+        } else {
+          // 空文本：等同取消
+          restoreEditorFocusSeq(inputFrom, inputTo)
+        }
       }
       // Shift+Enter：保留 textarea 默认换行
     })
