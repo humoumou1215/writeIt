@@ -43,7 +43,8 @@ const { chromium } = require('playwright');
     const inputVisible = await page.locator('.annotation-input-visible').count();
     ok('批注输入浮窗出现', inputVisible > 0);
     await page.locator('.annotation-input-ta').fill('人工批注内容');
-    await page.locator('.annotation-input-actions button', { hasText: '添加批注' }).click();
+    // 输入浮窗交互：Enter 确认提交（按钮组已改为快捷键交互）
+    await page.locator('.annotation-input-ta').press('Enter');
     await page.waitForTimeout(1200);
     const marks = await page.locator('.ProseMirror mark.annotation').count();
     ok('批注节点插入（mark.annotation）', marks > 0);
@@ -94,7 +95,7 @@ const { chromium } = require('playwright');
     await page.waitForTimeout(700);
     const input2 = await page.locator('.annotation-input-visible').count();
     ok('Ctrl+R 弹出评论输入框', input2 > 0);
-    await page.locator('.annotation-input-actions button', { hasText: '取消' }).click();
+    await page.locator('.annotation-input-ta').press('Escape');
   } else {
     console.log('❌ Ctrl+R 测试无选区框');
     fail++;

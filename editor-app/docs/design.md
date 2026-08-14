@@ -496,6 +496,14 @@ file_block : block,        content: 'block+',                    // ![[…]]
 3. **修复**：`annotations/nodes.ts` parseMarkdown runner 对 note 做 `unescapeAttr`（与 escapeAttr 互逆，&amp; 最后替换）——PM 节点内 note 恒为原始 JSON（与 parseDOM / 运行时 setNodeMarkup 一致）。round-trip 变为 转义→解码→转义 = 稳定单次转义；且旧双重转义数据经 runner+parseThread 两级解码自愈
 4. 测试：m6d-e2e 9/9（嵌入块内加批注→写回单次转义→源文件打开作者/内容正确；含旧数据自愈断言）
 
+**M6 修复：批注输入浮窗底部出屏（按钮不可点）**：
+
+1. **症状**：锚点在视口底部附近时，添加批注浮窗（position:fixed 跟随选区）超出屏幕底部，确认按钮不可点
+2. **根因**：`card.ts showAnnotationInput` 只做 `top = max(8, coords.bottom + 6)`——仅保底贴顶，无底部钳制/上翻
+3. **修复**：先加 visible class 再测量真实尺寸（display:none 时 offsetHeight=0），垂直优先下方、下方放不下（`top + h + MARGIN > innerHeight`）→ 上翻到选区上方（类 tooltip），极端情况贴顶保底；水平左右钳制（用实测宽度，留 8px 边距）
+4. **交互变更（并行改动）**：添加批注输入浮窗由按钮组改为快捷键交互——Enter 确认提交（`submitAnnotation`，含 resolveUserName/激活定位）、Shift+Enter 换行、ESC 取消；占位提示同步更新
+5. 测试：m6d-e2e 增加「浮窗完整在视口内」断言并改回正常交互（Enter 提交，10/10）；m6-toolbar（顶部锚点常规下置）9/9 无回归
+
 ### 记录缺口 / 待办
 
 - 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）

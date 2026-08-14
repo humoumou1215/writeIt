@@ -54,11 +54,11 @@ const { chromium } = require('playwright');
       await addBtn.click();
       await page.waitForTimeout(600);
       await page.locator('.annotation-input-ta').fill('评2');
-      // 浮窗 position:fixed 跟随选区，视口底部附近会超出屏幕 → 程序化点击（非本 bug 范畴）
-      await page.evaluate(() => {
-        const btn = document.querySelector('.annotation-input-actions button.primary');
-        if (btn) btn.click();
-      });
+      // M6 定位修复回归：锚点在视口底部附近时浮窗应上翻（此前浮窗底部/按钮超出屏幕）
+      // 输入浮窗交互：Enter 确认提交（按钮组已改为快捷键交互）
+      const inputBox = await page.locator('.annotation-input').boundingBox();
+      ok('批注浮窗完整在视口内（底部上翻定位）', !!inputBox && inputBox.y >= 0 && inputBox.y + inputBox.height <= 750);
+      await page.locator('.annotation-input-ta').press('Enter');
       await page.waitForTimeout(1200);
       const inBlock = await page.locator('.ref-file-block-content mark.annotation').count();
       ok('嵌入块内批注节点插入', inBlock > 0);
