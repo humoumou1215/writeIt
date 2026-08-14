@@ -5,3 +5,6 @@ src-tauri/gen/
 demo-shots/
 *.local
 .DS_Store
+
+# e2e 临时产物
+tests/e2e/node_modules/
