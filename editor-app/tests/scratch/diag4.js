@@ -1,0 +1,20 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  page.on('pageerror', (e) => console.log('PAGEERROR:', e.message));
+  page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE:', m.text().slice(0, 200)); });
+  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await page.locator('.icon-col .icon-btn').nth(1).click();
+  await page.waitForTimeout(500);
+  const tabs = await page.locator('.tab-btn').allTextContents();
+  console.log('页签:', JSON.stringify(tabs));
+  await page.locator('.tab-btn', { hasText: '快捷键' }).click();
+  await page.waitForTimeout(500);
+  const rows = await page.locator('.shortcut-row').count();
+  console.log('快捷键行数:', rows);
+  const texts = await page.locator('.shortcut-row .shortcut-label').allTextContents();
+  console.log('行标签:', JSON.stringify(texts));
+  await browser.close();
+})();

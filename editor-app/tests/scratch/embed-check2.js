@@ -1,0 +1,23 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+  page.on('console', (m) => console.log('CONSOLE:', m.text().slice(0, 130)));
+  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await page.locator('.tree .name', { hasText: '引用演示.md' }).click();
+  await page.waitForTimeout(4000);
+  await page.keyboard.press('Control+End');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  await page.keyboard.type('![[待办清单');
+  await page.waitForTimeout(1000);
+  const menuOpen = await page.evaluate(() => document.querySelector('[data-ref-menu][data-show="true"]') !== null);
+  console.log('菜单打开:', menuOpen);
+  const items = await page.evaluate(() => Array.from(document.querySelectorAll('[data-ref-menu] .menu-group li')).map(li => li.textContent.trim()));
+  console.log('菜单项:', JSON.stringify(items));
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(2000);
+  await browser.close();
+})();

@@ -170,8 +170,10 @@ _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri）
 - `src/fs/`：FileSystem 抽象（mock/web/tauri 三实现）；`shouldShowInTree()` 控制树过滤（模板域文件始终显示）
 
 ### 测试（改代码后必跑）
-- 套件在 `/tmp/pwtest/`（真实 Chromium，需 dev server :5173）：`ref-e2e`(15) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9，标题实体+suggest 样例) / `m4c-e2e`(6，路径显示+对象跳转) / `app-e2e`(28，会清空 demo-shots/)
-- 运行：`node <file>.js`，看末尾「结果: X 通过 / Y 失败」；`app-e2e` 最后跑（清截图目录）
+- 套件在 `editor-app/tests/e2e/`（真实 Chromium，需 dev server :5173；playwright 是 devDependency，首次 `npx playwright install chromium`）：
+  `ref-e2e`(15) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(6) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(20) / `app-e2e`(28，会清空 demo-shots/)
+- 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后跑）；单个：`node tests/e2e/<name>.js`，看末尾「结果: X 通过 / Y 失败」
+- 历史一次性调试脚本归档在 `tests/scratch/`（不维护，仅供查证）
 - 每轮回归后 `npm run build` 验证
 
 ### 调试钩子（window 上，测试/排障用）

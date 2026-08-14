@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "node tests/e2e/run-all.js"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-vue": "^6.0.8",
+    "playwright": "^1.62.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.6"
   }

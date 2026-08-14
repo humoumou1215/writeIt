@@ -1,0 +1,23 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  page.on('console', (m) => { const t = m.text(); if (t.includes('重命名') || t.includes('M3')) console.log('LOG:', t.slice(0, 150)); });
+  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await page.locator('.tree .name', { hasText: 'README.md' }).click({ button: 'right' });
+  await page.waitForTimeout(400);
+  await page.locator('.menu-item', { hasText: '重命名' }).click();
+  await page.waitForTimeout(500);
+  const input = page.locator('.tree .rename-input');
+  console.log('输入框数:', await input.count());
+  await input.fill('README-改.md');
+  await page.waitForTimeout(200);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(1500);
+  const tree = await page.locator('.tree .name').allTextContents();
+  console.log('重命名后树:', JSON.stringify(tree.filter(t => t.includes('README'))));
+  const toasts = await page.locator('.toast').allTextContents();
+  console.log('toasts:', JSON.stringify(toasts));
+  await browser.close();
+})();

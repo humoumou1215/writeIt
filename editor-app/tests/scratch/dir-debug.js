@@ -1,0 +1,23 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await page.locator('.tree .name', { hasText: '引用演示.md' }).click();
+  await page.waitForTimeout(4000);
+  await page.evaluate(() => window.__editorGoEnd());
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  await page.keyboard.type('@');
+  await page.waitForTimeout(900);
+  await page.keyboard.press('ArrowDown');
+  const st1 = await page.evaluate(() => ({ hover: document.querySelector('[data-ref-menu] .menu-group li.hover')?.textContent.trim(), dir: window.__refMenuState.currentDir }));
+  console.log('↓1 后:', JSON.stringify(st1));
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(600);
+  const st2 = await page.evaluate(() => ({ hover: document.querySelector('[data-ref-menu] .menu-group li.hover')?.textContent.trim(), dir: window.__refMenuState.currentDir, h6: document.querySelector('[data-ref-menu] h6')?.textContent }));
+  console.log('→ 后:', JSON.stringify(st2));
+  await browser.close();
+})();

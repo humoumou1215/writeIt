@@ -1,0 +1,22 @@
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+  page.on('console', (m) => { if (m.type() === 'error') console.log('ERR:', m.text().slice(0, 160)); });
+  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await page.locator('.tree .name', { hasText: '引用演示.md' }).click();
+  await page.waitForTimeout(4000);
+  await page.keyboard.press('Control+End');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  await page.keyboard.type('前段文字');
+  await page.keyboard.type('![[数据/原始');
+  await page.waitForTimeout(900);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(1500);
+  const md = await page.evaluate(() => window.__editorGetMarkdown());
+  console.log('md 尾部:', JSON.stringify(md.slice(-80)));
+  await browser.close();
+})();
