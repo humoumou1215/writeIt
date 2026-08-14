@@ -390,9 +390,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M6 已完成并全量回归通过**（M6 v3：批注抽屉 + 评论线程；gutter 已移除）。
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 7/7、**m6c 17/17**、app 28/28
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、**m6 7/7、m6-toolbar 7/7**、app 28/28（套件在 `/tmp/pwtest/`，需 dev server :5173）
+> 状态：**M1-M6 已完成并全量回归通过**（M6 v3：批注抽屉 + 评论线程；gutter 已移除；嵌入块批注写回双重转义已修复）。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 9/9、m6c 20/20、**m6d 9/9**、app 28/28
 
 ### 里程碑状态
 
@@ -489,6 +488,13 @@ file_block : block,        content: 'block+',                    // ![[…]]
 2. **评论输入**：Enter 换行 / **Ctrl+Enter（或 Cmd+Enter）提交** / **ESC 清空草稿**——改为显式 @keydown 处理（onReplyKeydown），不再依赖 Vue 修饰符；添加批注浮窗（showAnnotationInput）也支持 ESC 关闭
 3. **点击批注卡 = 定位 + 激活（显示该卡连线）+ 折叠切换**：locate() 增加 setActiveAnnotation（连线跟随点击的卡片）；无锚点整体违规仅激活+展开
 4. 测试：m6c 20/20、m6-toolbar 9/9（含 Enter 换行/ESC/Ctrl+Enter/Ctrl+R）
+
+**M6 修复：嵌入块批注写回双重转义（&amp;quot;）**：
+
+1. **症状**：在 file_block 嵌入块内选中文字添加评论 → 保存（writeback 写回源文件）→ 打开源文件：评论作者变「未知」、内容变原始转义字符串 `[{&quot;a&quot;:...}]`
+2. **根因**：`writeback.collectBlockContentsSync` 的 round-trip 稳定化（序列化→再解析→再序列化）中，toMarkdown 的 `escapeAttr` 转义了 note，但 parseMarkdown runner **不解码**（历史设计：PM 节点内 note 保留转义态，parseThread 读取时再解）。第二次序列化把已转义的 `&quot;` 再转义成 `&amp;quot;`（双重转义）→ 源文件写回双重转义 → 重新打开后 parseThread 的 unescapeHtml 只解一层 → JSON.parse 失败 → 走旧版兜底（author='' 显示未知 / content=原始字符串）
+3. **修复**：`annotations/nodes.ts` parseMarkdown runner 对 note 做 `unescapeAttr`（与 escapeAttr 互逆，&amp; 最后替换）——PM 节点内 note 恒为原始 JSON（与 parseDOM / 运行时 setNodeMarkup 一致）。round-trip 变为 转义→解码→转义 = 稳定单次转义；且旧双重转义数据经 runner+parseThread 两级解码自愈
+4. 测试：m6d-e2e 9/9（嵌入块内加批注→写回单次转义→源文件打开作者/内容正确；含旧数据自愈断言）
 
 ### 记录缺口 / 待办
 

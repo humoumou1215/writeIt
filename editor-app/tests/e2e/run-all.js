@@ -17,6 +17,7 @@ const SUITES = [
   'm6-e2e',       // M6 批注 round-trip
   'm6-toolbar',   // M6 Toolbar/Ctrl+R
   'm6c-e2e',      // M6 抽屉/评论线程
+  'm6d-e2e',      // M6 嵌入块批注写回 round-trip（双重转义回归）
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 
