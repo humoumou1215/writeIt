@@ -59,11 +59,33 @@ export function setAnnotationCardContext(tabId: string, editor: Editor | null): 
   editorRef = editor
 }
 
-// ---------- 添加批注输入浮窗（Toolbar 入口）----------
+// ---------- 添加批注输入浮窗（Toolbar / Ctrl+R 入口）----------
 let inputEl: HTMLDivElement | null = null
 let inputEditor: Editor | null = null
 let inputFrom = -1
 let inputTo = -1
+
+// Enter 确认提交（Ctrl+R / Toolbar 共用逻辑）
+async function submitAnnotation(text: string): Promise<void> {
+  if (!inputEditor || inputTo <= inputFrom) return
+  const { resolveUserName } = await import('./user-name')
+  const name = await resolveUserName()
+  addAnnotation(inputEditor, inputFrom, inputTo, text, name)
+  // 激活新批注（抽屉展开定位）
+  inputEditor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const doc = view.state.doc
+    let found = -1
+    doc.descendants((n, p) => {
+      if (n.type.name === 'annotation' && p >= inputFrom - 5 && p <= inputTo + 5) {
+        found = p
+        return false
+      }
+      return true
+    })
+    if (found >= 0) setActiveAnnotation('', `p-${found}`)
+  })
+}
 
 export function showAnnotationInput(editor: Editor, from: number, to: number): void {
   inputEditor = editor
@@ -75,63 +97,50 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
     inputEl.setAttribute('role', 'dialog')
     const ta = document.createElement('textarea')
     ta.className = 'annotation-input-ta'
-    ta.placeholder = '批注内容…'
-    const actions = document.createElement('div')
-    actions.className = 'annotation-input-actions'
-    const cancel = document.createElement('button')
-    cancel.className = 'mini'
-    cancel.textContent = '取消'
-    cancel.addEventListener('click', hideAnnotationInput)
+    ta.placeholder = '在此输入评论，esc取消，enter确认，shift+enter换行'
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         hideAnnotationInput()
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        const text = ta.value.trim()
+        if (text && inputEditor && inputTo > inputFrom) {
+          submitAnnotation(text)
+        }
+        hideAnnotationInput()
       }
+      // Shift+Enter：保留 textarea 默认换行
     })
-    const ok = document.createElement('button')
-    ok.className = 'mini primary'
-    ok.textContent = '添加批注'
-    ok.addEventListener('click', async () => {
-      const text = ta.value.trim()
-      if (text && inputEditor && inputTo > inputFrom) {
-        const { resolveUserName } = await import('./user-name')
-        const name = await resolveUserName()
-        addAnnotation(inputEditor, inputFrom, inputTo, text, name)
-        // 激活新批注（抽屉展开定位）
-        inputEditor.action((ctx) => {
-          const view = ctx.get(editorViewCtx)
-          const doc = view.state.doc
-          let found = -1
-          doc.descendants((n, p) => {
-            if (n.type.name === 'annotation' && p >= inputFrom - 5 && p <= inputTo + 5) {
-              found = p
-              return false
-            }
-            return true
-          })
-          if (found >= 0) setActiveAnnotation('', `p-${found}`)
-        })
-      }
-      hideAnnotationInput()
-    })
-    actions.appendChild(cancel)
-    actions.appendChild(ok)
     inputEl.appendChild(ta)
-    inputEl.appendChild(actions)
     document.body.appendChild(inputEl)
   }
   const ta = inputEl.querySelector('.annotation-input-ta') as HTMLTextAreaElement
   ta.value = ''
-  // 定位：跟随选区（用编辑器 view 的 coords）
+  // 先显示再测量（display:none 时 offsetHeight=0），同步 reflow 拿到真实尺寸后定位
+  inputEl.classList.add('annotation-input-visible')
+  // 定位：跟随选区（用编辑器 view 的 coords，视口相对）
+  // 垂直：优先在选区下方；下方放不下（锚点在视口底部附近）→ 上翻到选区上方（类 tooltip）；
+  //       极端情况上下都不够 → 贴顶保底。水平：左右钳制（留边距，防贴边/出屏）。
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const coords = view.coordsAtPos(to)
     if (inputEl) {
-      inputEl.style.left = `${Math.min(coords.left, window.innerWidth - 260)}px`
-      inputEl.style.top = `${Math.max(8, coords.bottom + 6)}px`
+      const h = inputEl.offsetHeight || 104
+      const w = inputEl.offsetWidth || 240
+      const GAP = 6
+      const MARGIN = 8
+      let top = coords.bottom + GAP
+      if (top + h + MARGIN > window.innerHeight) {
+        top = coords.top - GAP - h
+        if (top < MARGIN) top = MARGIN
+      }
+      const maxLeft = window.innerWidth - w - MARGIN
+      const left = Math.min(Math.max(MARGIN, coords.left), Math.max(MARGIN, maxLeft))
+      inputEl.style.left = `${left}px`
+      inputEl.style.top = `${top}px`
     }
   })
-  inputEl.classList.add('annotation-input-visible')
   ta.focus()
 }
 
