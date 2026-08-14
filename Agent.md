@@ -157,12 +157,14 @@ _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri）
 
 ## 9. 研发经验（editor-app 开发，供后续 agent 直接使用）
 
-### 项目状态（截至 2026-08-11）
-- **里程碑 M1-M6 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级 → 校验三通道 → 批注插件）；M7（v2 方向）未定。
-- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、各里程碑实现记录、关键技术坑、缺口清单——**开发前先读**。
+### 项目状态（截至 2026-08-11，v0.2.0 已打 tag 并发布）
+- **里程碑 M1-M6 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级 → 校验三通道 → 批注插件）；M7 未定。
+- 批注功能已按用户多轮反馈迭代至 v5：右侧抽屉（宽 300 可拖 50-480、统一折叠）、评论线程（不可删除、仅创建人标记已解决、○/✔ 状态圆）、Ctrl+Enter 提交/ESC 取消/Ctrl+R 快速评论、点击卡片=定位+激活连线、markdown 不渲染。
+- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、各里程碑实现记录（M6 v2/v3/v4/v5）、关键技术坑、缺口清单——**开发前先读**。
 
 ### 架构速览（相对上文的补充）
-- `src/annotations/`：批注插件（M6，独立于校验）——remark-annotation（`<mark data-note>` 语法）、nodes（annotation schema）、service（AnnotationService：运行时批注 persist=false / 人工批注 persist=true 节点插入）、plugin（decorations：非空 inline 高亮 / 空范围锚定行）、card（批注卡 + 添加批注输入浮窗）、styles
+- `src/annotations/`：批注插件（M6，独立于校验）——remark-annotation（`<mark data-note>` 语法）、nodes（annotation schema）、service（AnnotationService：运行时批注 persist=false / 人工批注 persist=true；线程 JSON 存 note 属性 + HTML 实体转义/unescape + 旧格式兼容；addComment/setCommentResolved/removeAnnotationNode）、plugin（decorations：非空 inline 高亮 / 空范围锚定行）、card（锚点点击激活 + Ctrl+R 输入浮窗，ESC 关闭）、card-color（级别颜色）、user-name（Tauri git 用户名 / 设置降级）、styles
+- `src/components/AnnotationDrawer.vue`：批注抽屉（v3+）——固定右侧、拖拽宽度、折叠/展开、批注计数、评论线程 UI（○/✔ 状态圆、权限）、校验只读卡、连线（抽屉左边缘→锚点，悬停突出）
 - `src/validate/`：校验服务（M5）——service（rules 执行/三通道/strict 门禁）、validate-context（ValidationContext 表格/标题查询）；违规标注走批注体系（setRuntimeAnnotations）
 - `src/editor/ref/`：引用机制核心——`nodes.ts`（4 自定义节点 schema）、`remark-ref.ts`（mdast 解析）、`stringify.ts`（防转义）、`resolve.ts`（两段式物化+对象消歧）、`file-block-view.ts`（嵌入卡片 NodeView）、`app-plugin.ts`（点击跳转/只读守卫/断链装饰）、`menu/`（三级菜单 index.ts + RefMenu.vue）、`ref-tooltip.ts`（自定义悬停浮窗）、`styles.css`
 - `src/template/`：模板机制——`service.ts`（双域扫描/注册表）、`ts-loader.ts`（esbuild-wasm 转译 TS 并隔离执行）、`suggest-context.ts`（结构查询工具）、`types.ts`（SuggestObject/Rule 类型）
