@@ -15,6 +15,8 @@ export interface Tab {
   userEditedAt: number
   /** §6.7：最近一次外部联动/写回刷新时间戳（保存/联动时判断用户是否编辑过） */
   lastExternalSyncAt: number
+  /** M7：视图模式——true = 源码查看（textarea），false = 所见即所得（Crepe） */
+  sourceMode: boolean
 }
 
 export interface Toast {
@@ -64,6 +66,8 @@ export const state = reactive({
   confirm: null as null | ConfirmRequest,
   toasts: [] as Toast[],
   treeVersion: 0,
+  /** 瞄准定位：文件树中待高亮的文件路径（定位后自动清除） */
+  revealPath: null as null | string,
 })
 
 let tabSeq = 0

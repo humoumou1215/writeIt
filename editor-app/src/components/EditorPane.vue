@@ -38,6 +38,12 @@ watch(
   padding: 0 4px 24px;
 }
 
+/* M7：源码模式 —— 容器不再滚动（textarea 自身滚动），去掉内边距 */
+.editor-pane.source-mode {
+  overflow: hidden;
+  padding: 0;
+}
+
 /* 让 Crepe TopBar 与编辑器背景一致，活动标签 → 顶栏 → 正文连成一体 */
 :deep(.milkdown .milkdown-top-bar) {
   background: var(--chrome-background, #fff);

@@ -40,6 +40,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'prevFile', label: '上一个文件', default: 'Alt+ArrowUp' },
   { id: 'nextFile', label: '下一个文件', default: 'Alt+ArrowDown' },
   { id: 'toggleSidebar', label: '收纳/展开侧边栏', default: 'Ctrl+B' },
+  { id: 'toggleSource', label: '切换源码/编辑模式', default: 'Ctrl+E' },
   { id: 'settings', label: '打开设置', default: 'Ctrl+,' },
 ]
 

@@ -390,8 +390,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M6 已完成并全量回归通过**（M6 v3：批注抽屉 + 评论线程；gutter 已移除；嵌入块批注写回双重转义已修复）。
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 9/9、m6c 20/20、**m6d 9/9**、app 28/28
+> 状态：**M1-M7 已完成并全量回归通过**（M7：源码查看模式 Ctrl+E 切换所见即所得/源码；M7b：文件树拖拽移动 + 瞄准定位）。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 9/9、m6c 20/20、m6d 10/10、source 26/26、**drag 31/31**、app 28/28
 
 ### 里程碑状态
 
@@ -401,6 +401,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 4. **M4 模板机制 + 实体级 ✅**：TemplateService 双域扫描、esbuild-wasm 运行时加载 rules/suggest、`/` 菜单「模板」组、ref 菜单第二级实体（suggest 对象 + Obsidian 标题）、基于模板新建
 5. **M5 ValidateService ✅**：rules.ts 执行 + 三通道呈现（decorations 标注 / 聚合面板 / 报告落盘）+ strict 门禁
 6. **M6 批注插件 ✅**：`<mark data-note>` 语法节点 + 运行时批注（校验违规高亮）+ 批注卡 + 选中文本工具条「添加批注」
+7. **M7 源码查看 ✅**：Ctrl+E 切换所见即所得 / 源码模式（语法高亮 CodeMirror）
+8. **M7b 文件树拖拽 + 瞄准定位 ✅**：HTML5 DnD 拖拽文件/目录移动（入目录 / 同级插入线 / 拖到根 / 悬停自动展开 / 循环·冲突·空操作拒绝）+ 🎯 定位当前文件（展开祖先链 + 高亮 + 滚动）
 
 ### M4 完成清单（含用户反馈修复轮次）
 
@@ -503,6 +505,52 @@ file_block : block,        content: 'block+',                    // ![[…]]
 3. **修复**：先加 visible class 再测量真实尺寸（display:none 时 offsetHeight=0），垂直优先下方、下方放不下（`top + h + MARGIN > innerHeight`）→ 上翻到选区上方（类 tooltip），极端情况贴顶保底；水平左右钳制（用实测宽度，留 8px 边距）
 4. **交互变更（并行改动）**：添加批注输入浮窗由按钮组改为快捷键交互——Enter 确认提交（`submitAnnotation`，含 resolveUserName/激活定位）、Shift+Enter 换行、ESC 取消；占位提示同步更新
 5. 测试：m6d-e2e 增加「浮窗完整在视口内」断言并改回正常交互（Enter 提交，10/10）；m6-toolbar（顶部锚点常规下置）9/9 无回归
+
+### M7 实现记录（源码查看模式，Ctrl+E 切换）
+
+- 背景：增加源码查看模式，Ctrl+E 在所见即所得（Crepe）与源码（textarea）间切换。与「每标签独立 Crepe 实例、切标签只切容器可见性」架构一致——**不销毁实例**，源码 = 容器内 textarea 覆盖层。
+- `state/store.ts`：Tab 加 `sourceMode: boolean`（默认 false，每标签独立）；`openTab` 初始化。
+- `editor/manager.ts`：
+  - `ensureSourceTa(inst, tabId)`：懒创建 textarea（`.source-ta` + `data-source-ta` 属性），input 事件实时比 `savedContent` 置脏 + `userEditedAt`/`lastModified`（§6.7 机制复用）；keydown 拦截 Tab 插入两空格（原生 Tab 会跳焦点）
+  - `setSourceMode(tabId, on)`：进入 → `crepe.getMarkdown()`（canonical）填 textarea、隐藏 `.milkdown`、加 `.source-mode` 类、焦点末尾；退出 → 先 `ensureDocSynced` 再恢复可见性 + 焦点回编辑器
+  - `ensureDocSynced(tabId)`：源码模式下把 textarea 最新内容 `replaceAll` 解析回 doc（不切换模式）——保存/校验/定位等读 doc 的操作前调用；非 suppressing（让 markdownUpdated 正常走脏检测/防抖校验）
+  - `toggleSourceMode(tabId)`：export，供 Ctrl+E 调用
+  - `saveTab` 顶部、`refreshValidation` 顶部接 `ensureDocSynced`（源码模式保存不切回，继续编辑源码；⟳ 校验对应源码最新内容）
+  - `scrollToPos`：源码模式下先 `setSourceMode(false)` 再定位（用户要看到位置）
+  - `refreshTabToContent`（§6.7 联动）：`replaceAll` 后同步 `srcTa.value = canonical`（源标签处源码模式时 textarea 与 doc 保持一致）
+  - `activateTab`：同步批注卡上下文（切标签后 Ctrl+R/批注卡作用于当前编辑器）；焦点适配（源码模式 → textarea）
+  - `closeTab`：关闭活动标签后恢复新活动标签的批注卡上下文（原 close 把 editorRef 清成 null 后不恢复的既有缺陷一并修复）
+  - mountEditor 的 `editor.config`：改绑 inline-code 快捷键 `Mod-e` → `Mod-Shift-e`（释放 Ctrl+E 给源码模式）
+  - `__editorGetMarkdown` 调试钩子：源码模式返回 textarea 值（doc 是同步前的旧内容）
+- `state/settings.ts`：`SHORTCUT_DEFS` 加 `toggleSource`（默认 Ctrl+E，可在设置中自定义/冲突检测）
+- `App.vue`：`shortcutActions` 加 `toggleSource`；`onKeydown` 对 `data-source-ta` 焦点放行全局快捷键（其他 INPUT/TEXTAREA 仍跳过）；状态栏加「源码模式」badge
+- `annotations/card.ts`：Ctrl+R 源码模式守卫——`tab.sourceMode` 时 preventDefault + toast 提示切回编辑模式（否则会加到旧 doc 的错误位置；且不 preventDefault 会触发浏览器刷新）
+- 样式：`style.css` 全局 `.source-ta`（等宽字体、跟随主题 `--chrome-*`）；`EditorPane.vue` scoped `.editor-pane.source-mode`（overflow hidden、去内边距，textarea 自身滚动）
+- **关键决策**：① 快捷键冲突——milkdown commonmark inline-code 原绑 `Mod-e`，改绑 `Mod-Shift-e` 释放 Ctrl+E（工具栏按钮不受影响）；② 源码模式保存不切回——`ensureDocSynced` 保 doc 新鲜，writeBackBlocks/校验/块快照均走正常流程；③ 源码编辑不触发 markdownUpdated（doc 不变）→ 脏标记由 textarea input 自行维护，切回时 replaceAll 触发 markdownUpdated 复核
+- 测试：source-e2e 26/26（进入/内容回填/焦点/源码编辑脏/Ctrl+E 切回渲染/未改不脏/源码模式 Ctrl+S 落盘+保持模式/切标签模式保持/Ctrl+R 守卫/Ctrl+Shift+E 改绑/WYSIWYG 下 Ctrl+E 进源码）
+
+### M7b 实现记录（文件树拖拽移动 + 瞄准定位）
+
+- **拖拽**：`FileTree.vue` 节点 `draggable`（重命名输入中不可拖）+ HTML5 DnD（dragstart/dragover/drop/dragleave/dragend）；`treeOps.ts` 的 `dragState`（reactive，module 级集中管理）+ `beginDrag` / `dragOver` / `dragLeaveTarget` / `moveNode` / `endDrag` / `computeTargetPath` / `isValidDrop`
+- **落点语义**：目录中间 1/3 = 移入（`into`）；上/下 1/3 = 同级插入线（`before`/`after`）；文件上/下二分。位置由 `e.clientY - rect.top / rect.height` 计算（不用 offsetY，跨节点稳定）
+- **同级插入线**：本质 = 移到目标同级目录（文件系统无手排顺序，树始终按名称排序——与 VS Code 文件夹一致，非 Obsidian 手排）。插入线指示「落到此目录」
+- **拖到根**：`.tree` 容器 dragover/drop → 根虚拟路径 `''`（空串）；`isValidDrop`/`computeTargetPath`/`moveNode` 用 `targetPath === null` 判定空值（**不能用 `!targetPath`——空串是 falsy 会误拒根**）
+- **自动展开**：`dragOver` 里悬停目录中间 500ms → `state.expanded.add(targetPath)`（module 级 `expandTimer`，递归组件共享，防多实例各自计时）；`dragLeaveTarget` 清计时；根路径 `''` 不展（无意义）
+- **校验**：循环（dir 拖进自己/后代）、拖回原父目录（`into` 时 `targetPath === dirName(sourcePath)`）、拖到自身、目标已存在（前端 `findInTree` 预检 + 各 FS 后端防御）→ 拒绝 + `drag-invalid` 红标
+- **联动**：`moveNode` 复用 `onFileRenamed`（标签跟随）+ `updateRefsAfterRename`（引用路径更新）+ `refreshBrokenAll` + `refreshTree`（与重命名同一套，确保 [[path]] 引用跟随迁移）
+- **FS 适配**：mock `rename` 加冲突检测（不覆盖）；tauri `rename` 加 `to.exists() && from != to` 拦截（Windows `fs::rename` 目标存在会失败，前端+后端双防）；web `rename` 补目录递归移动（`copyDir` 递归复制 + removeEntry，原仅支持文件）
+- **瞄准定位（🎯）**：`revealInTree(path)` 展开祖先链（拆 path 累加 `state.expanded`）+ `state.revealPath` 高亮 + 2.4s 自动清除；`App.vue` watch revealPath → `querySelector([data-path])` + `.closest('.tree')` 手动算 scrollTop（复用 scrollToPos 的 0.2 视口偏移模式）；侧边栏按钮「📂 打开目录」移除（设置弹窗已有），替换为「🎯 定位」
+- **坑**：① 递归组件 dragover 冒泡 → 每节点 `e.stopPropagation()`；② dragleave 因子元素（span/actions）触发 → `relatedTarget.contains` 判定真离开；③ mock `buildTree` 按名称排序 → 同级重排无持久顺序，测试验证路径语义而非顺序；④ 点击树节点名被遮挡超时 → 测试改用 `evaluate` dispatch click（绕过 actionability）；⑤ 打开文件自动收纳侧边栏 → 拖拽/定位前 `ensureSidebar()`
+- 测试：drag-e2e 31/31（文件入目录/插入线 before·after/目录递归/拖到根/循环拒绝/空操作/冲突拒绝/悬停自动展开/真实 dragAndDrop 冒烟/标签+引用联动/瞄准定位展开+高亮+自动清除）
+
+### Mermaid 预览放大查看（悬停放大镜 + Lightbox）
+
+- **需求**：mermaid 渲染结果图鼠标悬停显示放大镜按钮，点击放大查看，ESC 关闭
+- **包裹层**：`mermaid.ts` renderPreview 成功回调改为 `applyPreview(wrapMermaidPreview(svg))`——SVG 包一层 `<div class="mmd-zoomable">` + 右上角 `.mmd-zoom-btn`（整段 HTML 随预览走 Crepe PreviewPanel 的 DOMPurify sanitize 通道，div/button/svg/class/title/type 默认 profile 均保留，已验证）
+- **交互**：`mermaid-zoom.ts`（document 级委托，多标签共享一份监听）——① 悬停显隐纯 CSS（`.mmd-zoomable:hover .mmd-zoom-btn` opacity 过渡，按钮随 innerHTML 重建无妨）；② 点放大镜 → 克隆 SVG 进 Lightbox；③ Lightbox = fixed 遮罩 + 画布（transform translate+scale，origin 0 0）：滚轮以光标为中心缩放（fitS/5 ~ fitS×20）/ 拖拽平移（window 级 pointermove/pointerup，拖出遮罩不丢）/ 双击复位适配 / ESC（capture keydown + stopPropagation）/ 点遮罩空白 / ✕ 关闭；关闭后焦点回到触发按钮
+- **适配尺寸**：克隆 SVG 去 mermaid 内联 max-width/width/height，取 viewBox 自然尺寸 → fitS = min(92vw/w, 86vh/h)（小图也放大，符合「放大查看」）
+- **坑：setPointerCapture 会重定向后续 pointerup/click 到捕获元素** → pointerup.target 恒为 overlay，「点遮罩关闭」误判把图表上的任何点击都关掉（双击复位必触发关闭）→ 不用 capture，改 pointerdown 记录 downTarget + window 级 move/up 监听，关闭判定用 downTarget===overlay
+- 测试：mermaid-zoom-e2e 16/16（包裹/悬停显隐/打开/ESC/✕/遮罩关闭/滚轮缩放/双击复位/拖拽平移/拖拽不关闭），已注册 run-all
 
 ### 记录缺口 / 待办
 

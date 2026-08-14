@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from 'vue'
+import { onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { state, toast } from './state/store'
 import { settings, applyTheme, saveSettings, SHORTCUT_DEFS, comboMatches } from './state/settings'
 import { fs } from './fs'
@@ -12,12 +12,18 @@ import {
   openTab,
   activateTab,
   closeTab,
+  toggleSourceMode,
 } from './editor/manager'
 import {
   startNewFile,
   startNewDir,
   commitEditing,
   cancelEditing,
+  dragState,
+  dragOver,
+  moveNode,
+  endDrag,
+  revealInTree,
 } from './state/treeOps'
 import FileTree from './components/FileTree.vue'
 import NewInput from './components/NewInput.vue'
@@ -71,15 +77,23 @@ const shortcutActions: Record<string, () => void> = {
   prevFile: () => void gotoFile(-1),
   nextFile: () => void gotoFile(1),
   toggleSidebar: () => toggleSidebar(),
+  toggleSource: () => {
+    if (state.activeTabId) void toggleSourceMode(state.activeTabId)
+  },
   settings: () => {
     state.settingsOpen = !state.settingsOpen
   },
 }
 
 function onKeydown(e: KeyboardEvent) {
-  // 输入框/下拉框聚焦时不触发全局快捷键
-  const tag = (e.target as HTMLElement | null)?.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  const target = e.target as HTMLElement | null
+  // M7：源码模式 textarea 聚焦时全局快捷键放行（Ctrl+E 切换 / Ctrl+S 保存等）
+  const isSourceTa = !!target?.hasAttribute?.('data-source-ta')
+  if (!isSourceTa) {
+    // 输入框/下拉框聚焦时不触发全局快捷键
+    const tag = target?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  }
   for (const def of SHORTCUT_DEFS) {
     const combo = settings.shortcuts[def.id]
     if (combo && comboMatches(e, combo)) {
@@ -181,9 +195,51 @@ async function gotoFile(delta: number) {
   await openTab(next)
 }
 
-async function onOpenDir() {
-  const ok = await openDirectory()
-  if (!ok) toast('未选择目录', 'info')
+// ---------- 瞄准定位（M7-Reveal）：在文件树中展示当前激活标签的文件 ----------
+function revealActiveFile() {
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (!tab) {
+    toast('当前没有打开的文件', 'info')
+    return
+  }
+  revealInTree(tab.path)
+}
+
+// revealPath 变化 → 展开已完成，滚动到可视区并高亮
+watch(
+  () => state.revealPath,
+  async (path) => {
+    if (!path) return
+    const scrollToRevealed = () => {
+      const el = document.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`)
+      if (!el) return false
+      const container = el.closest('.tree')
+      if (!container) return false
+      const elRect = el.getBoundingClientRect()
+      const cRect = container.getBoundingClientRect()
+      const target = container.scrollTop + (elRect.top - cRect.top) - container.clientHeight * 0.2
+      container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+      return true
+    }
+    await nextTick()
+    // 目录展开渲染可能晚一拍：一次没找到则稍后重试
+    if (!scrollToRevealed()) setTimeout(scrollToRevealed, 120)
+  }
+)
+
+// ---------- 拖拽到树根空白区 = 移动到根目录（M7） ----------
+function onTreeRootDragOver(e: DragEvent) {
+  if (!dragState.active) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  // 根 = 虚拟目录（''），移入根 = 去掉祖先前缀
+  dragOver('', 'dir', 'into')
+}
+
+function onTreeRootDrop(e: DragEvent) {
+  if (!dragState.active) return
+  e.preventDefault()
+  void moveNode().finally(() => endDrag())
 }
 </script>
 
@@ -227,12 +283,18 @@ async function onOpenDir() {
           </button>
         </div>
         <div class="sidebar-actions">
-          <button class="mini wide" @click="onOpenDir" title="打开本地目录">📂 打开目录</button>
+          <button
+            class="mini wide"
+            title="在文件树中定位当前文件（展开目录 + 高亮）"
+            @click="revealActiveFile"
+          >
+            🎯 定位
+          </button>
           <button class="mini" title="新建文件" @click="startNewFile('')">＋文件</button>
           <button class="mini" title="新建文件夹" @click="startNewDir('')">＋目录</button>
           <button class="mini" title="刷新" @click="refreshTree">⟳</button>
         </div>
-        <div class="tree">
+        <div class="tree" @dragover="onTreeRootDragOver" @drop="onTreeRootDrop">
           <FileTree
             v-for="node in state.tree"
             :key="node.path"
@@ -289,6 +351,9 @@ async function onOpenDir() {
         </template>
       </span>
       <span class="spacer"></span>
+      <span v-if="state.tabs.find((t) => t.id === state.activeTabId)?.sourceMode" class="mode-badge">
+        源码模式
+      </span>
       <span>
         {{ settings.autoSave ? `自动保存 ${settings.autoSaveDelay / 1000}s` : '手动保存' }}
       </span>
@@ -529,6 +594,14 @@ async function onOpenDir() {
 }
 .spacer {
   flex: 1;
+}
+.mode-badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--chrome-selected, #e8f3ff);
+  color: var(--chrome-primary, #1f6feb);
 }
 .backend {
   flex-shrink: 0;

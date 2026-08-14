@@ -9,6 +9,8 @@ import { toast } from '../state/store'
 import type { Template, TemplateDomain, SuggestModule, RulesModule, SuggestObject } from './types'
 import { RULES_FILE_SUFFIX, SUGGEST_FILE_SUFFIX } from './types'
 import { loadTsModule } from './ts-loader'
+import type { Node } from '@milkdown/kit/prose/model'
+import { createSuggestContext } from './suggest-context'
 
 const WORKSPACE_TEMPLATE_DIR = 'template'
 // doctype 支持中文与任意非空白字符（中文模板名是普通用户常态；排除 # 防与 markdown 标题冲突）
@@ -136,6 +138,8 @@ class TemplateService {
       suggestFile: fileOf(SUGGEST_FILE_SUFFIX),
       rulesFile: fileOf(RULES_FILE_SUFFIX),
       suggestObjects: null,
+      suggestFactory: null,
+      suggestLoaded: false,
       rules: null,
     }
   }
@@ -157,14 +161,17 @@ class TemplateService {
     return (p: string) => fs.readFile(p)
   }
 
-  /** 惰性加载 suggest 模块（缓存到 Template 上；失败/无文件返回 null） */
+  /** 惰性加载 suggest 模块（缓存静态 objects + 动态工厂 objectsFor 到 Template；失败/无文件返回 null） */
   async ensureSuggest(tpl: Template): Promise<SuggestObject[] | null> {
-    if (tpl.suggestObjects !== null || !tpl.suggestFile) return tpl.suggestObjects
+    if (tpl.suggestLoaded) return tpl.suggestObjects
+    if (!tpl.suggestFile) { tpl.suggestLoaded = true; return null }
     const mod = await loadTsModule<SuggestModule>(
       tpl.suggestFile,
       this.readerFor(tpl)
     )
     tpl.suggestObjects = Array.isArray(mod?.objects) && mod.objects.length ? mod.objects : null
+    tpl.suggestFactory = typeof mod?.objectsFor === 'function' ? mod.objectsFor : null
+    tpl.suggestLoaded = true
     return tpl.suggestObjects
   }
 
@@ -182,7 +189,15 @@ class TemplateService {
    * 按文件路径解析其 doctype 并返回 suggest 对象（ref 菜单第二级用）。
    * 返回 null = 无模板 / 无 suggest（调用方按普通文件处理）。
    */
-  async loadSuggestForFile(path: string): Promise<SuggestObject[] | null> {
+  /**
+   * 按文件路径解析其 doctype 并返回 suggest 对象（ref 菜单第二级用）。
+   * 返回 null = 无模板 / 无 suggest（调用方按普通文件处理）。
+   * parser 可选：传入时运行 objectsFor 合并动态对象（如字段说明表的字段）。
+   */
+  async loadSuggestForFile(
+    path: string,
+    parser?: (src: string) => Node | null
+  ): Promise<SuggestObject[] | null> {
     // 路径可能已去扩展名（菜单 strip），补常见扩展名
     const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
     for (const c of candidates) {
@@ -192,7 +207,18 @@ class TemplateService {
         if (!doctype) return null
         const tpl = this.get(doctype)
         if (!tpl) return null
-        return await this.ensureSuggest(tpl)
+        const staticObjs = await this.ensureSuggest(tpl)
+        // 无 parser / 无动态工厂 → 仅静态对象（兼容无 parser 的旧调用方）
+        if (!parser || !tpl.suggestFactory) return staticObjs
+        try {
+          const parsed = parser(content)
+          if (!parsed) return staticObjs
+          const dynObjs = tpl.suggestFactory(createSuggestContext(parsed)) ?? []
+          if (!dynObjs.length) return staticObjs
+          return [...(staticObjs ?? []), ...dynObjs]
+        } catch {
+          return staticObjs
+        }
       } catch {
         /* 继续尝试下一候选 */
       }

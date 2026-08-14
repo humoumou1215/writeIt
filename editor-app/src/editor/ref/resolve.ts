@@ -6,6 +6,7 @@
 // 容错：任何失败只标记/提示，绝不中断编辑器（§7.1 异步容错原则）
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx, parserCtx } from '@milkdown/kit/core'
+import type { Node } from '@milkdown/kit/prose/model'
 import { fs } from '../../fs'
 import { toast } from '../../state/store'
 import { templateService, extractDoctype } from '../../template/service'
@@ -160,26 +161,36 @@ async function resolveObjectRef(
   if (!doctype) return
   const tpl = templateService.get(doctype)
   if (!tpl) return
-  const objects = await templateService.ensureSuggest(tpl)
-  if (!objects) return
-
+  const staticObjs = (await templateService.ensureSuggest(tpl)) ?? []
   const objectId = ref.type === 'object_ref' ? ref.object : ref.fragment
+
+  // 先解析目标：动态对象 objectsFor 与对象 resolve 都需要 SuggestContext
+  let parsed: Node | null = null
+  let ctxObj: ReturnType<typeof createSuggestContext> | null = null
+  try {
+    const parser = editor.action((c) => c.get(parserCtx))
+    parsed = parser(target)
+    if (parsed) ctxObj = createSuggestContext(parsed)
+  } catch (e) {
+    console.error('[ref] parser 失败:', ref.path, e)
+    return
+  }
+  // 合并动态对象（objectsFor 现场 ctx 生成；id 冲突静态优先）
+  const dynObjs = tpl.suggestFactory && ctxObj ? (tpl.suggestFactory(ctxObj) ?? []) : []
+  const objects = [...staticObjs, ...dynObjs]
   const obj = objects.find((o) => o.id === objectId)
   if (!obj) return // 对象不存在 → 保持现状（断链态）
   const anchor = obj.fragment ?? null
   const label = obj.label ?? null
 
   let text: string | null = null
-  try {
-    // 用编辑器 parser 解析目标内容，构造 SuggestContext
-    const ctx = editor.action((c) => c.get(parserCtx))
-    const parsed = ctx(target)
-    if (parsed) {
-      text = obj.resolve(createSuggestContext(parsed))
+  if (ctxObj) {
+    try {
+      text = obj.resolve(ctxObj)
+    } catch (e) {
+      console.error('[ref] suggest resolve 失败:', ref.path, e)
+      return
     }
-  } catch (e) {
-    console.error('[ref] suggest resolve 失败:', ref.path, e)
-    return
   }
 
   editor.action((c) => {

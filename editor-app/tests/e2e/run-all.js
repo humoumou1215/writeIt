@@ -18,6 +18,11 @@ const SUITES = [
   'm6-toolbar',   // M6 Toolbar/Ctrl+R
   'm6c-e2e',      // M6 抽屉/评论线程
   'm6d-e2e',      // M6 嵌入块批注写回 round-trip（双重转义回归）
+  'source-e2e',   // M7 源码查看模式（Ctrl+E 切换）
+  'drag-e2e',     // M7 文件树拖拽移动 + 瞄准定位
+  'm7-apidoc-e2e',// M7 接口文档：动态对象 objectsFor + findCodeBlocks
+  'm8-db-e2e',    // M8 数据库：字段对象 objectsFor + 表清单↔字段表一致性
+  'mermaid-zoom-e2e', // Mermaid 预览放大查看（悬停放大镜 + Lightbox + ESC）
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 

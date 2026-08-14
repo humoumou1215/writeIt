@@ -46,6 +46,7 @@
 | 下一个/上一个标签 | Ctrl+Tab / Ctrl+Shift+Tab |
 | 下一个/上一个文件（按树序） | Alt+↓ / Alt+↑ |
 | 收纳/展开侧边栏 | Ctrl+B |
+| 切换源码/编辑模式 | Ctrl+E |
 | 打开设置 | Ctrl+, |
 
 ## 目录结构
@@ -65,7 +66,7 @@ editor-app/
 │   └── components/          # FileTree / TabBar / EditorPane / 设置 / 弹窗
 ├── src-tauri/               # Tauri 壳（Rust）
 │   ├── src/lib.rs           # 文件系统命令（read_tree / read_file / …）
-│   ├── tauri.conf.json      # 窗口 / 打包配置（Windows NSIS）
+│   ├── tauri.conf.json      # 窗口 / 打包配置（Windows NSIS + 便携版 / macOS .app + DMG）
 │   └── capabilities/        # 权限
 └── vite.config.ts           # 固定端口 5173（Tauri 依赖）
 ```
@@ -124,22 +125,29 @@ npm run tauri dev    # 需要 Rust 工具链
 6 套 Crepe 主题（Frame / Classic / Nord × 浅色/深色）以 `?raw` 打包进应用，**离线可用**。
 应用外壳（文件树/标签栏/工具栏）通过读取 `.milkdown` 计算样式自动同步配色。
 
-## Windows 打包
+## 打包（Windows / macOS）
 
-```bash
-# 在 Windows 机器上执行（Tauri 不支持交叉编译 Windows 包）
-npm run tauri build
-# 产物: src-tauri/target/release/bundle/nsis/*-setup.exe
-```
+Tauri 打的是**当前系统**的包，无法交叉编译：
 
-> 跨平台构建说明：`tauri build` 打的是**当前系统**的包，无法从 Linux 交叉编译
-> Windows 安装包（NSIS/MSI 依赖 Windows 工具链）。两种做法：
-> 1. Windows 机器上直接 `npm run tauri build`
-> 2. GitHub Actions 配 `windows-latest` runner
+- **Windows**（NSIS 安装包 + 免安装便携版）：
+  ```bash
+  npm run tauri build -- --bundles nsis
+  # 安装包: src-tauri/target/release/bundle/nsis/*-setup.exe
+  # 便携版: 直接压缩 src-tauri/target/release/milkdown-note.exe（单文件，免安装）
+  ```
+- **macOS**（.app + DMG，x64 / arm64）：
+  ```bash
+  npm run tauri build -- --bundles app,dmg
+  # 产物: src-tauri/target/release/bundle/macos/*.app、bundle/dmg/*.dmg
+  ```
+
+> GitHub Actions（`.github/workflows/build.yml`）自动构建三平台：
+> `windows-latest`（NSIS + 便携 zip）、`macos-13`（Intel x64）、`macos-14`（Apple Silicon）。
+> 产物上传 Artifacts；推送 `v*` 标签时自动发布 GitHub Release（含全部平台产物）。
 >
-> `tauri.conf.json` 的 `bundle.targets` 当前为 `["nsis"]`（Windows 专属）。
-> 在 Linux 上该 target 会被**静默跳过**，需用 CLI 显式指定：
-> `npm run tauri build -- --bundles deb`（产物 `bundle/deb/*.deb`）
+> `tauri.conf.json` 的 `bundle.targets` 为 `["nsis", "app", "dmg"]`（跨平台列表，
+> 非当前平台的目标会被静默跳过），也可用 `--bundles` 显式指定：
+> `npm run tauri build -- --bundles deb`（Linux 产物 `bundle/deb/*.deb`）
 > 或 `--bundles appimage`。
 
 ## 已知限制 / 后续路线

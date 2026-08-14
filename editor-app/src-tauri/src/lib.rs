@@ -156,6 +156,9 @@ fn rename(
   if !from.exists() {
     return Err("源路径不存在".into());
   }
+  if to.exists() && from != to {
+    return Err("目标已存在".into());
+  }
   if let Some(parent) = to.parent() {
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
   }

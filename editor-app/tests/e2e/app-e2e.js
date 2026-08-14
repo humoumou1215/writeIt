@@ -73,7 +73,7 @@ const { chromium } = require('playwright');
   // 8. 快捷键页
   await page.locator('.tab-btn', { hasText: '快捷键' }).click();
   await page.waitForTimeout(300);
-  check('快捷键列表 10 项', (await page.locator('.shortcut-row').count()) === 10);
+  check('快捷键列表 11 项', (await page.locator('.shortcut-row').count()) === 11);
   check('默认 Ctrl+S 存在', (await page.locator('.shortcut-row', { hasText: '保存当前文件' }).locator('.keybtn').textContent()).trim() === 'Ctrl+S');
   // 录制新快捷键：把「打开设置」改成 Alt+Shift+P
   const settingsRow = page.locator('.shortcut-row', { hasText: '打开设置' });

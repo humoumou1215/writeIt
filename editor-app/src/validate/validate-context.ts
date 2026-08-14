@@ -5,6 +5,7 @@
 // 注意：file_block 的物化内容属于源文件，不参与宿主文档校验（§5.4）→ 遍历时跳过。
 import type { Node } from '@milkdown/kit/prose/model'
 import type {
+  CodeBlock,
   TableCell,
   TableContext,
   TableRow,
@@ -29,13 +30,37 @@ interface TableInfo {
 }
 
 /** 遍历 doc 收集结构信息（跳过 file_block 物化内容） */
-function collect(doc: Node): { headings: HeadingInfo[]; tables: TableInfo[]; paragraphs: string[] } {
+function cellText(node: Node): string {
+  let text = ''
+  node.descendants((n) => {
+    if (n.isText && n.text) text += n.text
+    else if (n.type.name === 'file_ref') {
+      const a = n.attrs as { path?: string; fragment?: string | null }
+      text += a.fragment ? `${a.path}#${a.fragment}` : (a.path ?? '')
+    } else if (n.type.name === 'object_ref') {
+      text += (n.attrs as { object?: string }).object ?? ''
+    }
+    return true
+  })
+  return text.trim()
+}
+
+function collect(doc: Node): { headings: HeadingInfo[]; tables: TableInfo[]; paragraphs: string[]; codeBlocks: CodeBlock[] } {
   const headings: HeadingInfo[] = []
   const tables: TableInfo[] = []
   const paragraphs: string[] = []
+  const codeBlocks: CodeBlock[] = []
   doc.descendants((node, pos) => {
     const name = node.type.name
     if (name === 'file_block') return false // §5.4：嵌入内容不参与宿主校验
+    if (name === 'code_block' || name === 'fence') {
+      codeBlocks.push({
+        content: node.textContent,
+        language: ((node.attrs as { language?: string }).language ?? '').trim(),
+        pos,
+      })
+      return false
+    }
     if (name === 'heading') {
       const text = node.textContent.trim()
       if (text) headings.push({ level: node.attrs.level as number, text, pos })
@@ -48,7 +73,7 @@ function collect(doc: Node): { headings: HeadingInfo[]; tables: TableInfo[]; par
         const cells: CellInfo[] = []
         row.forEach((cell, cellOff) => {
           cells.push({
-            text: cell.textContent.trim(),
+            text: cellText(cell),
             // 绝对位置 = table.pos + 1（table 内容起点）+ rowOff + 1（row 内容起点）+ cellOff
             pos: pos + 2 + rowOff + cellOff,
           })
@@ -59,7 +84,7 @@ function collect(doc: Node): { headings: HeadingInfo[]; tables: TableInfo[]; par
     }
     return true
   })
-  return { headings, tables, paragraphs }
+  return { headings, tables, paragraphs, codeBlocks }
 }
 
 function matchText(pat: string | RegExp, text: string): boolean {
@@ -73,7 +98,7 @@ function matchText(pat: string | RegExp, text: string): boolean {
 }
 
 export function createValidationContext(doc: Node): ValidationContext & { violations: Violation[] } {
-  const { headings, tables, paragraphs } = collect(doc)
+  const { headings, tables, paragraphs, codeBlocks } = collect(doc)
   const violations: Violation[] = []
   let currentRuleId = ''
   let currentLabel = ''
@@ -121,6 +146,12 @@ export function createValidationContext(doc: Node): ValidationContext & { violat
 
   const allText = () => paragraphs.join('\n')
 
+  const findCodeBlocks = (languageRe?: RegExp): CodeBlock[] | null => {
+    if (languageRe) languageRe.lastIndex = 0
+    const list = languageRe ? codeBlocks.filter((b) => languageRe.test(b.language)) : codeBlocks
+    return list.length ? list : null
+  }
+
   const violation = (message: string, level: 'warning' | 'error' = 'warning') => {
     violations.push({ ruleId: currentRuleId, label: currentLabel, message, level, pos: null })
   }
@@ -135,6 +166,7 @@ export function createValidationContext(doc: Node): ValidationContext & { violat
     findHeading,
     findText,
     allText,
+    findCodeBlocks,
     violation,
     violationAt,
     violations,

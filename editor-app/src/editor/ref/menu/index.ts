@@ -8,7 +8,7 @@ import type { Node } from '@milkdown/kit/prose/model'
 import { SlashProvider, slashFactory } from '@milkdown/kit/plugin/slash'
 import { computePosition, flip, offset, shift } from '@floating-ui/dom'
 import { TextSelection, type EditorState, type PluginView } from '@milkdown/kit/prose/state'
-import { editorCtx } from '@milkdown/kit/core'
+import { editorCtx, parserCtx } from '@milkdown/kit/core'
 import { createApp, reactive, type App } from 'vue'
 
 import { fs } from '../../../fs'
@@ -489,7 +489,11 @@ class RefMenuView implements PluginView {
         label: path.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? path,
         kind: 'file' as const,
       }
-      const objs = await templateService.loadSuggestForFile(path)
+      // 传 parser：让 loadSuggestForFile 运行 objectsFor 合并动态对象（如接口文档字段说明表的字段）
+      const objs = await templateService.loadSuggestForFile(
+        path,
+        this.#editor.action((c) => c.get(parserCtx))
+      )
       if (objs && objs.length) {
         this.openEntities(
           path,

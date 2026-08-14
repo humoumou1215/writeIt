@@ -3,18 +3,34 @@
 import type { Node } from '@milkdown/kit/prose/model'
 import type { SuggestContext } from './types'
 
+function cellText(node: Node): string {
+  let text = ''
+  node.descendants((n) => {
+    if (n.isText && n.text) text += n.text
+    else if (n.type.name === 'file_ref') {
+      const a = n.attrs as { path?: string; fragment?: string | null }
+      text += a.fragment ? `${a.path}#${a.fragment}` : (a.path ?? '')
+    } else if (n.type.name === 'object_ref') {
+      text += (n.attrs as { object?: string }).object ?? ''
+    }
+    return true
+  })
+  return text.trim()
+}
+
 export function createSuggestContext(doc: Node): SuggestContext {
   const paragraphs: string[] = []
-  const headings: Record<number, string[]> = {}
+  // 标题：级别 + 文本 + 位置（tableAfterHeading 定位标题后首个表用）
+  const headings: Array<{ level: number; text: string; pos: number; end: number }> = []
   // 标题后紧跟的段落：headingIndex → 下一段文本
   const afterHeading: Array<{ level: number; heading: string; next: string | null }> = []
   // 任务列表项（- [ ] / - [x]）
   const tasks: Array<{ text: string; done: boolean }> = []
-  // 表格（首个表格的每行单元格文本）
-  const tables: string[][][] = []
+  // 表格：行单元格文本 + 位置（tableAfterHeading 取标题后首个表用）
+  const tables: Array<{ rows: string[][]; pos: number }> = []
 
   let pendingHeading: { level: number; heading: string } | null = null
-  doc.descendants((node) => {
+  doc.descendants((node, pos) => {
     if (node.type.name === 'paragraph') {
       const t = node.textContent.trim()
       if (t) {
@@ -27,7 +43,7 @@ export function createSuggestContext(doc: Node): SuggestContext {
     } else if (node.type.name === 'heading') {
       const lvl = node.attrs.level as number
       const h = node.textContent.trim()
-      ;(headings[lvl] ??= []).push(h)
+      headings.push({ level: lvl, text: h, pos, end: pos + node.nodeSize })
       if (h) pendingHeading = { level: lvl, heading: h }
       else pendingHeading = null
     } else if (node.type.name === 'list_item') {
@@ -41,11 +57,11 @@ export function createSuggestContext(doc: Node): SuggestContext {
     } else if (node.type.name === 'table') {
       const rows: string[][] = []
       node.descendants((c) => {
-        if (c.type.name === 'table_row') {
+        if (c.type.name === 'table_header_row' || c.type.name === 'table_row') {
           const cells: string[] = []
           c.descendants((cc) => {
-            if (cc.type.name === 'table_cell' || cc.type.name === 'table_header_cell') {
-              cells.push(cc.textContent.trim())
+            if (cc.type.name === 'table_cell' || cc.type.name === 'table_header') {
+              cells.push(cellText(cc))
             }
             return true
           })
@@ -53,22 +69,24 @@ export function createSuggestContext(doc: Node): SuggestContext {
         }
         return true
       })
-      tables.push(rows)
+      tables.push({ rows, pos })
     }
     return true
   })
 
   return {
     findText(re) {
+      re.lastIndex = 0
       const hit = paragraphs.find((p) => re.test(p))
       return hit ? [hit] : null
     },
     headingText(level, re) {
-      const list = headings[level] ?? []
-      const hit = list.find((h) => re.test(h))
-      return hit ?? null
+      re.lastIndex = 0
+      const hit = headings.find((h) => h.level === level && re.test(h.text))
+      return hit?.text ?? null
     },
     paragraphAfterHeading(level, re) {
+      re.lastIndex = 0
       const hit = afterHeading.find(
         (x) => x.level === level && re.test(x.heading) && x.next !== null
       )
@@ -90,11 +108,23 @@ export function createSuggestContext(doc: Node): SuggestContext {
     },
     firstTableCell(rowIdx, colIdx, re) {
       const table = tables[0]
-      const row = table?.[rowIdx]
+      const row = table?.rows?.[rowIdx]
       const cell = row?.[colIdx]
       if (cell === undefined) return null
-      if (re && !re.test(cell)) return null
+      if (re) { re.lastIndex = 0; if (!re.test(cell)) return null }
       return cell
+    },
+    tableAfterHeading(heading) {
+      const isRe = heading instanceof RegExp
+      const norm = (s: string) => s.replace(/^#+\s*/, '').trim()
+      const h = headings.find((x) => {
+        const t = norm(x.text)
+        if (isRe) { heading.lastIndex = 0; return heading.test(t) }
+        return t === norm(String(heading))
+      })
+      if (!h) return null
+      const t = tables.find((tb) => tb.pos >= h.end)
+      return t?.rows ?? null
     },
     allText() {
       return paragraphs.join('\n')

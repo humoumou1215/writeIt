@@ -53,6 +53,26 @@ async function pathToHandle(root: FileSystemDirectoryHandle, path: string): Prom
   return cur
 }
 
+/** 递归复制目录内容（供 rename 目录移动使用） */
+async function copyDir(
+  src: FileSystemDirectoryHandle,
+  dstParent: FileSystemDirectoryHandle,
+  dstName: string
+): Promise<void> {
+  const dst = await dstParent.getDirectoryHandle(dstName, { create: true })
+  for await (const [name, h] of src.entries()) {
+    if (h.kind === 'directory') {
+      await copyDir(h as FileSystemDirectoryHandle, dst, name)
+    } else {
+      const f = h as FileSystemFileHandle
+      const out = await dst.getFileHandle(name, { create: true })
+      const w = await out.createWritable()
+      await w.write(await (await f.getFile()).text())
+      await w.close()
+    }
+  }
+}
+
 export const webFs: FileSystem = {
   kind: 'web',
   get rootName() {
@@ -109,6 +129,32 @@ export const webFs: FileSystem = {
   async rename(oldPath, newPath) {
     // File System Access API 不支持直接重命名，需要复制+删除
     if (oldPath === newPath) return
+    if (!rootHandle || !(await ensurePermission())) throw new Error('未授权访问目录')
+    // 目录移动：递归复制整棵子树，再删除源
+    const parts = oldPath.split('/').filter(Boolean)
+    const name = parts.pop()!
+    let srcParent = rootHandle
+    for (const p of parts) srcParent = await srcParent.getDirectoryHandle(p)
+    const srcHandle = await srcParent.getDirectoryHandle(name).catch(async () => {
+      return srcParent.getFileHandle(name)
+    })
+    if (srcHandle.kind === 'directory') {
+      const targetDir = newPath.split('/').filter(Boolean).pop()!
+      const tparts = newPath.split('/').filter(Boolean)
+      tparts.pop()
+      let dstParent = rootHandle
+      for (const p of tparts) dstParent = await dstParent.getDirectoryHandle(p, { create: true })
+      try {
+        await dstParent.getDirectoryHandle(targetDir)
+        throw new Error(`目标已存在: ${newPath}`)
+      } catch (e) {
+        if ((e as Error).message.startsWith('目标已存在')) throw e
+      }
+      await copyDir(srcHandle, dstParent, targetDir)
+      await srcParent.removeEntry(name, { recursive: true })
+      return
+    }
+    // 文件移动
     const data = await this.readFile(oldPath)
     await this.createFile(newPath)
     await this.writeFile(newPath, data)

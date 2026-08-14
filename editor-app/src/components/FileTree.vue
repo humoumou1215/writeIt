@@ -12,6 +12,13 @@ import {
   startRename,
   commitEditing,
   cancelEditing,
+  dragState,
+  beginDrag,
+  dragOver,
+  dragLeaveTarget,
+  moveNode,
+  endDrag,
+  type DropPosition,
 } from '../state/treeOps'
 import NewInput from './NewInput.vue'
 
@@ -47,16 +54,91 @@ function onContextMenu(e: MouseEvent) {
     kind: props.node.kind,
   }
 }
+
+// ---------- 拖拽移动（M7） ----------
+
+const nodeEl = ref<HTMLDivElement | null>(null)
+
+function onDragStart(e: DragEvent) {
+  if (isRenaming()) return
+  beginDrag(props.node.path, props.node.kind, props.node.name)
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', props.node.path)
+  }
+}
+
+/** 根据悬停位置计算落点：目录 = 上/中/下三分（插入前/移入/插入后）；文件 = 上下二分 */
+function computePosition(e: DragEvent): DropPosition {
+  const el = e.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  const ratio = (e.clientY - rect.top) / rect.height
+  if (props.node.kind === 'dir') {
+    if (ratio < 1 / 3) return 'before'
+    if (ratio > 2 / 3) return 'after'
+    return 'into'
+  }
+  return ratio < 0.5 ? 'before' : 'after'
+}
+
+function onDragOver(e: DragEvent) {
+  if (!dragState.active) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  dragOver(props.node.path, props.node.kind, computePosition(e))
+}
+
+function onDragLeave(e: DragEvent) {
+  // 移入子元素（span/actions）不算离开
+  if (e.relatedTarget && (e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return
+  dragLeaveTarget()
+}
+
+function onDrop(e: DragEvent) {
+  if (!dragState.active) return
+  e.preventDefault()
+  e.stopPropagation()
+  void moveNode().finally(() => endDrag())
+}
+
+function onDragEnd() {
+  endDrag()
+}
+
+/** 拖拽视觉状态（本节点） */
+const dropVisual = () => {
+  if (!dragState.active || dragState.targetPath !== props.node.path) return {}
+  const pos = dragState.position
+  return {
+    'drag-into': pos === 'into',
+    'drag-before': pos === 'before',
+    'drag-after': pos === 'after',
+    'drag-invalid': dragState.invalid,
+  }
+}
 </script>
 
 <template>
   <div>
     <div
+      ref="nodeEl"
       class="node"
-      :class="{ selected: isRenaming() }"
+      :class="{
+        selected: isRenaming(),
+        revealed: state.revealPath === node.path,
+        ...dropVisual(),
+      }"
+      :data-path="node.path"
       :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
+      :draggable="!isRenaming()"
       @click="open"
       @contextmenu="onContextMenu"
+      @dragstart="onDragStart"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+      @dragend="onDragEnd"
     >
       <span class="arrow" :class="{ open: isExpanded(node.path) }">
         {{ node.kind === 'dir' ? '▸' : '' }}
@@ -144,6 +226,44 @@ function onContextMenu(e: MouseEvent) {
 }
 .node.selected {
   background: var(--chrome-selected, #e8f3ff);
+}
+/* ---- 拖拽视觉（M7） ---- */
+.node[draggable='true'] {
+  cursor: grab;
+}
+.node[draggable='true']:active {
+  cursor: grabbing;
+}
+/* 悬停目录中间 = 移入 */
+.node.drag-into {
+  background: var(--chrome-selected, #e8f3ff);
+  box-shadow: inset 0 0 0 1.5px var(--chrome-accent, #3370ff);
+}
+/* 同级重排：插入指示线 */
+.node.drag-before {
+  box-shadow: 0 -2px 0 var(--chrome-accent, #3370ff);
+}
+.node.drag-after {
+  box-shadow: 0 2px 0 var(--chrome-accent, #3370ff);
+}
+/* 非法目标（循环/自身） */
+.node.drag-invalid {
+  background: rgba(186, 26, 26, 0.1);
+  box-shadow: inset 0 0 0 1.5px var(--chrome-error, #ba1a1a);
+}
+/* 瞄准定位高亮（闪烁 2 次后淡出） */
+.node.revealed {
+  background: var(--chrome-reveal, #fff3bf);
+  animation: reveal-flash 1.2s ease-out 2;
+}
+@keyframes reveal-flash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px var(--chrome-reveal-ring, #f0c000);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 .new-row {
   cursor: default;

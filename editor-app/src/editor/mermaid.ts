@@ -8,6 +8,7 @@ import { clearTextInCurrentBlockCommand } from '@milkdown/kit/preset/commonmark'
 import { insert } from '@milkdown/kit/utils'
 import mermaid from 'mermaid'
 import { MERMAID_SLASH_ITEMS } from './mermaid-diagrams'
+import { wrapMermaidPreview } from './mermaid-zoom'
 
 type CrepeFeatureConfig = NonNullable<
   ConstructorParameters<typeof Crepe>[0]
@@ -34,7 +35,8 @@ export function mermaidFeatureConfigs(): CrepeFeatureConfig {
         // 返回 undefined → code-block 先显示 loading，渲染完成后 applyPreview(svg)
         mermaid
           .render(`mmd-${mermaidSeq++}`, content)
-          .then(({ svg }) => applyPreview(svg))
+          // 包裹放大镜按钮（悬停显示，点击 Lightbox 放大查看，ESC 关闭）
+          .then(({ svg }) => applyPreview(wrapMermaidPreview(svg)))
           .catch((err: unknown) => {
             console.error('[mermaid] 渲染失败:', err)
             const msg = err instanceof Error ? err.message : String(err)

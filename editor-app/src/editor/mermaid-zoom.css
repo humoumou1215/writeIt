@@ -1,0 +1,128 @@
+/* Mermaid 预览放大查看：悬停放大镜按钮 + Lightbox 弹层 */
+
+/* ---- 预览包裹层（inline-block 收缩到图表尺寸，靠 .preview 的 text-align:center 居中） ---- */
+.mmd-zoomable {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* ---- 放大镜按钮（悬停预览区显示） ---- */
+.mmd-zoom-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  color: var(--crepe-color-on-surface, #1a1c1e);
+  background: color-mix(
+    in srgb,
+    var(--crepe-color-surface, #fff) 78%,
+    transparent
+  );
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--crepe-color-outline, #79747e) 35%, transparent);
+  cursor: zoom-in;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.mmd-zoomable:hover .mmd-zoom-btn,
+.mmd-zoom-btn:focus-visible {
+  opacity: 1;
+}
+
+.mmd-zoom-btn:hover {
+  background: var(--crepe-color-surface-container-low, #f4f4f4);
+}
+
+.mmd-zoom-btn svg {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+
+/* ---- Lightbox ---- */
+.mmd-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.62);
+  cursor: grab;
+  user-select: none;
+}
+
+.mmd-lightbox.mmd-dragging {
+  cursor: grabbing;
+}
+
+.mmd-lightbox-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--crepe-color-surface, #fff);
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.4);
+  line-height: 0;
+}
+
+.mmd-lightbox-canvas svg {
+  width: 100%;
+  height: 100%;
+}
+
+.mmd-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 1;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.mmd-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.mmd-lightbox-close svg {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+.mmd-lightbox-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+  pointer-events: none;
+}

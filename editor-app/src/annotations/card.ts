@@ -5,6 +5,7 @@ import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
 import { setActiveAnnotation, addAnnotation } from './service'
+import { state, toast } from '../state/store'
 
 let activeTabId = ''
 let editorRef: Editor | null = null
@@ -46,6 +47,13 @@ export function initAnnotationCard(): void {
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'r') return
   if (!editorRef) return
+  // M7：源码模式禁用批注——doc 是同步前的旧内容，选区错位；且不 preventDefault 会触发浏览器刷新
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (tab?.sourceMode) {
+    e.preventDefault()
+    toast('源码模式下暂不支持添加批注，请按 Ctrl+E 切回编辑模式', 'info')
+    return
+  }
   editorRef.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const { from, to } = view.state.selection

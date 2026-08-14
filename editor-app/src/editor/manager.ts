@@ -5,6 +5,8 @@
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { replaceAll } from '@milkdown/kit/utils'
+// M7：inline-code 的 Mod-e 与源码模式 Ctrl+E 冲突 → 改绑 Ctrl+Shift+E
+import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 
 import { TextSelection } from '@milkdown/kit/prose/state'
 
@@ -50,6 +52,8 @@ interface Instance {
   el: HTMLDivElement
   /** 打开/保存等内部操作期间抑制脏标记误报 */
   suppressing: boolean
+  /** M7：源码模式 textarea（懒创建；源码编辑不经过 ProseMirror doc） */
+  srcTa: HTMLTextAreaElement | null
 }
 
 const instances = new Map<string, Instance>()
@@ -68,10 +72,104 @@ function scheduleDebouncedValidation(tabId: string, inst: Instance) {
   )
 }
 
+// ---------- M7：源码查看模式（Ctrl+E 切换） ----------
+// 每标签独立视图模式：源码 = 容器内 textarea 覆盖层（不销毁 Crepe 实例），
+// 进入时 getMarkdown()（canonical）填入，退出时 replaceAll() 解析回 doc。
+// 源码编辑不触发 markdownUpdated（doc 不变）→ 脏标记由 textarea input 自行维护；
+// 保存/校验等读 doc 的操作前调 ensureDocSynced 把源码同步进 doc。
+
+function ensureSourceTa(inst: Instance, tabId: string): HTMLTextAreaElement {
+  if (inst.srcTa) return inst.srcTa
+  const ta = document.createElement('textarea')
+  ta.className = 'source-ta'
+  ta.setAttribute('data-source-ta', '')
+  ta.spellcheck = false
+  ta.placeholder = 'Markdown 源码（Ctrl+E 切回所见即所得）'
+  ta.addEventListener('input', () => {
+    const t = state.tabs.find((x) => x.id === tabId)
+    if (!t) return
+    // 源码编辑 = 真实用户输入（§6.7 时间戳机制复用，容器 onInput 也会置 userEditedAt）
+    t.userEditedAt = Date.now()
+    const nowDirty = ta.value !== t.savedContent
+    if (t.dirty !== nowDirty) t.dirty = nowDirty
+    t.lastModified = Date.now()
+  })
+  // Tab 键插入两个空格（原生 textarea 的 Tab 会跳焦点）
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault()
+      const s = ta.selectionStart
+      const en = ta.selectionEnd
+      ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en)
+      ta.setSelectionRange(s + 2, s + 2)
+    }
+  })
+  inst.el.appendChild(ta)
+  inst.srcTa = ta
+  return ta
+}
+
+/** 源码模式 → 把 textarea 最新内容解析回 ProseMirror doc（不切换模式）。
+ *  保存/校验/定位等读 doc 的操作前调用；非源码模式或内容未变时无操作。
+ *  不 suppressing：replaceAll 触发 markdownUpdated → 脏检测/防抖校验正常走。 */
+async function ensureDocSynced(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const inst = instances.get(tabId)
+  if (!tab || !inst || !tab.sourceMode || !inst.srcTa) return
+  const ta = inst.srcTa
+  const current = inst.crepe.getMarkdown()
+  if (ta.value === current) return
+  inst.crepe.editor.action(replaceAll(ta.value))
+  await resolveRefs(inst.crepe.editor)
+  void refreshBrokenState(inst.crepe.editor)
+}
+
+/** 切换标签视图模式（Ctrl+E）；on=true 进入源码，off=false 切回所见即所得 */
+async function setSourceMode(tabId: string, on: boolean): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const inst = instances.get(tabId)
+  if (!tab || !inst || tab.sourceMode === on) return
+  const milkdownEl = inst.el.querySelector('.milkdown') as HTMLElement | null
+  if (on) {
+    const ta = ensureSourceTa(inst, tabId)
+    ta.value = inst.crepe.getMarkdown()
+    ta.style.display = 'block'
+    if (milkdownEl) milkdownEl.style.display = 'none'
+    inst.el.classList.add('source-mode')
+    tab.sourceMode = true
+    // 光标放末尾，便于继续输入
+    ta.focus()
+    const len = ta.value.length
+    ta.setSelectionRange(len, len)
+  } else {
+    // 先同步（此时 sourceMode 仍为 true，ensureDocSynced 才会执行）再切可见性
+    await ensureDocSynced(tabId)
+    const ta = inst.srcTa
+    if (ta) ta.style.display = 'none'
+    if (milkdownEl) milkdownEl.style.display = 'block'
+    inst.el.classList.remove('source-mode')
+    tab.sourceMode = false
+    // 焦点还给编辑器
+    requestAnimationFrame(() => {
+      const viewEl = inst.el.querySelector('.ProseMirror') as HTMLElement | null
+      viewEl?.focus()
+    })
+  }
+}
+
+export async function toggleSourceMode(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const inst = instances.get(tabId)
+  if (!tab || !inst) return
+  await setSourceMode(tabId, !tab.sourceMode)
+}
+
 // M5：校验面板点击违规跳转到文档位置（打开/激活标签 + 滚动到 pos）
 export async function scrollToPos(tabId: string, pos: number): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
+  // M7：源码模式下定位 → 先切回所见即所得（用户要看到位置）
+  if (tab.sourceMode) await setSourceMode(tabId, false)
   if (state.activeTabId !== tabId) {
     await openTab(tabId)
   }
@@ -103,6 +201,8 @@ export async function scrollToPos(tabId: string, pos: number): Promise<void> {
 export async function refreshValidation(): Promise<void> {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return
+  // M7：源码模式下先用 textarea 最新内容同步 doc，再校验（保证校验结果对应源码）
+  if (state.activeTabId) await ensureDocSynced(state.activeTabId)
   const res = await validateEditor(inst.crepe.editor, state.activeTabId!, { silent: true })
   const n = res.violations.length
   if (n === 0) toast('校验通过：未发现违规', 'success')
@@ -121,7 +221,11 @@ export function getActiveInstance(): Instance | null {
 }
 ;(window as unknown as { __editorGetMarkdown?: unknown }).__editorGetMarkdown = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
-  return inst ? inst.crepe.getMarkdown() : ''
+  if (!inst) return ''
+  // M7：源码模式下返回 textarea 最新内容（doc 是同步前的旧内容）
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (tab?.sourceMode && inst.srcTa) return inst.srcTa.value
+  return inst.crepe.getMarkdown()
 }
 ;(window as unknown as { __editorSetRefPath?: unknown }).__editorSetRefPath = (oldPath: string, newPath: string) => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
@@ -544,6 +648,7 @@ export async function openTab(path: string): Promise<void> {
     blockSnapshot: null,
     userEditedAt: 0,
     lastExternalSyncAt: 0,
+    sourceMode: false,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -555,9 +660,17 @@ export async function openTab(path: string): Promise<void> {
 
 export function activateTab(id: string) {
   state.activeTabId = id
-  // 等 DOM 切换完成后把焦点还给编辑器
+  // M6：批注卡上下文跟随活动标签（切标签后 Ctrl+R/批注卡作用于当前编辑器）
+  const inst0 = instances.get(id)
+  if (inst0) setAnnotationCardContext(id, inst0.crepe.editor)
+  // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）
   requestAnimationFrame(() => {
     const inst = instances.get(id)
+    const tab = state.tabs.find((t) => t.id === id)
+    if (inst && tab?.sourceMode) {
+      inst.srcTa?.focus()
+      return
+    }
     const viewEl = inst?.el.querySelector('.ProseMirror') as HTMLElement | null
     viewEl?.focus()
   })
@@ -589,6 +702,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   crepe.editor.use(bindAnnotationDecorations(tabId))
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
+    // M7：Ctrl+E 让位给源码模式切换——inline-code 快捷键改绑 Ctrl+Shift+E
+    ctx.set(inlineCodeKeymap.ctx.key, {
+      ToggleInlineCode: { shortcuts: 'Mod-Shift-e' },
+    })
   })
   await crepe.create()
   // M6：批注卡上下文（tabId + 编辑器引用）
@@ -608,7 +725,7 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
   void validateEditor(crepe.editor, tabId, { silent: true })
 
-  const inst: Instance = { crepe, el: container, suppressing: false }
+  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null }
   instances.set(tabId, inst)
   // §6.7：真实用户输入（键盘/粘贴/IME）→ 记录时间戳。
   // 用 DOM input 事件而非 markdownUpdated（校验空事务/物化等程序化 dispatch 不触发 input）
@@ -692,6 +809,10 @@ async function refreshTabToContent(
     }
     srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
     srcTab.lastModified = Date.now()
+    // M7：源标签处于源码模式 → textarea 同步为最新内容（与 doc/磁盘一致）
+    if (srcTab.sourceMode && srcInst.srcTa) {
+      srcInst.srcTa.value = canonical
+    }
   } catch (e) {
     console.warn('[sync] 源标签刷新失败:', srcTab.path, e)
   } finally {
@@ -765,6 +886,8 @@ export async function saveTab(tabId: string): Promise<boolean> {
     tab.dirty = false
     return true
   }
+  // M7：源码模式保存 → 先把 textarea 最新内容解析回 doc（保持源码模式，保存后继续编辑源码）
+  if (tab.sourceMode) await ensureDocSynced(tabId)
   // M5 strict 门禁：先确保校验结果新鲜（文档可能已编辑），mode strict + error 违规 → 需确认
   const result = await validateEditor(inst.crepe.editor, tabId, { silent: true })
   if (hasStrictBlock(result)) {
@@ -859,6 +982,11 @@ export async function closeTab(tabId: string): Promise<void> {
   if (state.activeTabId === tabId) {
     const next = state.tabs[Math.min(idx, state.tabs.length - 1)]
     state.activeTabId = next ? next.id : null
+    // M6：活动标签切到下一个 → 恢复批注卡上下文（关闭标签时被清成 null）
+    if (next) {
+      const nextInst = instances.get(next.id)
+      if (nextInst) setAnnotationCardContext(next.id, nextInst.crepe.editor)
+    }
   }
 }
 
