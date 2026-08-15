@@ -2,14 +2,14 @@
 
 /* doctype：弱化、只读（配合 CSS 禁用编辑） */
 .ref-doctype {
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.04em;
   opacity: 0.6;
   padding: 2px 8px;
   border-radius: 6px;
-  background: var(--chrome-surface-low, #f2f3f5);
+  background: var(--chrome-surface-low);
   display: inline-block;
   margin-bottom: 6px;
   user-select: none;
@@ -17,9 +17,9 @@
 
 /* file_ref：文件名 chip */
 a.ref-file {
-  color: var(--chrome-primary, #f5b301);
+  color: var(--chrome-primary);
   text-decoration: none;
-  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 88%);
+  background: color-mix(in srgb, var(--chrome-primary), transparent 88%);
   border-radius: 5px;
   padding: 0 5px;
   margin: 0 1px;
@@ -28,13 +28,13 @@ a.ref-file {
   transition: background 0.15s;
 }
 a.ref-file:hover {
-  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+  background: color-mix(in srgb, var(--chrome-primary), transparent 72%);
 }
 
 /* object_ref：对象值字符串（与 file_ref 同款 chip，可点击跳转） */
 span.ref-object {
-  color: var(--chrome-primary, #f5b301);
-  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 90%);
+  color: var(--chrome-primary);
+  background: color-mix(in srgb, var(--chrome-primary), transparent 90%);
   border-radius: 5px;
   padding: 0 5px;
   margin: 0 1px;
@@ -43,7 +43,7 @@ span.ref-object {
   transition: background 0.15s;
 }
 span.ref-object:hover {
-  background: color-mix(in srgb, var(--chrome-primary, #f5b301), transparent 72%);
+  background: color-mix(in srgb, var(--chrome-primary), transparent 72%);
 }
 
 /* 自定义悬停浮窗（替换原生 title） */
@@ -53,10 +53,10 @@ span.ref-object:hover {
   max-width: 240px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--chrome-surface, #fff);
-  color: var(--chrome-on-surface, #1f2329);
-  border: 1px solid var(--chrome-border, #e5e6eb);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
+  border: 1px solid var(--chrome-border);
+  box-shadow: var(--chrome-shadow-1);
   font-size: 12px;
   line-height: 1.5;
   pointer-events: none;
@@ -69,11 +69,11 @@ span.ref-object:hover {
 
 /* file_block：卡片容器 */
 .ref-file-block {
-  border: 1px solid var(--chrome-border, #e5e6eb);
+  border: 1px solid var(--chrome-border);
   border-radius: 10px;
   margin: 8px 0;
   overflow: hidden;
-  background: var(--chrome-surface-low, #f5f6f8);
+  background: var(--chrome-surface-low);
 }
 .ref-file-block-header {
   display: flex;
@@ -81,26 +81,26 @@ span.ref-object:hover {
   gap: 8px;
   padding: 5px 12px;
   font-size: 12px;
-  background: var(--chrome-surface, #fff);
-  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  background: var(--chrome-surface);
+  border-bottom: 1px solid var(--chrome-border);
   user-select: none;
 }
 .ref-file-block-badge {
   font-weight: 600;
-  color: var(--chrome-primary, #f5b301);
+  color: var(--chrome-primary);
 }
 .ref-file-block.readonly .ref-file-block-badge {
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 .ref-file-block-path {
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ref-file-block-content {
   padding: 6px 14px;
-  background: var(--chrome-background, #fff);
+  background: var(--chrome-background);
 }
 .ref-file-block.readonly .ref-file-block-content {
   opacity: 0.85;
@@ -109,9 +109,9 @@ span.ref-object:hover {
 
 /* M3：断链引用红色警告态 */
 .ref-broken {
-  text-decoration: underline wavy var(--chrome-error, #ba1a1a) !important;
-  color: var(--chrome-error, #ba1a1a) !important;
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 90%) !important;
+  text-decoration: underline wavy var(--chrome-error) !important;
+  color: var(--chrome-error) !important;
+  background: color-mix(in srgb, var(--chrome-error), transparent 90%) !important;
 }
 
 /* M3：只读 file_block 隐藏块拖拽手柄（hover 到只读卡片时不显示） */
@@ -124,7 +124,7 @@ body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
 .validate-mark {
   display: inline-block;
   margin: 0 1px;
-  color: var(--chrome-warning, #b58900);
+  color: #b58900;
   font-weight: 700;
   cursor: help;
   /* 纯视觉标记：鼠标点击/选中穿透到编辑器（不拦截输入） */
@@ -132,7 +132,7 @@ body:has(.milkdown .ref-file-block.readonly:active) .block-handle {
   user-select: none;
 }
 .validate-mark[data-level='error'] {
-  color: var(--chrome-error, #ba1a1a);
+  color: var(--chrome-error);
 }
 
 /* ========== 批注（M6）========== */
@@ -151,28 +151,28 @@ mark.annotation:hover {
 
 /* 运行时批注（校验违规）：inline 高亮 / 锚定行整块高亮 */
 .annotation-dynamic {
-  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 78%);
-  border-bottom: 1px dotted var(--chrome-warning, #b58900);
+  background: color-mix(in srgb, #b58900, transparent 78%);
+  border-bottom: 1px dotted #b58900;
   cursor: pointer;
 }
 .annotation-dynamic.annotation-level-error {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 82%);
-  border-bottom-color: var(--chrome-error, #ba1a1a);
+  background: color-mix(in srgb, var(--chrome-error), transparent 82%);
+  border-bottom-color: var(--chrome-error);
 }
 .annotation-dynamic.annotation-level-error:hover {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 65%);
+  background: color-mix(in srgb, var(--chrome-error), transparent 65%);
 }
 .annotation-dynamic.annotation-level-warning:hover,
 .annotation-dynamic.annotation-level-info:hover {
-  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 55%);
+  background: color-mix(in srgb, #b58900, transparent 55%);
 }
 
 /* 锚定行（空范围降级）：node decoration 整块高亮 */
 tr.annotation-dynamic {
-  background: color-mix(in srgb, var(--chrome-warning, #b58900), transparent 85%);
+  background: color-mix(in srgb, #b58900, transparent 85%);
 }
 tr.annotation-dynamic.annotation-level-error {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
+  background: color-mix(in srgb, var(--chrome-error), transparent 88%);
 }
 
 /* 添加批注输入浮窗（Toolbar 入口） */
@@ -181,9 +181,9 @@ tr.annotation-dynamic.annotation-level-error {
   z-index: 1100;
   width: 240px;
   border-radius: 8px;
-  background: var(--chrome-panel-bg, #fff);
-  border: 1px solid var(--chrome-border, #d0d0d0);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  background: var(--chrome-surface);
+  border: 1px solid var(--chrome-border);
+  box-shadow: var(--chrome-shadow-1);
   padding: 8px;
   display: none;
 }
@@ -193,14 +193,14 @@ tr.annotation-dynamic.annotation-level-error {
 .annotation-input-ta {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--chrome-border, #d0d0d0);
+  border: 1px solid var(--chrome-border);
   border-radius: 4px;
   padding: 4px 6px;
   font: inherit;
   min-height: 52px;
   resize: vertical;
-  background: var(--chrome-input-bg, #fff);
-  color: var(--chrome-text, #333);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
 }
 /* ========== Gutter 侧边条 + 批注卡连线（M6 v2）========== */
 
@@ -236,12 +236,12 @@ tr.annotation-dynamic.annotation-level-error {
   z-index: 1200;
   max-width: 220px;
   border-radius: 6px;
-  background: var(--chrome-panel-bg, #fff);
-  border: 1px solid var(--chrome-border, #d0d0d0);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  background: var(--chrome-surface);
+  border: 1px solid var(--chrome-border);
+  box-shadow: var(--chrome-shadow-1);
   padding: 5px 8px;
   font-size: 11px;
-  color: var(--chrome-text, #333);
+  color: var(--chrome-on-surface);
   display: none;
   pointer-events: none;
   word-break: break-word;

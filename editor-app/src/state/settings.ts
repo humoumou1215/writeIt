@@ -173,6 +173,7 @@ export function applyTheme(theme: ThemeId) {
 // 供文件树/标签栏/工具栏使用，保证整体观感与编辑器一致
 
 const CHROME_MAP: Array<[string, string]> = [
+  // ---- 颜色（基础） ----
   ['--chrome-background', '--crepe-color-background'],
   ['--chrome-on-background', '--crepe-color-on-background'],
   ['--chrome-surface', '--crepe-color-surface'],
@@ -186,6 +187,32 @@ const CHROME_MAP: Array<[string, string]> = [
   ['--chrome-selected', '--crepe-color-selected'],
   ['--chrome-inline-code', '--crepe-color-inline-code'],
   ['--chrome-error', '--crepe-color-error'],
+  ['--chrome-inverse', '--crepe-color-inverse'],
+  ['--chrome-on-inverse', '--crepe-color-on-inverse'],
+  ['--chrome-on-secondary', '--crepe-color-on-secondary'],
+  ['--chrome-inline-area', '--crepe-color-inline-area'],
+  // ---- 字体 ----
+  ['--chrome-font-default', '--crepe-font-default'],
+  ['--chrome-font-title', '--crepe-font-title'],
+  ['--chrome-font-code', '--crepe-font-code'],
+  // ---- 阴影 ----
+  ['--chrome-shadow-1', '--crepe-shadow-1'],
+  ['--chrome-shadow-2', '--crepe-shadow-2'],
+]
+
+// 派生变量（需要从基础色计算）
+const CHROME_DERIVED: Array<[string, string, string]> = [
+  // [chrome变量, 基础 crepe 变量, 后缀/变换]
+  ['--chrome-border', '--crepe-color-outline', '55'],
+  ['--chrome-border-light', '--crepe-color-outline', '33'],
+  ['--chrome-accent', '--crepe-color-primary', ''],
+  ['--chrome-panel-bg', '--crepe-color-surface', ''],
+  ['--chrome-text', '--crepe-color-on-surface', ''],
+  ['--chrome-input-bg', '--crepe-color-background', ''],
+  ['--chrome-reveal', '--crepe-color-secondary', '44'],
+  ['--chrome-reveal-ring', '--crepe-color-primary', ''],
+  // 语义色（warning 不在 crepe 基础色中，用 outline 混合）
+  ['--chrome-warning', '--crepe-color-on-surface-variant', ''],
 ]
 
 export function syncChromeTheme() {
@@ -208,10 +235,16 @@ export function syncChromeTheme() {
   }
   const cs = getComputedStyle(probe)
   const root = document.documentElement
+
+  // 基础映射
   for (const [chromeVar, crepeVar] of CHROME_MAP) {
     const v = cs.getPropertyValue(crepeVar).trim()
     if (v) root.style.setProperty(chromeVar, v)
   }
-  // 边框色：无直接对应，用 outline 的淡化
-  root.style.setProperty('--chrome-border', cs.getPropertyValue('--crepe-color-outline').trim() + '55')
+
+  // 派生变量
+  for (const [chromeVar, crepeVar, suffix] of CHROME_DERIVED) {
+    const v = cs.getPropertyValue(crepeVar).trim()
+    if (v) root.style.setProperty(chromeVar, suffix ? v + suffix : v)
+  }
 }

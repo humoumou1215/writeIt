@@ -21,6 +21,7 @@ const SUITES = [
   'source-e2e',   // M7 源码查看模式（Ctrl+E 切换）
   'drag-e2e',     // M7 文件树拖拽移动 + 瞄准定位
   'm7-apidoc-e2e',// M7 接口文档：动态对象 objectsFor + findCodeBlocks
+  'xxljob-e2e',   // M7 xxljob：一文件一任务校验 + 属性对象引用
   'm8-db-e2e',    // M8 数据库：字段对象 objectsFor + 表清单↔字段表一致性
   'mermaid-zoom-e2e', // Mermaid 预览放大查看（悬停放大镜 + Lightbox + ESC）
   'app-e2e',      // 综合（清空 demo-shots/）

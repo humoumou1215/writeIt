@@ -356,13 +356,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, { capture
 .ref-menu-empty {
   padding: 14px;
   text-align: center;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 12px;
 }
 .ref-dir-arrow {
   margin-left: auto;
   font-size: 11px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 </style>
 

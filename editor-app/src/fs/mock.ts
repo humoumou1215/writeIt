@@ -439,7 +439,7 @@ export const rules: Rule[] = [
   'template/接口文档/接口文档.suggest.ts': `// 接口文档 suggest：动态对象生成器
 // 从「接口详情」下字段说明表提取每个字段为可引用对象。
 // 用法：在设计文档写「放款金额取自 [[接口文档/助贷/助贷接口#amount]]」
-//   resolve 出「类型:bigint 高风险:是 来源:[[数据库/loan/表结构#amount]]」
+//   resolve 出「类型:bigint 高风险:是 来源:[[数据库/loan/loan_apply#amount]]」
 import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
 
 export function objectsFor(ctx: SuggestContext): SuggestObject[] {
@@ -492,7 +492,7 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 | 预计接口并发量 | TPS ≤ 5 | 2026-08-14 商务XXX与外部约定 TPS 控制在 5 以内 |
 | 幂等规则 | [[#applyNo]] | 以申请号 applyNo 作幂等键，重复请求返回原结果 |
 | 涉及调用外部接口 | [[后端接口/资金方-XX银行/放款接口]] | 申请受理后调资金方放款接口 |
-| 防止重复调用外部接口的机制 | [[数据库/loan/表结构#status]] | 发送外部前更新 loan.status=SENDING（乐观锁），防止重复发起放款 |
+| 防止重复调用外部接口的机制 | [[数据库/loan/loan_apply#status]] | 发送外部前更新 loan.status=SENDING（乐观锁），防止重复发起放款 |
 | 是否涉及分页，分页必须搭配排序 | 否 | 单笔申请，无分页 |
 | 交易状态判断 | [[#status]] | 明确成功=SUCCESS、明确失败=FAIL，其余=PROCESSING 视为处理中 |
 
@@ -504,13 +504,13 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 
 | 字段 | 类型 | 长度 | 是否高风险字段 | 高风险字段类型 | 数据来源 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| applyNo | string | 32 | 是 | 幂等 | [[数据库/loan/表结构#apply_no]] | 放款申请号，幂等键 |
-| customerId | bigint | 20 | 否 |  | [[数据库/customer/表结构#id]] | 客户ID |
-| amount | bigint | 20 | 是 | 金额 | [[数据库/loan/表结构#amount]] | 放款金额（单位：分） |
-| term | int | 4 | 是 | 期次 | [[数据库/loan/表结构#term]] | 期数 |
-| repaymentMethod | string | 16 | 是 | 还款方式 | [[数据库/loan/表结构#repayment_method]] | 还款方式（等额本息/等额本金/先息后本） |
-| applyDate | date | 10 | 否 |  | [[数据库/loan/表结构#apply_date]] | 申请日期 |
-| status | string | 16 | 是 | 业务状态 | [[数据库/loan/表结构#status]] | 交易状态：PROCESSING/SUCCESS/FAIL |
+| applyNo | string | 32 | 是 | 幂等 | [[数据库/loan/loan_apply#apply_no]] | 放款申请号，幂等键 |
+| customerId | bigint | 20 | 否 |  | [[数据库/customer/customer_info#id]] | 客户ID |
+| amount | bigint | 20 | 是 | 金额 | [[数据库/loan/loan_apply#amount]] | 放款金额（单位：分） |
+| term | int | 4 | 是 | 期次 | [[数据库/loan/loan_apply#term]] | 期数 |
+| repaymentMethod | string | 16 | 是 | 还款方式 | [[数据库/loan/loan_apply#repayment_method]] | 还款方式（等额本息/等额本金/先息后本） |
+| applyDate | date | 10 | 否 |  | [[数据库/loan/loan_apply#apply_date]] | 申请日期 |
+| status | string | 16 | 是 | 业务状态 | [[数据库/loan/loan_apply#status]] | 交易状态：PROCESSING/SUCCESS/FAIL |
 
 请求示例：
 
@@ -563,7 +563,7 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 | 预计接口并发量 | TPS ≤ 5 | |
 | 幂等规则 | [[#applyNo]] | |
 | 涉及调用外部接口 | [[后端接口/资金方-XX银行/放款接口]] | |
-| 防止重复调用外部接口的机制 | [[数据库/loan/表结构#status]] | |
+| 防止重复调用外部接口的机制 | [[数据库/loan/loan_apply#status]] | |
 | 是否涉及分页，分页必须搭配排序 | 否 | |
 | 交易状态判断 | [[#status]] | |
 
@@ -575,9 +575,9 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 
 | 字段 | 类型 | 长度 | 是否高风险字段 | 高风险字段类型 | 数据来源 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| applyNo | string | 32 | 是 | 幂等 | [[数据库/loan/表结构#apply_no]] | 放款申请号 |
+| applyNo | string | 32 | 是 | 幂等 | [[数据库/loan/loan_apply#apply_no]] | 放款申请号 |
 | amount | bigint | 20 | 是 | 金额 |  | 故意不填数据来源（违反「高风险字段必填数据来源」） |
-| status | string | 16 | 是 | 业务状态 | [[数据库/loan/表结构#status]] | 交易状态 |
+| status | string | 16 | 是 | 业务状态 | [[数据库/loan/loan_apply#status]] | 交易状态 |
 
 请求示例：
 
@@ -623,32 +623,27 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 `,
   'template/数据库/数据库.md': `doctype:数据库
 
-# {{schema}}（schema 表结构）
+# {{loan_apply}} {{放款申请表}}
 
-> 本模板由「消金业务合作平台」定义。每个 .md 文件描述**一个数据库 schema** 的表结构。
-> 字段名即对象引用 id（如 \`[[数据库/loan/表结构#amount]]\`），请用英文标识符（下划线风格），避免 \`#\` / 空格破坏引用语法。
+> 本模板由「消金业务合作平台」定义。**1 个 .md 文件 = 1 张表**（无表清单章节）。
+> 字段名即对象引用 id（如 \`[[数据库/loan/loan_apply#amount]]\`），请用英文标识符（下划线风格），避免 \`#\` / 空格破坏引用语法。
 
 ## 基本信息
 
 | 项 | 值 | 备注 |
 | --- | --- | :--- |
-| schema | {{loan}} | schema 名 |
+| 表名 | {{loan_apply}} | 英文标识符 |
+| 中文名 | {{放款申请表}} | |
+| schema | {{loan}} | 所属 schema |
 | 版本号 | {{v0.1.0}} | 格式 \`vX.Y.Z\` |
 
-## 表清单
-
-| 表名 | 中文名 | 说明 |
-| --- | --- | --- |
-| {{loan_apply}} | {{放款申请表}} | {{助贷放款申请记录}} |
-
-## {{loan_apply}} {{放款申请表}}
+## 字段说明
 
 | 字段 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | {{id}} | {{bigint}} | {{PK 自增}} | {{主键}} |
 
-> 每张表一个 \`## 表名 中文名\` 章节；表清单中的表名必须有对应的字段表章节。
-> 字段名请用英文标识符（如 \`apply_no\`），接口文档的数据来源列会以 \`[[数据库/{{schema}}/表结构#{{字段名}}]]\` 引用。
+> 字段名请用英文标识符（如 \`apply_no\`），接口文档的数据来源列会以 \`[[数据库/{{schema}}/{{表名}}#{{字段名}}]]\` 引用。
 
 ## 索引
 
@@ -663,26 +658,16 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 | {{2026-08-06}} | {{初版}} |
 `,
   'template/数据库/数据库.rules.ts': `// 数据库表结构校验规则（mode=hint，不阻止保存；违规写入 .validate/report.md）
-// 「表清单 ↔ 字段表章节」一致性：表清单声明的每个表名必须有「## 表名」标题下的字段表
+// 1 个 .md 文件 = 1 张表：基本信息（表名/中文名/schema/版本号）+ 字段说明表 + 索引 + 变更记录
 import type { ValidationContext, Rule } from '@milkdown-note/validate'
 
-/** 表清单「表名」列集合 */
-function tableNames(ctx: ValidationContext): string[] {
-  const t = ctx.findTableAfterHeading('## 表清单')
-  if (!t) return []
-  const h = t.headerRow()
-  if (!h) return []
-  const cols = h.cells().map((c) => c.text())
-  const cTable = cols.findIndex((c) => /表名/.test(c))
-  if (cTable < 0) return []
-  return t
-    .dataRows()
-    .map((r) => r.cell(cTable).text().trim())
-    .filter((n) => n && !/待补充/.test(n))
-}
-
-function esc(s: string): string {
-  return s.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&')
+function basicInfo(ctx: ValidationContext, key: string): string | null {
+  const t = ctx.findTableAfterHeading('## 基本信息')
+  if (!t) return null
+  for (const row of t.dataRows()) {
+    if (row.cell(0).text().trim() === key) return row.cell(1).text().trim()
+  }
+  return null
 }
 
 export const mode = 'hint' as const
@@ -693,7 +678,7 @@ export const rules: Rule[] = [
     id: 'sections-required',
     label: '必备章节齐全',
     run(ctx) {
-      for (const h of ['## 基本信息', '## 表清单', '## 变更记录']) {
+      for (const h of ['## 基本信息', '## 字段说明', '## 变更记录']) {
         if (!ctx.findHeading(h)) ctx.violation(\`缺少必备章节「\${h}」\`, 'error')
       }
     },
@@ -708,99 +693,79 @@ export const rules: Rule[] = [
       if (!h || !/项/.test(h.cell(0).text()) || !/值/.test(h.cell(1).text())) {
         ctx.violation('基本信息表表头应为「项 | 值 | 备注」', 'error')
       }
+      for (const key of ['表名', '中文名', 'schema', '版本号']) {
+        if (!basicInfo(ctx, key)) ctx.violation(\`基本信息缺少「\${key}」\`, 'warning')
+      }
+    },
+  },
+  {
+    id: 'table-name-format',
+    label: '表名格式',
+    run(ctx) {
+      const t = basicInfo(ctx, '表名')
+      if (t && !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t)) {
+        ctx.violation(\`表名「\${t}」应为英文标识符（无空格/特殊字符）\`, 'warning')
+      }
     },
   },
   {
     id: 'version-format',
     label: '版本号格式',
     run(ctx) {
-      const t = ctx.findTableAfterHeading('## 基本信息')
-      if (!t) return
-      for (const row of t.dataRows()) {
-        if (row.cell(0).text().trim() !== '版本号') continue
-        const v = row.cell(1).text().trim()
-        if (v && !/^v\\d+\\.\\d+\\.\\d+$/.test(v)) ctx.violation(\`版本号「\${v}」应为 vX.Y.Z\`, 'warning')
-      }
+      const v = basicInfo(ctx, '版本号')
+      if (v && !/^v\\d+\\.\\d+\\.\\d+$/.test(v)) ctx.violation(\`版本号「\${v}」应为 vX.Y.Z\`, 'warning')
     },
   },
   {
-    id: 'table-list',
-    label: '表清单存在且有表',
+    id: 'field-table',
+    label: '字段说明表存在',
     run(ctx) {
-      if (tableNames(ctx).length === 0) ctx.violation('表清单为空或缺少「表名」列', 'error')
-    },
-  },
-  {
-    id: 'table-field-consistency',
-    label: '表清单与字段表章节一致',
-    run(ctx) {
-      for (const t of tableNames(ctx)) {
-        const sec = ctx.findHeading(new RegExp('^' + esc(t)))
-        if (!sec) {
-          ctx.violation(\`表「\${t}」在表清单中声明，但缺少「## \${t}」字段表章节\`, 'warning')
-          continue
-        }
-        const ft = ctx.findTableAfterHeading(new RegExp('^' + esc(t)))
-        if (!ft || ft.dataRows().length === 0) {
-          ctx.violation(\`表「\${t}」缺少字段说明表或字段表为空\`, 'warning')
-        }
-      }
-    },
-  },
-  {
-    id: 'field-table-cols',
-    label: '字段表列齐全',
-    run(ctx) {
-      for (const t of tableNames(ctx)) {
-        const ft = ctx.findTableAfterHeading(new RegExp('^' + esc(t)))
-        if (!ft) continue
-        const h = ft.headerRow()
-        if (!h) continue
-        const cols = h.cells().map((c) => c.text())
-        if (!cols.some((c) => /字段/.test(c))) ctx.violation(\`表「\${t}」字段表缺少「字段」列\`, 'error')
-        if (!cols.some((c) => /^类型$/.test(c))) ctx.violation(\`表「\${t}」字段表缺少「类型」列\`, 'error')
-        if (!cols.some((c) => /约束/.test(c))) ctx.violation(\`表「\${t}」字段表缺少「约束」列\`, 'warning')
-        if (!cols.some((c) => /^说明$/.test(c))) ctx.violation(\`表「\${t}」字段表缺少「说明」列\`, 'warning')
-      }
+      const t = ctx.findTableAfterHeading('## 字段说明')
+      if (!t) { ctx.violation('「字段说明」下缺少字段表', 'error'); return }
+      if (t.dataRows().length === 0) { ctx.violation('字段说明表为空', 'error'); return }
+      const h = t.headerRow()
+      if (!h) { ctx.violation('字段说明表缺少表头', 'error'); return }
+      const cols = h.cells().map((c) => c.text())
+      if (!cols.some((c) => /字段/.test(c))) ctx.violation('字段说明表缺少「字段」列', 'error')
+      if (!cols.some((c) => /^类型$/.test(c))) ctx.violation('字段说明表缺少「类型」列', 'error')
+      if (!cols.some((c) => /约束/.test(c))) ctx.violation('字段说明表缺少「约束」列', 'warning')
+      if (!cols.some((c) => /^说明$/.test(c))) ctx.violation('字段说明表缺少「说明」列', 'warning')
     },
   },
   {
     id: 'field-name-format',
     label: '字段名格式',
     run(ctx) {
-      for (const t of tableNames(ctx)) {
-        const ft = ctx.findTableAfterHeading(new RegExp('^' + esc(t)))
-        if (!ft) continue
-        const h = ft.headerRow()
-        if (!h) continue
-        const cols = h.cells().map((c) => c.text())
-        const cField = cols.findIndex((c) => /字段/.test(c))
-        if (cField < 0) continue
-        for (const row of ft.dataRows()) {
-          const f = row.cell(cField).text().trim()
-          if (!f || /^\\{\\{.*\\}\\}$/.test(f)) continue
-          // 英文标识符或中文（无空格）；禁止空格/特殊字符（会破坏 wikilink 引用语法）
-          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(f) && !/^[\\u4e00-\\u9fa5]+$/.test(f)) {
-            ctx.violation(\`字段「\${f}」应为英文标识符或无空格中文（当前含空格/特殊字符，无法被 wikilink 引用）\`, 'warning')
-          }
+      const t = ctx.findTableAfterHeading('## 字段说明')
+      if (!t) return
+      const h = t.headerRow()
+      if (!h) return
+      const cols = h.cells().map((c) => c.text())
+      const cField = cols.findIndex((c) => /字段/.test(c))
+      if (cField < 0) return
+      for (const row of t.dataRows()) {
+        const f = row.cell(cField).text().trim()
+        if (!f || /^\\{\\{.*\\}\\}$/.test(f)) continue
+        // 英文标识符或中文（无空格）；禁止空格/特殊字符（会破坏 wikilink 引用语法）
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(f) && !/^[\\u4e00-\\u9fa5]+$/.test(f)) {
+          ctx.violation(\`字段「\${f}」应为英文标识符或无空格中文（当前含空格/特殊字符，无法被 wikilink 引用）\`, 'warning')
         }
       }
     },
   },
   {
     id: 'pk-exists',
-    label: '每表主键',
+    label: '主键',
     run(ctx) {
-      for (const t of tableNames(ctx)) {
-        const ft = ctx.findTableAfterHeading(new RegExp('^' + esc(t)))
-        if (!ft) continue
-        const h = ft.headerRow()
-        if (!h) continue
-        const cols = h.cells().map((c) => c.text())
-        const cCons = cols.findIndex((c) => /约束/.test(c))
-        if (cCons < 0) continue
-        const hasPk = ft.dataRows().some((r) => /PK/i.test(r.cell(cCons).text()))
-        if (!hasPk) ctx.violation(\`表「\${t}」字段表缺少主键（约束列应含 PK）\`, 'warning')
+      const t = ctx.findTableAfterHeading('## 字段说明')
+      if (!t) return
+      const h = t.headerRow()
+      if (!h) return
+      const cols = h.cells().map((c) => c.text())
+      const cCons = cols.findIndex((c) => /约束/.test(c))
+      if (cCons < 0) return
+      if (!t.dataRows().some((r) => /PK/i.test(r.cell(cCons).text()))) {
+        ctx.violation('字段表缺少主键（约束列应含 PK）', 'warning')
       }
     },
   },
@@ -816,70 +781,70 @@ export const rules: Rule[] = [
 ]
 `,
   'template/数据库/数据库.suggest.ts': `// 数据库表结构 suggest：动态对象生成器
-// 从「表清单」读表名 → 每个表章节的字段表提取字段为可引用对象。
-// 用法：在接口文档「数据来源」列写「[[数据库/loan/表结构#amount]]」
+// 1 个 .md 文件 = 1 张表：直接从「字段说明」表提取字段为可引用对象。
+// 用法：在接口文档「数据来源」列写「[[数据库/loan/loan_apply#amount]]」
 //   resolve 出「类型:decimal(18,2) 约束:非空 说明:放款金额（元）」
 import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
 
-function esc(s: string): string {
-  return s.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&')
-}
-
 export function objectsFor(ctx: SuggestContext): SuggestObject[] {
-  const list = ctx.tableAfterHeading('## 表清单')
-  if (!list || list.length < 2) return []
-  const cTable = list[0].findIndex((h) => /表名/.test(h))
-  if (cTable < 0) return []
-  const out: SuggestObject[] = []
-  for (const r of list.slice(1)) {
-    const t = r[cTable]?.trim()
-    if (!t || /待补充/.test(t)) continue
-    const rows = ctx.tableAfterHeading(new RegExp('^' + esc(t)))
-    if (!rows || rows.length < 2) continue
-    const h = rows[0]
-    const cField = h.findIndex((x) => /字段/.test(x))
-    const cType = h.findIndex((x) => /^类型$/.test(x))
-    const cCons = h.findIndex((x) => /约束/.test(x))
-    const cDesc = h.findIndex((x) => /^说明$/.test(x))
-    if (cField < 0) continue
-    for (const row of rows.slice(1)) {
-      const name = row[cField]?.trim()
-      if (!name || /^\\{\\{.*\\}\\}$/.test(name)) continue
-      const type = cType >= 0 ? (row[cType] ?? '') : ''
-      const cons = cCons >= 0 ? (row[cCons] ?? '') : ''
-      const desc = cDesc >= 0 ? (row[cDesc] ?? '') : ''
-      out.push({
+  const rows = ctx.tableAfterHeading('## 字段说明')
+  if (!rows || rows.length < 2) return []
+  const h = rows[0]
+  const cField = h.findIndex((x) => /字段/.test(x))
+  const cType = h.findIndex((x) => /^类型$/.test(x))
+  const cCons = h.findIndex((x) => /约束/.test(x))
+  const cDesc = h.findIndex((x) => /^说明$/.test(x))
+  if (cField < 0) return []
+  // 表名（基本信息表「表名」行）作 fragment，便于定位
+  const bi = ctx.tableAfterHeading('## 基本信息') ?? []
+  const tRow = bi.slice(1).find((r) => r[0]?.trim() === '表名')
+  const tableName = tRow?.[1]?.trim() ?? ''
+  return rows
+    .slice(1)
+    .filter((r) => r[cField]?.trim() && !/^\\{\\{.*\\}\\}$/.test(r[cField].trim()))
+    .map((r) => {
+      const name = r[cField].trim()
+      const type = cType >= 0 ? (r[cType] ?? '') : ''
+      const cons = cCons >= 0 ? (r[cCons] ?? '') : ''
+      const desc = cDesc >= 0 ? (r[cDesc] ?? '') : ''
+      return {
         id: name,
         label: name,
-        fragment: t,
+        fragment: tableName || '字段说明',
         resolve(): string | null {
           const parts = [type && \`类型:\${type}\`, cons && \`约束:\${cons}\`, desc && \`说明:\${desc}\`].filter(Boolean)
           return parts.length ? parts.join(' ') : null
         },
-      })
-    }
-  }
-  return out
+      }
+    })
 }
 `,
-  '数据库/loan/表结构.md': `doctype:数据库
+  '数据库字段引用.md': `doctype:demo
 
-# 表结构：loan（schema）
+# 数据库字段引用演示
+
+本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。
+
+放款金额取自 [[数据库/loan/loan_apply#amount]]。
+
+申请号取自 [[数据库/loan/loan_apply#apply_no]]。
+
+客户ID取自 [[数据库/customer/customer_info#id]]。
+`,
+  '数据库/loan/loan_apply.md': `doctype:数据库
+
+# loan_apply 放款申请表
 
 ## 基本信息
 
 | 项 | 值 | 备注 |
 | --- | --- | :--- |
+| 表名 | loan_apply | |
+| 中文名 | 放款申请表 | |
 | schema | loan | 放款业务 schema |
 | 版本号 | v0.1.0 | 表结构版本 |
 
-## 表清单
-
-| 表名 | 中文名 | 说明 |
-| --- | --- | --- |
-| loan_apply | 放款申请表 | 助贷放款申请记录 |
-
-## loan_apply 放款申请表
+## 字段说明
 
 | 字段 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
@@ -906,25 +871,18 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 | --- | --- |
 | 2026-08-06 | 初版：助贷放款申请建表 |
 `,
-  '数据库/loan/表结构-违规.md': `doctype:数据库
+  '数据库/loan/loan_apply-违规.md': `doctype:数据库
 
-# 表结构：loan（schema）
+# loan_apply 放款申请表
 
 ## 基本信息
 
 | 项 | 值 |
 | --- | --- |
-| schema | loan |
+| 表名 | loan apply |
 | 版本号 | 1.0 |
 
-## 表清单
-
-| 表名 | 中文名 | 说明 |
-| --- | --- | --- |
-| loan_apply | 放款申请表 | 助贷放款申请记录 |
-| loan_settle | 还款结清表 | 结清记录 |
-
-## loan_apply 放款申请表
+## 字段说明
 
 | 字段 | 约束 | 说明 |
 | --- | --- | --- |
@@ -937,31 +895,25 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 | --- | --- |
 | 2026-08-06 | 初版 |
 `,
-  '数据库/customer/表结构.md': `doctype:数据库
+  '数据库/customer/customer_info.md': `doctype:数据库
 
-# 表结构：customer（schema）
+# customer_info 客户信息表
 
 ## 基本信息
 
-| 项 | 值 |
-| --- | --- |
-| schema | customer |
-| 版本号 | v0.1.0 |
+| 项 | 值 | 备注 |
+| --- | --- | :--- |
+| 表名 | customer_info | |
+| 中文名 | 客户信息表 | |
+| schema | customer | 客户主档 schema |
+| 版本号 | v0.1.0 | |
 
-## 表清单
-
-| 表名 | 中文名 | 说明 |
-| --- | --- | --- |
-| customer_info | 客户信息表 | 意向贷款客户主档 |
-| （待补充） | | |
-
-## customer_info 客户信息表
+## 字段说明
 
 | 字段 | 类型 | 约束 | 说明 |
 | --- | --- | --- | --- |
 | id | bigint | PK 自增 | 主键 |
 | name | varchar(64) | 非空 | 客户姓名 |
-| （待补充） | | | |
 
 ## 索引
 
@@ -969,22 +921,420 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 
 ## 变更记录
 
-（待补充）
+| 日期 | 变更内容 |
+| --- | --- |
+| 2026-08-06 | 初版 |
 `,
-  '数据库字段引用.md': `doctype:demo
 
-# 数据库字段引用演示
 
-本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。
 
-放款金额取自 [[数据库/loan/表结构#amount]]。
+  'template/xxljob/xxljob.md': `doctype: xxljob
 
-申请号取自 [[数据库/loan/表结构#apply_no]]。
+# 任务名称
 
-客户ID取自 [[数据库/customer/表结构#id]]。
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 | executor-name |
+| JobHandler | handlerName |
+| 调度类型 | cron |
+| cron 表达式 | 0 0 0 * * ? |
+| 固定速度(秒) |  |
+| 固定延迟(秒) |  |
+| 路由策略 | 分片广播 |
+| 阻塞处理策略 | 单机串行 |
+| 调度过期策略 | 忽略 |
+| 任务超时(秒) | 60 |
+| 失败重试次数 | 3 |
+| 负责人 | 姓名 |
+| 报警邮箱 | ops@example.com |
+| 调度状态 | 启动 |
+
+## 任务职责
+
+一句话说明该任务做什么、何时触发、失败如何处理。
+
+## 业务规则
+
+- 规则一
+- 规则二
+
+## 关联数据
+
+- [[数据库/xxx/表结构#xxx]]
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| YYYY-MM-DD | 姓名 | 新增 |
+`,
+  'template/xxljob/xxljob.rules.ts': `// xxljob 校验规则：一个 md 文件 = 一个 xxljob 任务（mode=hint，不阻止保存）
+// 校验：基本信息表 / 执行器 / JobHandler / 调度类型 / cron / 路由策略 / 阻塞策略 / 任务职责 / 变更记录
+import type { Rule, ValidationContext } from '@milkdown-note/validate'
+
+const SCHEDULE_TYPES = ['cron', '固定速度', '固定延迟']
+const ROUTE_STRATEGIES = ['第一个', '最后一个', '轮询', '随机', '一致性HASH', '最不经常使用', '最近最久未使用', '故障转移', '忙碌转移', '分片广播']
+const BLOCK_STRATEGIES = ['单机串行', '丢弃后续调度', '覆盖之前调度']
+const STATUS = ['启动', '停止']
+
+/** 从「## 基本信息」表按「属性」名取值（列名支持 属性/项 + 值） */
+function basicInfo(ctx: ValidationContext, label: string): string | null {
+  const t = ctx.findTableAfterHeading('## 基本信息')
+  if (!t) return null
+  const h = t.headerRow()
+  if (!h) return null
+  const cols = h.cells().map((c) => c.text())
+  const cKey = cols.findIndex((c) => /属性|项/.test(c))
+  const cVal = cols.findIndex((c) => /值/.test(c))
+  if (cKey < 0 || cVal < 0) return null
+  for (const row of t.dataRows()) {
+    if (row.cell(cKey).text().trim() === label) {
+      const v = row.cell(cVal).text().trim()
+      return v || null
+    }
+  }
+  return null
+}
+
+export const rules: Rule[] = [
+  {
+    id: 'basic-table',
+    label: '基本信息表存在',
+    run(ctx) {
+      const t = ctx.findTableAfterHeading('## 基本信息')
+      if (!t) ctx.violation('缺少「基本信息」表格', 'error')
+    },
+  },
+  {
+    id: 'basic-headers',
+    label: '基本信息表头为「属性 | 值」',
+    run(ctx) {
+      const t = ctx.findTableAfterHeading('## 基本信息')
+      if (!t) return
+      const h = t.headerRow()
+      if (!h) ctx.violation('基本信息表缺少表头行', 'error')
+      else {
+        const cols = h.cells().map((c) => c.text())
+        if (!cols.some((c) => /属性|项/.test(c)) || !cols.some((c) => /值/.test(c)))
+          ctx.violation('基本信息表头应包含「属性」和「值」列', 'error')
+      }
+    },
+  },
+  {
+    id: 'executor-required',
+    label: '执行器必填',
+    run(ctx) {
+      const v = basicInfo(ctx, '执行器')
+      if (!v) ctx.violation('「执行器」未填写', 'error')
+    },
+  },
+  {
+    id: 'handler-format',
+    label: 'JobHandler 必填且为标识符',
+    run(ctx) {
+      const v = basicInfo(ctx, 'JobHandler')
+      if (!v) ctx.violation('「JobHandler」未填写', 'warning')
+      else if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(v)) ctx.violation(\`JobHandler「\${v}」应为字母开头标识符（如 notifyHandler）\`, 'warning')
+    },
+  },
+  {
+    id: 'schedule-type',
+    label: '调度类型枚举',
+    run(ctx) {
+      const v = basicInfo(ctx, '调度类型')
+      if (v && !SCHEDULE_TYPES.includes(v)) ctx.violation(\`调度类型「\${v}」应为 \${SCHEDULE_TYPES.join('/')}\`, 'warning')
+    },
+  },
+  {
+    id: 'cron-format',
+    label: 'cron 表达式格式',
+    run(ctx) {
+      const cron = basicInfo(ctx, 'cron 表达式')
+      if (!cron) return
+      const fields = cron.trim().split(/\\s+/)
+      if (fields.length < 6 || fields.length > 7) ctx.violation(\`cron「\${cron}」应为「秒 分 时 日 月 周」6-7 段\`, 'warning')
+    },
+  },
+  {
+    id: 'route-strategy',
+    label: '路由策略枚举',
+    run(ctx) {
+      const v = basicInfo(ctx, '路由策略')
+      if (v && !ROUTE_STRATEGIES.includes(v)) ctx.violation(\`路由策略「\${v}」不在枚举内（\${ROUTE_STRATEGIES.join('/')}）\`, 'warning')
+    },
+  },
+  {
+    id: 'block-strategy',
+    label: '阻塞处理策略枚举',
+    run(ctx) {
+      const v = basicInfo(ctx, '阻塞处理策略')
+      if (v && !BLOCK_STRATEGIES.includes(v)) ctx.violation(\`阻塞处理策略「\${v}」应为 \${BLOCK_STRATEGIES.join('/')}\`, 'warning')
+    },
+  },
+  {
+    id: 'status-enum',
+    label: '调度状态枚举',
+    run(ctx) {
+      const v = basicInfo(ctx, '调度状态')
+      if (v && !STATUS.includes(v)) ctx.violation(\`调度状态「\${v}」应为 启动/停止\`, 'warning')
+    },
+  },
+  {
+    id: 'duty-section',
+    label: '任务职责章节存在',
+    run(ctx) {
+      if (!ctx.findHeading('## 任务职责')) ctx.violation('缺少「## 任务职责」章节', 'warning')
+    },
+  },
+  {
+    id: 'change-log',
+    label: '变更记录存在',
+    run(ctx) {
+      const t = ctx.findTableAfterHeading('## 变更记录')
+      if (!t) ctx.violation('缺少「变更记录」表格', 'warning')
+    },
+  },
+]
+`,
+  'template/xxljob/xxljob.suggest.ts': `// xxljob suggest：把「基本信息」表的属性（执行器/JobHandler/调度类型...）作为可引用对象。
+// 用法：其他文档写「执行器：[[xxljob/notify-executor/下游机构通知#执行器]]」
+//   resolve 出「值:notify-executor」
+import type { SuggestContext, SuggestObject } from '@milkdown-note/suggest'
+
+export function objectsFor(ctx: SuggestContext): SuggestObject[] {
+  const rows = ctx.tableAfterHeading('## 基本信息')
+  if (!rows || rows.length < 2) return []
+  const header = rows[0]
+  const cKey = header.findIndex((h) => /属性|项/.test(h))
+  const cVal = header.findIndex((h) => /值/.test(h))
+  if (cKey < 0 || cVal < 0) return []
+  return rows
+    .slice(1)
+    .filter((r) => r[cKey]?.trim() && r[cVal]?.trim())
+    .map((r) => {
+      const name = r[cKey].trim()
+      return {
+        id: name,
+        label: name,
+        fragment: '基本信息',
+        resolve(ctx2: SuggestContext): string | null {
+          const rs = ctx2.tableAfterHeading('## 基本信息') ?? []
+          const row = rs.find((x) => x[cKey]?.trim() === name)
+          if (!row || !row[cVal]) return null
+          return \`值:\${row[cVal]}\`
+        },
+      }
+    })
+}
+`,
+  'xxljob/notify-executor/下游机构通知.md': `doctype: xxljob
+
+# 下游机构通知
+
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 | notify-executor |
+| JobHandler | notifyDownstreamHandler |
+| 调度类型 | cron |
+| cron 表达式 | 0 0/30 * * * ? |
+| 固定速度(秒) |  |
+| 固定延迟(秒) |  |
+| 路由策略 | 分片广播 |
+| 阻塞处理策略 | 单机串行 |
+| 调度过期策略 | 忽略 |
+| 任务超时(秒) | 60 |
+| 失败重试次数 | 3 |
+| 负责人 | 李四 |
+| 报警邮箱 | ops@xiang.com |
+| 调度状态 | 启动 |
+
+## 任务职责
+
+放款/还款结果落库后，每 30 分钟分片扫描待通知记录，调用下游助贷机构结果回传接口；失败重试 3 次仍失败则写入失败队列并告警。
+
+## 业务规则
+
+- 幂等：以 [[接口文档/助贷/助贷接口#applyNo]] 为幂等键，同一放款申请重复通知不产生重复扣款。
+- 分片：按 customer_id 取模分片，各执行器实例只处理本分片。
+- 失败：超过重试次数的记录进入人工补偿通道。
+
+## 关联数据
+
+- [[数据库/loan/loan_apply#apply_no]]
+- [[数据库/loan/loan_apply#status]]
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| 2026-08-07 | 李四 | 新增 |
+`,
+  'xxljob/notify-executor/还款结果通知.md': `doctype: xxljob
+
+# 还款结果通知
+
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 | notify-executor |
+| JobHandler | repayResultNotifyHandler |
+| 调度类型 | cron |
+| cron 表达式 | 0 */5 * * * ? |
+| 固定速度(秒) |  |
+| 固定延迟(秒) |  |
+| 路由策略 | 轮询 |
+| 阻塞处理策略 | 丢弃后续调度 |
+| 调度过期策略 | 忽略 |
+| 任务超时(秒) | 30 |
+| 失败重试次数 | 2 |
+| 负责人 | 王五 |
+| 报警邮箱 | ops@xiang.com |
+| 调度状态 | 启动 |
+
+## 任务职责
+
+每 5 分钟轮询还款流水表，将已结清/逾期还款结果通知助贷机构，避免账务延迟。
+
+## 业务规则
+
+- 通知幂等：以 repay_no 唯一约束防重，重复调度不重复通知。
+- 阻塞处理：任务未跑完时丢弃后续调度，防止通知堆积。
+
+## 关联数据
+
+- [[数据库/loan/loan_apply#repay_no]]
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| 2026-08-07 | 王五 | 新增 |
+`,
+  'xxljob/route-executor/路由批量匹配.md': `doctype: xxljob
+
+# 路由批量匹配
+
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 | route-executor |
+| JobHandler | routeBatchMatchHandler |
+| 调度类型 | cron |
+| cron 表达式 | 0 0 2 * * ? |
+| 固定速度(秒) |  |
+| 固定延迟(秒) |  |
+| 路由策略 | 分片广播 |
+| 阻塞处理策略 | 单机串行 |
+| 调度过期策略 | 立即执行一次 |
+| 任务超时(秒) | 300 |
+| 失败重试次数 | 3 |
+| 负责人 | 赵六 |
+| 报警邮箱 | ops@xiang.com |
+| 调度状态 | 启动 |
+
+## 任务职责
+
+每日 02:00 对当日新进件批量执行客户路由匹配（征信校验 → 机构打分 → 路由决策），结果写路由结果表，供放款环节读取。
+
+## 业务规则
+
+- 前置：进件必须完成 [[接口文档/进件/进件接口#applyNo]] 进件登记且状态为待路由。
+- 路由决策：命中机构白名单规则直接路由，未命中进入人工复核。
+- 结果落库：匹配结果写 [[数据库/route/表结构#route_result]]，失败重试至多 3 次。
+
+## 关联数据
+
+- [[数据库/route/表结构#route_result]]
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| 2026-08-07 | 赵六 | 新增 |
+`,
+  'xxljob/route-executor/路由规则缓存刷新.md': `doctype: xxljob
+
+# 路由规则缓存刷新
+
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 | route-executor |
+| JobHandler | routeRuleRefreshHandler |
+| 调度类型 | 固定速度 |
+| cron 表达式 |  |
+| 固定速度(秒) | 600 |
+| 固定延迟(秒) |  |
+| 路由策略 | 第一个 |
+| 阻塞处理策略 | 覆盖之前调度 |
+| 调度过期策略 | 忽略 |
+| 任务超时(秒) | 60 |
+| 失败重试次数 | 1 |
+| 负责人 | 赵六 |
+| 报警邮箱 | ops@xiang.com |
+| 调度状态 | 启动 |
+
+## 任务职责
+
+每 10 分钟从 Apollo 拉取最新路由规则并刷新本地缓存，使路由规则变更在 10 分钟内生效。
+
+## 业务规则
+
+- 版本比对：本地缓存版本与 Apollo 配置版本一致时跳过刷新。
+- 失败兜底：刷新失败保留旧缓存并告警，不阻断在线路由。
+
+## 关联数据
+
+- [[数据库/route/表结构#rule_version]]
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| 2026-08-07 | 赵六 | 新增 |
+`,
+  'xxljob/notify-executor/下游机构通知-违规.md': `doctype: xxljob
+
+# 下游机构通知（违规示例）
+
+## 基本信息
+
+| 属性 | 值 |
+| --- | --- |
+| 执行器 |  |
+| JobHandler | 下游通知 handler |
+| 调度类型 | 每分钟 |
+| cron 表达式 | 0/30 * * * ? |
+| 固定速度(秒) |  |
+| 固定延迟(秒) |  |
+| 路由策略 | 广播 |
+| 阻塞处理策略 | 跳过 |
+| 调度过期策略 | 忽略 |
+| 任务超时(秒) | 60 |
+| 失败重试次数 | 3 |
+| 负责人 | 李四 |
+| 报警邮箱 | ops@xiang.com |
+| 调度状态 | 运行中 |
+
+## 业务规则
+
+- 分片：按 customer_id 取模分片。
+
+## 变更记录
+
+| 日期 | 变更人 | 变更内容 |
+| --- | --- | --- |
+| 2026-08-07 | 李四 | 新增 |
 `,}
 
-const SAMPLE_DIRS = ['笔记', '数据', 'template/demo', '接口文档/助贷', 'template/接口文档', 'template/数据库']
+const SAMPLE_DIRS = ['笔记', '数据', 'template/demo', '接口文档/助贷', 'template/接口文档', 'template/数据库', 'xxljob/notify-executor', 'xxljob/route-executor', 'template/xxljob']
 
 /** 全局模板域示例（mock 模拟；真实文件系统外部目录 v1.5 缺口） */
 const GLOBAL_SAMPLE: Record<string, string> = {
@@ -1050,9 +1400,10 @@ interface MockData {
   seededVersion?: number
 }
 
-const SEED_VERSION = 5
+const SEED_VERSION = 6
 
 /**
+ * 版本 6：新增「xxljob」模板（一文件一任务）+ 4 合规样例 + 1 违规样例。
  * 版本 4：新增「接口文档」模板（接口文档.md / rules.ts / suggest.ts）+ 助贷样例（合规/违规）
  * + 接口字段引用演示页，验证 M7 动态对象 objectsFor + findCodeBlocks 能力。
  * 版本 3：演示核心文件（模板 suggest 样例 / 周报数据 / 引用演示页）强制更新，
@@ -1072,9 +1423,18 @@ const FORCE_UPDATE_PATHS = [
   'template/数据库/数据库.md',
   'template/数据库/数据库.rules.ts',
   'template/数据库/数据库.suggest.ts',
-  '数据库/loan/表结构.md',
-  '数据库/loan/表结构-违规.md',
+  '数据库/loan/loan_apply.md',
+  '数据库/loan/loan_apply-违规.md',
+  '数据库/customer/customer_info.md',
   '数据库字段引用.md',
+  'template/xxljob/xxljob.md',
+  'template/xxljob/xxljob.rules.ts',
+  'template/xxljob/xxljob.suggest.ts',
+  'xxljob/notify-executor/下游机构通知.md',
+  'xxljob/notify-executor/还款结果通知.md',
+  'xxljob/route-executor/路由批量匹配.md',
+  'xxljob/route-executor/路由规则缓存刷新.md',
+  'xxljob/notify-executor/下游机构通知-违规.md',
 ]
 
 function load(): MockData {

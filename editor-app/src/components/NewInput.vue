@@ -35,13 +35,13 @@ function commit(e: Event) {
 .rename-input {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--chrome-primary, #f5b301);
-  border-radius: 5px;
+  border: 1px solid var(--chrome-primary);
+  border-radius: 6px;
   padding: 2px 6px;
   font-size: 13px;
   font-family: inherit;
-  color: inherit;
-  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface);
+  background: var(--chrome-background);
   outline: none;
 }
 </style>

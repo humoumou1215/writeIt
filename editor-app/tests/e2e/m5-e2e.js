@@ -24,7 +24,7 @@ const { chromium } = require('playwright');
     await page.locator('.tree .node', { hasText: '笔记' }).first().click();
     await page.waitForTimeout(400);
     await page.locator('.tree .name', { hasText: '周报.md' }).click();
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(8000);
   };
 
   // A: 原始周报（无需求表）→ 1 warning

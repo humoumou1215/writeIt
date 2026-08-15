@@ -65,10 +65,11 @@ function close() {
   max-height: 70vh;
   display: flex;
   flex-direction: column;
-  background: var(--chrome-surface, #fff);
-  color: var(--chrome-on-surface, #1f2329);
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
+  border: 1px solid var(--chrome-border);
   border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--chrome-shadow-2, 0 12px 40px rgba(0, 0, 0, 0.25));
   padding: 16px;
 }
 .tpl-head {
@@ -79,18 +80,24 @@ function close() {
 .tpl-head h3 {
   margin: 0;
   font-size: 16px;
+  color: var(--chrome-on-surface);
 }
 .close {
   border: none;
   background: transparent;
   font-size: 20px;
   cursor: pointer;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.close:hover {
+  background: var(--chrome-hover);
 }
 .tpl-hint {
   margin: 8px 0 12px;
   font-size: 12px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 .tpl-list {
   display: flex;
@@ -103,7 +110,7 @@ function close() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  border: 1px solid var(--chrome-border, #e5e6eb);
+  border: 1px solid var(--chrome-border);
   border-radius: 8px;
   background: transparent;
   color: inherit;
@@ -112,25 +119,28 @@ function close() {
   text-align: left;
 }
 .tpl-item:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
+  border-color: var(--chrome-primary);
 }
 .tpl-name {
   font-size: 14px;
   font-weight: 500;
+  color: var(--chrome-on-surface);
 }
 .tpl-meta {
   font-size: 11px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 .tpl-empty {
   padding: 20px;
   font-size: 12px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   text-align: center;
 }
 code {
-  background: var(--chrome-inline-code, rgba(0, 0, 0, 0.06));
+  background: var(--chrome-inline-area, rgba(0, 0, 0, 0.06));
   padding: 1px 5px;
   border-radius: 4px;
+  font-family: var(--chrome-font-code, monospace);
 }
 </style>

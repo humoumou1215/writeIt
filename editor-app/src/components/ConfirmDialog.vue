@@ -43,27 +43,57 @@ function onCancel() {
   z-index: 100;
 }
 .modal {
-  background: var(--chrome-surface, #fff);
-  color: var(--chrome-on-surface, #1f2329);
-  border: 1px solid var(--chrome-border, #e5e6eb);
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
+  border: 1px solid var(--chrome-border);
   border-radius: 12px;
   padding: 20px 24px;
   width: min(420px, 90vw);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--chrome-shadow-2, 0 12px 40px rgba(0, 0, 0, 0.2));
 }
 .modal h3 {
   margin: 0 0 8px;
   font-size: 16px;
+  color: var(--chrome-on-surface);
 }
 .modal p {
   margin: 0 0 18px;
   font-size: 13px;
-  color: var(--chrome-on-surface-variant, #4e5969);
+  color: var(--chrome-on-surface-variant);
   line-height: 1.6;
 }
 .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.btn {
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn:hover {
+  background: var(--chrome-hover);
+}
+.btn.primary {
+  background: var(--chrome-primary);
+  color: var(--chrome-on-secondary, #fff);
+  border-color: var(--chrome-primary);
+}
+.btn.primary:hover {
+  opacity: 0.9;
+}
+.btn.danger {
+  background: var(--chrome-error, #ba1a1a);
+  color: var(--chrome-on-secondary, #fff);
+  border-color: var(--chrome-error, #ba1a1a);
+}
+.btn.danger:hover {
+  opacity: 0.9;
 }
 </style>

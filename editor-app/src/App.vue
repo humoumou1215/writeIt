@@ -320,23 +320,26 @@ function onTreeRootDrop(e: DragEvent) {
       <div class="resizer" title="拖拽调整宽度" @mousedown="startResize"></div>
       </div>
 
-      <!-- 主区域 -->
+      <!-- 主区域：标签栏 + 工作区（编辑器 + 批注栏同层，批注栏不压住编辑区） -->
       <main class="main">
         <TabBar />
-        <div class="editor-area">
-          <EditorPane
-            v-for="tab in state.tabs"
-            :key="tab.id"
-            :tab-id="tab.id"
-            :visible="tab.id === state.activeTabId"
-          />
-          <div v-if="!state.tabs.length" class="welcome">
-            <h2>🥛 Milkdown Note</h2>
-            <p>从左侧文件树打开一个文件，或新建文件开始编辑。</p>
-            <p class="hint">
-              快捷键：Ctrl+S 保存 · Ctrl+O 打开目录 · Ctrl+B 收纳侧边栏 · 更多在设置中查看
-            </p>
+        <div class="workspace">
+          <div class="editor-area">
+            <EditorPane
+              v-for="tab in state.tabs"
+              :key="tab.id"
+              :tab-id="tab.id"
+              :visible="tab.id === state.activeTabId"
+            />
+            <div v-if="!state.tabs.length" class="welcome">
+              <h2>🥛 Milkdown Note</h2>
+              <p>从左侧文件树打开一个文件，或新建文件开始编辑。</p>
+              <p class="hint">
+                快捷键：Ctrl+S 保存 · Ctrl+O 打开目录 · Ctrl+B 收纳侧边栏 · 更多在设置中查看
+              </p>
+            </div>
           </div>
+          <AnnotationDrawer />
         </div>
       </main>
     </div>
@@ -363,7 +366,6 @@ function onTreeRootDrop(e: DragEvent) {
     <!-- 浮层 -->
     <SettingsModal v-if="state.settingsOpen" @close="state.settingsOpen = false" />
     <ConfirmDialog />
-    <AnnotationDrawer />
     <ContextMenu @action="onMenuAction" />
     <TemplatePicker
       v-if="state.templatePick !== null"
@@ -385,8 +387,8 @@ function onTreeRootDrop(e: DragEvent) {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--chrome-background, #f5f6f8);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-background);
+  color: var(--chrome-on-background);
 }
 
 /* ===== 主体（侧边栏 + 主区域） ===== */
@@ -400,8 +402,8 @@ function onTreeRootDrop(e: DragEvent) {
 .sidebar {
   display: flex;
   flex-shrink: 0;
-  border-right: 1px solid var(--chrome-border, #e5e6eb);
-  background: var(--chrome-surface, #fff);
+  border-right: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
 }
 
 /* 图标列 */
@@ -413,7 +415,7 @@ function onTreeRootDrop(e: DragEvent) {
   align-items: center;
   gap: 6px;
   padding-top: 8px;
-  border-right: 1px solid var(--chrome-border, #e5e6eb);
+  border-right: 1px solid var(--chrome-border);
 }
 .icon-btn {
   width: 34px;
@@ -421,7 +423,7 @@ function onTreeRootDrop(e: DragEvent) {
   border: none;
   background: transparent;
   font-size: 17px;
-  border-radius: 9px;
+  border-radius: 8px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -429,11 +431,11 @@ function onTreeRootDrop(e: DragEvent) {
   opacity: 0.65;
 }
 .icon-btn:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
   opacity: 1;
 }
 .icon-btn.active {
-  background: var(--chrome-selected, #e8f3ff);
+  background: var(--chrome-selected);
   opacity: 1;
 }
 
@@ -454,13 +456,13 @@ function onTreeRootDrop(e: DragEvent) {
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  border-bottom: 1px solid var(--chrome-border);
   flex-shrink: 0;
 }
 .root-name {
   font-size: 12px;
   font-weight: 600;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -468,7 +470,7 @@ function onTreeRootDrop(e: DragEvent) {
 .mini {
   border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 11px;
   padding: 3px 6px;
   border-radius: 6px;
@@ -476,17 +478,17 @@ function onTreeRootDrop(e: DragEvent) {
   font-family: inherit;
 }
 .mini:hover {
-  background: var(--chrome-hover, #f2f3f5);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
 }
 .mini.pin.active {
-  color: var(--chrome-primary, #f5b301);
+  color: var(--chrome-primary);
 }
 .sidebar-actions {
   display: flex;
   gap: 2px;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  border-bottom: 1px solid var(--chrome-border);
   flex-shrink: 0;
   align-items: center;
 }
@@ -494,13 +496,13 @@ function onTreeRootDrop(e: DragEvent) {
   flex: 1;
   text-align: left;
   padding: 4px 8px;
-  border: 1px solid var(--chrome-border, #d0d3d9);
-  border-radius: 7px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 6px;
 }
 .mini.wide:hover {
-  border-color: var(--chrome-primary, #f5b301);
-  background: var(--chrome-background, #fff);
-  color: var(--chrome-on-background, #1f2329);
+  border-color: var(--chrome-primary);
+  background: var(--chrome-background);
+  color: var(--chrome-on-background);
 }
 .tree {
   flex: 1;
@@ -524,7 +526,7 @@ function onTreeRootDrop(e: DragEvent) {
 .empty {
   padding: 16px;
   font-size: 12px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 
 /* 宽度拖拽手柄 */
@@ -538,7 +540,7 @@ function onTreeRootDrop(e: DragEvent) {
 }
 .resizer:hover,
 .resizer:active {
-  background: var(--chrome-primary, #f5b301);
+  background: var(--chrome-primary);
   opacity: 0.4;
 }
 
@@ -549,8 +551,16 @@ function onTreeRootDrop(e: DragEvent) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-}.editor-area {
+}
+/* 工作区：编辑器与批注栏同层（批注栏占独立一列，不覆盖/压住编辑内容） */
+.workspace {
   flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.editor-area {
+  flex: 1;
+  min-width: 0;
   display: flex;
   min-height: 0;
   overflow: hidden;
@@ -558,11 +568,11 @@ function onTreeRootDrop(e: DragEvent) {
 .welcome {
   margin: auto;
   text-align: center;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 .welcome h2 {
   font-size: 22px;
-  color: var(--chrome-on-background, #1f2329);
+  color: var(--chrome-on-background);
   margin-bottom: 8px;
 }
 .welcome p {
@@ -581,9 +591,9 @@ function onTreeRootDrop(e: DragEvent) {
   gap: 16px;
   padding: 5px 14px;
   font-size: 12px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
-  border-top: 1px solid var(--chrome-border, #e5e6eb);
-  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface-variant);
+  border-top: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
   flex-shrink: 0;
 }
 .active-file {
@@ -600,8 +610,8 @@ function onTreeRootDrop(e: DragEvent) {
   padding: 1px 8px;
   border-radius: 999px;
   font-size: 11px;
-  background: var(--chrome-selected, #e8f3ff);
-  color: var(--chrome-primary, #1f6feb);
+  background: var(--chrome-selected);
+  color: var(--chrome-primary);
 }
 .backend {
   flex-shrink: 0;
@@ -620,19 +630,21 @@ function onTreeRootDrop(e: DragEvent) {
   align-items: center;
 }
 .toast {
-  background: var(--chrome-on-background, #1f2329);
-  color: var(--chrome-background, #fff);
+  background: var(--chrome-inverse, var(--chrome-on-background));
+  color: var(--chrome-on-inverse, var(--chrome-background));
   padding: 8px 16px;
   border-radius: 999px;
   font-size: 13px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--chrome-shadow-1, 0 6px 20px rgba(0, 0, 0, 0.2));
   animation: rise 0.18s ease;
 }
 .toast.error {
   background: var(--chrome-error, #ba1a1a);
+  color: var(--chrome-on-secondary, #fff);
 }
 .toast.success {
   background: #2e7d32;
+  color: #fff;
 }
 @keyframes rise {
   from {

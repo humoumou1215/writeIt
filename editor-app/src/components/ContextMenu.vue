@@ -55,12 +55,12 @@ function close() {
 .menu {
   position: fixed;
   min-width: 140px;
-  background: var(--chrome-surface, #fff);
-  color: var(--chrome-on-surface, #1f2329);
-  border: 1px solid var(--chrome-border, #e5e6eb);
-  border-radius: 10px;
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
   padding: 6px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--chrome-shadow-1);
   display: flex;
   flex-direction: column;
 }
@@ -70,15 +70,15 @@ function close() {
   color: inherit;
   text-align: left;
   padding: 7px 12px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
   font-family: inherit;
 }
 .menu-item:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
 }
 .menu-item.danger {
-  color: var(--chrome-error, #ba1a1a);
+  color: var(--chrome-error);
 }
 </style>

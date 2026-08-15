@@ -221,15 +221,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   z-index: 100;
 }
 .settings-modal {
-  background: var(--chrome-surface, #fff);
-  color: var(--chrome-on-surface, #1f2329);
-  border: 1px solid var(--chrome-border, #e5e6eb);
-  border-radius: 14px;
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
+  border: 1px solid var(--chrome-border);
+  border-radius: 12px;
   width: min(560px, 92vw);
   max-height: 82vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--chrome-shadow-2, 0 16px 48px rgba(0, 0, 0, 0.22));
   overflow: hidden;
 }
 .modal-head {
@@ -241,43 +241,44 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
 .modal-head h3 {
   margin: 0;
   font-size: 15px;
+  color: var(--chrome-on-surface);
 }
 .tabs {
   display: flex;
   gap: 4px;
-  background: var(--chrome-hover, #f2f3f5);
-  border-radius: 9px;
+  background: var(--chrome-hover);
+  border-radius: 8px;
   padding: 3px;
 }
 .tab-btn {
   border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   padding: 5px 16px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
   font-family: inherit;
 }
 .tab-btn.active {
-  background: var(--chrome-background, #fff);
-  color: var(--chrome-on-background, #1f2329);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  background: var(--chrome-background);
+  color: var(--chrome-on-background);
+  box-shadow: var(--chrome-shadow-1, 0 1px 3px rgba(0, 0, 0, 0.12));
 }
 .close {
   margin-left: auto;
   border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 20px;
   line-height: 1;
   padding: 4px 8px;
-  border-radius: 7px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .close:hover {
-  background: var(--chrome-hover, #f2f3f5);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
 }
 .modal-body {
   padding: 16px 18px 18px;
@@ -294,31 +295,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
 }
 .row > span:first-child {
   min-width: 96px;
+  color: var(--chrome-on-surface);
 }
 .hint-inline {
   font-style: normal;
   font-size: 11px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 select,
 .tpl-dir-input {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--chrome-border, #e5e6eb);
+  border: 1px solid var(--chrome-border);
   border-radius: 6px;
   padding: 6px 8px;
   font-size: 13px;
   font-family: inherit;
-  color: inherit;
-  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface);
+  background: var(--chrome-background);
 }
 input[type='checkbox'] {
-  accent-color: var(--chrome-primary, #f5b301);
+  accent-color: var(--chrome-primary);
 }
 select {
-  border: 1px solid var(--chrome-border, #d0d3d9);
-  background: var(--chrome-background, #fff);
-  color: inherit;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
   border-radius: 6px;
   padding: 3px 6px;
   font-size: 12px;
@@ -326,23 +328,24 @@ select {
 }
 .badge {
   font-size: 11px;
-  background: var(--chrome-selected, #e8f3ff);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-selected);
+  color: var(--chrome-on-surface);
   padding: 2px 8px;
   border-radius: 999px;
 }
 .btn {
-  border: 1px solid var(--chrome-border, #d0d3d9);
-  background: var(--chrome-background, #fff);
-  color: inherit;
-  border-radius: 7px;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
+  border-radius: 8px;
   padding: 6px 10px;
   font-size: 13px;
   cursor: pointer;
   font-family: inherit;
 }
 .btn:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
+  border-color: var(--chrome-primary);
 }
 .btn.full {
   width: 100%;
@@ -354,7 +357,7 @@ select {
 .hint {
   margin: 0;
   font-size: 11px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   line-height: 1.6;
 }
 .shortcut-list {
@@ -370,28 +373,29 @@ select {
 .shortcut-label {
   flex: 1;
   font-size: 13px;
+  color: var(--chrome-on-surface);
 }
 .keybtn {
   min-width: 150px;
-  border: 1px solid var(--chrome-border, #d0d3d9);
-  background: var(--chrome-background, #fff);
-  color: inherit;
-  border-radius: 7px;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
+  border-radius: 8px;
   padding: 5px 10px;
   font-size: 12px;
-  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--chrome-font-code, monospace);
   cursor: pointer;
   text-align: center;
 }
 .keybtn:hover {
-  border-color: var(--chrome-primary, #f5b301);
+  border-color: var(--chrome-primary);
 }
 .keycapture {
   min-width: 150px;
-  border: 1px solid var(--chrome-primary, #f5b301);
-  background: var(--chrome-selected, #fff7e6);
-  color: inherit;
-  border-radius: 7px;
+  border: 1px solid var(--chrome-primary);
+  background: var(--chrome-selected);
+  color: var(--chrome-on-surface);
+  border-radius: 8px;
   padding: 5px 10px;
   font-size: 12px;
   font-family: inherit;
@@ -400,15 +404,15 @@ select {
 .reset {
   border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 15px;
   cursor: pointer;
   padding: 2px 6px;
-  border-radius: 5px;
+  border-radius: 6px;
 }
 .reset:hover:not(:disabled) {
-  background: var(--chrome-hover, #f2f3f5);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
 }
 .reset:disabled {
   opacity: 0.35;

@@ -215,17 +215,17 @@ const dropVisual = () => {
   gap: 4px;
   height: 28px;
   padding-right: 8px;
-  border-radius: 7px;
+  border-radius: 6px;
   cursor: pointer;
-  color: var(--chrome-on-background, #1f2329);
+  color: var(--chrome-on-background);
   user-select: none;
   white-space: nowrap;
 }
 .node:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
 }
 .node.selected {
-  background: var(--chrome-selected, #e8f3ff);
+  background: var(--chrome-selected);
 }
 /* ---- 拖拽视觉（M7） ---- */
 .node[draggable='true'] {
@@ -236,30 +236,30 @@ const dropVisual = () => {
 }
 /* 悬停目录中间 = 移入 */
 .node.drag-into {
-  background: var(--chrome-selected, #e8f3ff);
-  box-shadow: inset 0 0 0 1.5px var(--chrome-accent, #3370ff);
+  background: var(--chrome-selected);
+  box-shadow: inset 0 0 0 1.5px var(--chrome-primary);
 }
 /* 同级重排：插入指示线 */
 .node.drag-before {
-  box-shadow: 0 -2px 0 var(--chrome-accent, #3370ff);
+  box-shadow: 0 -2px 0 var(--chrome-primary);
 }
 .node.drag-after {
-  box-shadow: 0 2px 0 var(--chrome-accent, #3370ff);
+  box-shadow: 0 2px 0 var(--chrome-primary);
 }
 /* 非法目标（循环/自身） */
 .node.drag-invalid {
-  background: rgba(186, 26, 26, 0.1);
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 90%);
   box-shadow: inset 0 0 0 1.5px var(--chrome-error, #ba1a1a);
 }
 /* 瞄准定位高亮（闪烁 2 次后淡出） */
 .node.revealed {
-  background: var(--chrome-reveal, #fff3bf);
+  background: var(--chrome-reveal);
   animation: reveal-flash 1.2s ease-out 2;
 }
 @keyframes reveal-flash {
   0%,
   60% {
-    box-shadow: 0 0 0 2px var(--chrome-reveal-ring, #f0c000);
+    box-shadow: 0 0 0 2px var(--chrome-reveal-ring);
   }
   100% {
     box-shadow: 0 0 0 0 transparent;
@@ -272,7 +272,7 @@ const dropVisual = () => {
   width: 14px;
   text-align: center;
   font-size: 11px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   transition: transform 0.12s;
 }
 .arrow.open {
@@ -291,7 +291,7 @@ const dropVisual = () => {
   flex: 1;
 }
 .name.muted {
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
 }
 .actions {
   display: none;
@@ -304,15 +304,15 @@ const dropVisual = () => {
 .mini {
   border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   font-size: 11px;
   padding: 2px 4px;
-  border-radius: 5px;
+  border-radius: 4px;
   cursor: pointer;
   font-family: inherit;
 }
 .mini:hover {
-  background: var(--chrome-selected, #e8f3ff);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
 }
 </style>

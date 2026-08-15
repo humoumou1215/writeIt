@@ -11,7 +11,7 @@ function check(name, ok) { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
   await page.locator('.tree .name', { hasText: '引用演示.md' }).click();
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(8000);
 
   // ---- 1. 完整路径显示 ----
   const chipTexts = await page.evaluate(() => Array.from(document.querySelectorAll('a.ref-file')).map(a => a.textContent));

@@ -30,7 +30,7 @@ const check = (n, ok) => { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   console.log('  -- object_refs:', JSON.stringify(refs))
   check('A1: amount resolve 含「类型:bigint」', refs.some((o) => o.obj === 'amount' && o.text.includes('类型:bigint')))
   check('A2: amount resolve 含「高风险:是」', refs.some((o) => o.obj === 'amount' && o.text.includes('高风险:是')))
-  check('A3: amount resolve 含「来源:数据库/loan/表结构#amount」', refs.some((o) => o.obj === 'amount' && o.text.includes('来源:数据库/loan/表结构#amount')))
+  check('A3: amount resolve 含「来源:数据库/loan/loan_apply#amount」', refs.some((o) => o.obj === 'amount' && o.text.includes('来源:数据库/loan/loan_apply#amount')))
   check('A4: applyNo resolve 含「类型:string」', refs.some((o) => o.obj === 'applyNo' && o.text.includes('类型:string')))
 
   // ---- B: 违规样例 rules ----

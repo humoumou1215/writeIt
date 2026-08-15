@@ -247,12 +247,13 @@ function onAnchorHover(strong: boolean) {
 </script>
 
 <template>
-  <div v-if="state.activeTabId" class="annotation-drawer" :class="{ open }" :style="{ width: open ? width + 'px' : '' }">
-    <!-- 折叠把手 / 展开按钮 -->
-    <div v-if="!open" class="annotation-drawer-tab" title="展开批注抽屉" @click="open = true">
+  <div v-if="state.activeTabId" class="annotation-drawer" :class="{ open }" :style="{ width: open ? width + 'px' : '0px' }">
+    <!-- 折叠态：右下角小胶囊按钮（不占布局空间，不再是一整条竖栏） -->
+    <button v-if="!open" class="annotation-open-btn" title="展开批注抽屉" @click="open = true">
       <span class="dot" :class="{ has: commentCount + errorCount + warningCount > 0 }"></span>
       <span>批注</span>
-    </div>
+      <span v-if="commentCount + errorCount + warningCount > 0" class="badge">{{ commentCount + errorCount + warningCount }}</span>
+    </button>
 
     <div v-else class="annotation-drawer-body" ref="drawerEl">
       <!-- 头部：计数 + 折叠 + 拖拽把手 -->
@@ -263,8 +264,14 @@ function onAnchorHover(strong: boolean) {
           <span v-if="warningCount" class="warn">{{ warningCount }}</span>
           <span v-if="errorCount" class="err">{{ errorCount }}</span>
         </span>
-        <button class="mini" title="重新校验" @click="revalidate">⟳</button>
-        <button class="mini" title="折叠抽屉" @click="open = false">»</button>
+        <div class="ad-head-actions">
+          <button class="ad-icon-btn refresh" title="重新校验" @click="revalidate">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+          </button>
+          <button class="ad-icon-btn" title="折叠抽屉" @click="open = false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
+          </button>
+        </div>
       </div>
       <div class="annotation-drawer-resizer" title="拖拽调整宽度" @mousedown="onDragStart"></div>
 
@@ -351,16 +358,15 @@ function onAnchorHover(strong: boolean) {
 
 <style scoped>
 .annotation-drawer {
-  position: fixed;
-  top: 36px;
-  bottom: 26px;
-  right: 0;
-  z-index: 90;
+  /* 与主编辑区同层：作为工作区 .workspace（row flex）中的一列，占据独立宽度，不压住编辑内容 */
+  flex: none;
+  display: flex;
+  height: 100%;
+  min-width: 0;
 }
 .annotation-drawer.open {
-  border-left: 1px solid var(--chrome-border, #d0d0d0);
-  background: var(--chrome-panel-bg, #fff);
-  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.08);
+  border-left: 1px solid var(--chrome-border);
+  background: var(--chrome-surface);
 }
 .annotation-drawer-body {
   display: flex;
@@ -368,40 +374,61 @@ function onAnchorHover(strong: boolean) {
   height: 100%;
   font-size: 12px;
 }
-.annotation-drawer-tab {
-  display: flex;
-  flex-direction: column;
+.annotation-open-btn {
+  /* 折叠态展开按钮：右下角悬浮小胶囊，不占布局空间，也不遮挡编辑区主体 */
+  position: fixed;
+  right: 16px;
+  bottom: 42px;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  width: 46px;
-  padding: 12px 4px;
-  cursor: pointer;
-  color: var(--chrome-text, #333);
-  border-left: 1px solid var(--chrome-border, #d0d0d0);
-  background: var(--chrome-panel-bg, #fff);
-  writing-mode: vertical-rl;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 999px;
+  background: var(--chrome-surface);
+  color: var(--chrome-on-surface);
   font-size: 12px;
+  cursor: pointer;
+  box-shadow: var(--chrome-shadow-1);
+  z-index: 80;
   user-select: none;
 }
-.annotation-drawer-tab .dot {
+.annotation-open-btn:hover {
+  background: var(--chrome-hover);
+  border-color: var(--chrome-primary);
+}
+.annotation-open-btn .dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #ccc;
+  background: var(--chrome-outline);
+  flex: none;
 }
-.annotation-drawer-tab .dot.has {
-  background: var(--chrome-accent, #3a6ea5);
+.annotation-open-btn .dot.has {
+  background: var(--chrome-primary);
+}
+.annotation-open-btn .badge {
+  background: var(--chrome-primary);
+  color: var(--chrome-on-secondary, #fff);
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  min-width: 16px;
+  padding: 0 5px;
+  text-align: center;
+  font-weight: 600;
 }
 .annotation-drawer-head {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--chrome-border-light, #eee);
+  border-bottom: 1px solid var(--chrome-border-light);
   flex: none;
 }
 .ad-title {
   font-weight: 600;
+  color: var(--chrome-on-surface);
 }
 .ad-counts {
   display: flex;
@@ -409,9 +436,46 @@ function onAnchorHover(strong: boolean) {
   margin-left: auto;
   font-weight: 600;
 }
-.ad-counts .err { color: #d9534f; }
+.ad-counts .err { color: var(--chrome-error, #ba1a1a); }
 .ad-counts .warn { color: #e6a23c; }
-.ad-counts .ok { color: #4caf50; }
+.ad-counts .ok { color: var(--chrome-primary, #4caf50); }
+/* 头部图标按钮组（刷新/折叠）——融入主题：颜色/悬停/强调色全部来自 --chrome-* */
+.ad-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.ad-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.ad-icon-btn:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-primary);
+}
+.ad-icon-btn:active {
+  transform: scale(0.9);
+}
+.ad-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+/* 刷新按钮 hover：图标旋转提示 */
+.ad-icon-btn.refresh:hover svg {
+  transform: rotate(180deg);
+  transition: transform 0.4s ease;
+}
 .annotation-drawer-resizer {
   position: absolute;
   left: -3px;
@@ -430,47 +494,48 @@ function onAnchorHover(strong: boolean) {
   gap: 8px;
 }
 .ad-empty {
-  color: #999;
+  color: var(--chrome-on-surface-variant);
   line-height: 1.6;
   text-align: center;
   padding: 24px 8px;
 }
 .ad-card {
-  border: 1px solid var(--chrome-border-light, #e0e0e0);
-  border-radius: 6px;
-  background: var(--chrome-background, #fff);
+  border: 1px solid var(--chrome-border-light);
+  border-radius: 8px;
+  background: var(--chrome-background);
   overflow: hidden;
 }
 .ad-card.active {
-  border-color: var(--chrome-accent, #3a6ea5);
-  box-shadow: 0 0 0 1px var(--chrome-accent, #3a6ea5);
+  border-color: var(--chrome-primary);
+  box-shadow: 0 0 0 1px var(--chrome-primary);
 }
 .ad-card-head {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
-  background: color-mix(in srgb, var(--chrome-border-light, #eee), transparent 50%);
-  border-bottom: 1px solid var(--chrome-border-light, #eee);
+  background: var(--chrome-surface-low, var(--chrome-hover));
+  border-bottom: 1px solid var(--chrome-border-light);
 }
 .ad-ic { font-size: 12px; }
-.ad-ic.error { color: #d9534f; }
+.ad-ic.error { color: var(--chrome-error, #ba1a1a); }
 .ad-ic.warning { color: #e6a23c; }
 .ad-card-title {
   font-weight: 600;
+  color: var(--chrome-on-surface);
 }
 .ad-anchor {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--chrome-text, #333);
+  color: var(--chrome-on-surface);
   font-size: 11px;
 }
 .ad-card-content {
   padding: 8px;
   line-height: 1.5;
-  color: var(--chrome-text, #333);
+  color: var(--chrome-on-surface);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -481,7 +546,7 @@ function onAnchorHover(strong: boolean) {
   display: flex;
   gap: 6px;
   padding: 6px 0;
-  border-bottom: 1px dashed var(--chrome-border-light, #eee);
+  border-bottom: 1px dashed var(--chrome-border-light);
 }
 .ad-comment:last-child { border-bottom: none; }
 .ad-avatar {
@@ -489,7 +554,7 @@ function onAnchorHover(strong: boolean) {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  color: #fff;
+  color: var(--chrome-on-secondary, #fff);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -502,11 +567,12 @@ function onAnchorHover(strong: boolean) {
   align-items: center;
   gap: 6px;
 }
-.ad-author { font-weight: 600; }
-.ad-time { color: #999; font-size: 11px; }
+.ad-author { font-weight: 600; color: var(--chrome-on-surface); }
+.ad-time { color: var(--chrome-on-surface-variant); font-size: 11px; }
 .ad-comment-content {
   margin-top: 2px;
   line-height: 1.5;
+  color: var(--chrome-on-surface);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -521,12 +587,12 @@ function onAnchorHover(strong: boolean) {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  border: 1.5px solid #bbb;
+  border: 1.5px solid var(--chrome-outline);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 10px;
-  color: #fff;
+  color: var(--chrome-on-secondary, #fff);
   line-height: 1;
   opacity: 0.45;
   user-select: none;
@@ -536,7 +602,7 @@ function onAnchorHover(strong: boolean) {
   cursor: pointer;
 }
 .ad-resolve-dot.mine:hover {
-  border-color: var(--chrome-accent, #3a6ea5);
+  border-color: var(--chrome-primary);
 }
 .ad-resolve-dot.resolved {
   background: #4caf50;
@@ -547,12 +613,12 @@ function onAnchorHover(strong: boolean) {
 }
 /* 评论计数 + 折叠箭头 */
 .ad-comment-count {
-  color: #999;
+  color: var(--chrome-on-surface-variant);
   font-size: 11px;
   margin-left: auto;
 }
 .ad-fold {
-  color: #999;
+  color: var(--chrome-on-surface-variant);
   font-size: 11px;
   margin-left: 4px;
 }
@@ -561,18 +627,18 @@ function onAnchorHover(strong: boolean) {
 }
 .ad-reply {
   padding: 6px 8px;
-  border-top: 1px solid var(--chrome-border-light, #eee);
+  border-top: 1px solid var(--chrome-border-light);
 }
 .ad-reply textarea {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--chrome-border, #d0d0d0);
-  border-radius: 4px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 6px;
   padding: 4px 6px;
   font: inherit;
   resize: vertical;
-  background: var(--chrome-input-bg, #fff);
-  color: var(--chrome-text, #333);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface);
 }
 .ad-reply-actions {
   display: flex;

@@ -43,8 +43,8 @@ function onMiddleClick(e: MouseEvent, id: string) {
   padding: 6px 10px 0;
   overflow-x: auto;
   flex-shrink: 0;
-  background: var(--chrome-surface, #f7f7f7);
-  border-bottom: 1px solid var(--chrome-border, #e5e6eb);
+  background: var(--chrome-surface);
+  border-bottom: 1px solid var(--chrome-border);
 }
 .tab {
   display: flex;
@@ -54,7 +54,7 @@ function onMiddleClick(e: MouseEvent, id: string) {
   border-radius: 8px 8px 0 0;
   font-size: 13px;
   cursor: pointer;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   border: 1px solid transparent;
   border-bottom: none;
   max-width: 220px;
@@ -62,14 +62,14 @@ function onMiddleClick(e: MouseEvent, id: string) {
   user-select: none;
 }
 .tab:hover {
-  background: var(--chrome-hover, #f2f3f5);
+  background: var(--chrome-hover);
 }
 .tab.active {
-  background: var(--chrome-background, #fff);
-  border-color: var(--chrome-border, #e5e6eb);
-  color: var(--chrome-on-background, #1f2329);
+  background: var(--chrome-background);
+  border-color: var(--chrome-border);
+  color: var(--chrome-on-background);
   /* 与下方编辑器连成一体 */
-  box-shadow: 0 1px 0 0 var(--chrome-background, #fff);
+  box-shadow: 0 1px 0 0 var(--chrome-background);
 }
 .dot {
   width: 7px;
@@ -79,7 +79,7 @@ function onMiddleClick(e: MouseEvent, id: string) {
   flex-shrink: 0;
 }
 .dot.dirty {
-  background: var(--chrome-primary, #f5b301);
+  background: var(--chrome-primary);
 }
 .tab-name {
   overflow: hidden;
@@ -97,12 +97,12 @@ function onMiddleClick(e: MouseEvent, id: string) {
   flex-shrink: 0;
 }
 .close:hover {
-  background: var(--chrome-selected, #e8f3ff);
+  background: var(--chrome-hover);
 }
 .empty-hint {
   align-self: center;
   font-size: 12px;
-  color: var(--chrome-on-surface-variant, #8a8f99);
+  color: var(--chrome-on-surface-variant);
   padding: 4px 8px;
 }
 </style>

@@ -139,11 +139,20 @@ const { chromium } = require('playwright');
   const w1 = await page.evaluate(() => document.querySelector('.annotation-drawer.open')?.getBoundingClientRect().width ?? -1);
   ok('拖拽宽度受限（50-480）', w1 >= 50 && w1 <= 480);
 
-  // 8. 折叠
-  await page.locator('.annotation-drawer-head .mini', { hasText: '»' }).click();
+  // 8. 折叠：改为右下角小胶囊按钮（不占布局空间）
+  await page.locator('.annotation-drawer-head .ad-icon-btn[title="折叠抽屉"]').click();
   await page.waitForTimeout(400);
-  const collapsed = await page.locator('.annotation-drawer-tab').count();
-  ok('折叠后显示把手', collapsed > 0);
+  const collapsedBtn = await page.locator('.annotation-open-btn').count();
+  ok('折叠后显示展开按钮', collapsedBtn > 0);
+  const collapsedW = await page.evaluate(() =>
+    document.querySelector('.annotation-drawer')?.getBoundingClientRect().width ?? -1
+  );
+  ok('折叠态不占布局宽度（0px）', collapsedW === 0);
+  // 按钮为小尺寸（非全高竖栏）
+  const btnH = await page.evaluate(() =>
+    document.querySelector('.annotation-open-btn')?.getBoundingClientRect().height ?? 9999
+  );
+  ok('折叠按钮为小尺寸（非整条竖栏）', btnH > 0 && btnH < 100);
   const connGone = await page.evaluate(() => {
     const svg = document.querySelector('.annotation-connector');
     return svg ? getComputedStyle(svg).display : 'none';
