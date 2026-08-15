@@ -39,7 +39,7 @@ const { chromium } = require('playwright');
   const blockContent = await page.locator('.ref-file-block:not(.readonly)').textContent();
   check('可编辑卡片内含源文件内容(待办清单)', blockContent.includes('待办清单'));
   const readonlyContent = await page.locator('.ref-file-block.readonly').textContent();
-  check('只读卡片内含 README 内容', readonlyContent.length > 80 && readonlyContent.includes('🥛'));
+  check('只读卡片内含 README 内容', readonlyContent.length > 80 && readonlyContent.includes('消金业务合作'));
 
   // 5. 序列化往返：getMarkdown 只输出标记，不落盘物化内容
   const md = await page.evaluate(() => window.__editorGetMarkdown());

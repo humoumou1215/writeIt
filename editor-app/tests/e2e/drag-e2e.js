@@ -199,13 +199,13 @@ const { chromium } = require('playwright');
 
   // ===== 10. 真实 HTML5 DnD 冒烟（playwright dragAndDrop）=====
   // 前置：根下应有 新文件.md（8c 建的）与 待办清单.md（5）；把 待办清单.md 拖到 template
-  await dragDrop('待办清单.md', 'template', 'into');
-  check('冒烟前置：待办清单.md → template', await has('template/待办清单.md'));
-  // 真实拖拽：template/待办清单.md → 笔记（dragAndDrop 用真实 CDP 拖拽事件）
-  await page.dragAndDrop(sel('template/待办清单.md'), sel('笔记'));
+  await dragDrop('待办清单.md', '.template', 'into');
+  check('冒烟前置：待办清单.md → template', await has('.template/待办清单.md'));
+  // 真实拖拽：.template/待办清单.md → 笔记（dragAndDrop 用真实 CDP 拖拽事件）
+  await page.dragAndDrop(sel('.template/待办清单.md'), sel('笔记'));
   await page.waitForTimeout(1200);
   check('真实 dragAndDrop 生效 → 笔记/待办清单.md', await has('笔记/待办清单.md'));
-  check('真实拖拽后源移除', !(await has('template/待办清单.md')));
+  check('真实拖拽后源移除', !(await has('.template/待办清单.md')));
 
   // ===== 11. 标签 + 引用联动 =====
   // 打开 笔记/引用演示.md（原文含 [[笔记/会议记录]]）与 笔记/会议记录.md（验证标签跟随）
@@ -226,21 +226,21 @@ const { chromium } = require('playwright');
   const mdBefore = await md();
   check('引用原文含 [[笔记/会议记录]]', mdBefore.includes('[[笔记/会议记录]]'));
   // 拖「笔记」目录 → template（into）：合法（template 非笔记后代），不冲突
-  await dragDrop('笔记', 'template', 'into');
-  await ensureExpanded('template/笔记');
-  check('目录移动 → template/笔记/会议记录.md', await has('template/笔记/会议记录.md'));
-  // 引用联动：引用演示.md 中的 [[笔记/会议记录]] 应更新为 [[template/笔记/会议记录]]
+  await dragDrop('笔记', '.template', 'into');
+  await ensureExpanded('.template/笔记');
+  check('目录移动 → template/笔记/会议记录.md', await has('.template/笔记/会议记录.md'));
+  // 引用联动：引用演示.md 中的 [[笔记/会议记录]] 应更新为 [[.template/笔记/会议记录]]
   const mdAfter = await md();
-  check('引用联动：[[template/笔记/会议记录]]', mdAfter.includes('[[template/笔记/会议记录]]'));
+  check('引用联动：[[.template/笔记/会议记录]]', mdAfter.includes('[[.template/笔记/会议记录]]'));
   check('旧引用路径已不存在', !mdAfter.includes('[[笔记/会议记录]]'));
   // 标签存活：会议记录 tab 未被关闭（路径已跟随迁移）
   check('联动后标签未关闭', (await page.locator('.tab', { hasText: '会议记录' }).count()) > 0);
 
   // ===== 12. 瞄准定位（🎯）：展开祖先链 + 高亮 =====
   // 先折叠 template（含 笔记）目录，再点定位
-  await clickNode('template');
+  await clickNode('.template');
   await page.waitForTimeout(400);
-  check('前置：template 已折叠', (await page.locator(sel('template/笔记/会议记录.md')).count()) === 0);
+  check('前置：template 已折叠', (await page.locator(sel('.template/笔记/会议记录.md')).count()) === 0);
   // 激活会议记录标签（当前 activeTab 是引用演示）
   await page.locator('.tab', { hasText: '会议记录' }).click();
   await page.waitForTimeout(800);
@@ -248,11 +248,11 @@ const { chromium } = require('playwright');
   await ensureSidebar();
   await page.locator('.sidebar-actions .mini', { hasText: '定位' }).click();
   await page.waitForTimeout(700);
-  check('定位：祖先链展开（template/笔记 可见）', (await page.locator(sel('template/笔记/会议记录.md')).count()) > 0);
-  check('定位：节点高亮 revealed', (await page.locator(sel('template/笔记/会议记录.md') + '.revealed').count()) > 0);
+  check('定位：祖先链展开（template/笔记 可见）', (await page.locator(sel('.template/笔记/会议记录.md')).count()) > 0);
+  check('定位：节点高亮 revealed', (await page.locator(sel('.template/笔记/会议记录.md') + '.revealed').count()) > 0);
   // 高亮 2.4s 后自动清除
   await page.waitForTimeout(2200);
-  check('定位：高亮自动清除', (await page.locator(sel('template/笔记/会议记录.md') + '.revealed').count()) === 0);
+  check('定位：高亮自动清除', (await page.locator(sel('.template/笔记/会议记录.md') + '.revealed').count()) === 0);
 
   // ===== 页面错误检查 =====
   check('无页面错误', errors.length === 0);

@@ -121,6 +121,13 @@ function togglePin() {
   saveSettings()
 }
 
+/** 未固定时，点击编辑区自动收纳侧边栏（sidebar 与 workspace 是兄弟节点，点击不会冒泡过来） */
+function onWorkspaceClick() {
+  if (!settings.sidebarPinned && !state.sidebarCollapsed) {
+    state.sidebarCollapsed = true
+  }
+}
+
 // 拖拽调整内容列宽度
 function startResize(e: MouseEvent) {
   e.preventDefault()
@@ -276,7 +283,8 @@ function onTreeRootDrop(e: DragEvent) {
           <button
             class="mini pin"
             :class="{ active: settings.sidebarPinned }"
-            :title="settings.sidebarPinned ? '已固定（不自动收纳）' : '固定侧边栏（打开文件时不自动收纳）'"
+            :aria-pressed="settings.sidebarPinned"
+            :title="settings.sidebarPinned ? '已固定（打开文件不自动收纳）· 点击取消固定' : '固定侧边栏（打开文件时不自动收纳）'"
             @click="togglePin"
           >
             📌
@@ -323,7 +331,7 @@ function onTreeRootDrop(e: DragEvent) {
       <!-- 主区域：标签栏 + 工作区（编辑器 + 批注栏同层，批注栏不压住编辑区） -->
       <main class="main">
         <TabBar />
-        <div class="workspace">
+        <div class="workspace" @click="onWorkspaceClick">
           <div class="editor-area">
             <EditorPane
               v-for="tab in state.tabs"
@@ -481,8 +489,26 @@ function onTreeRootDrop(e: DragEvent) {
   background: var(--chrome-hover);
   color: var(--chrome-on-background);
 }
+.mini.pin {
+  /* 未固定态：灰化 + 斜置（emoji 不受 color 控制，用 filter + transform 表达状态） */
+  filter: grayscale(1) opacity(0.55);
+  transform: rotate(45deg) scale(0.92);
+  transition: filter 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.mini.pin:hover {
+  filter: grayscale(0.5) opacity(0.85);
+  transform: rotate(45deg) scale(1);
+}
 .mini.pin.active {
   color: var(--chrome-primary);
+  background: var(--chrome-selected);
+  filter: none;
+  transform: none;
+}
+.mini.pin.active:hover {
+  background: var(--chrome-hover);
 }
 .sidebar-actions {
   display: flex;

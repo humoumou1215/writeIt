@@ -92,7 +92,8 @@ function check(name, ok) { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
     await page.locator('.icon-col .icon-btn').first().click().catch(async () => { await page.keyboard.press('Control+b'); });
     await page.waitForTimeout(500);
   }
-  await page.locator('.tree').first().click({ position: { x: 12, y: 12 }, button: 'right' });
+  // .template 是树首节点，y=12 会命中它——改右键「笔记」目录（明确的普通目录）
+  await page.locator('.tree .node', { hasText: '笔记' }).first().click({ button: 'right' });
   await page.waitForTimeout(400);
   await page.locator('.menu-item', { hasText: '基于模板新建' }).click();
   await page.waitForTimeout(600);

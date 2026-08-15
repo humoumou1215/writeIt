@@ -271,3 +271,14 @@ tr.annotation-dynamic.annotation-level-error {
   opacity: 0.95;
   stroke-width: 2;
 }
+
+/* M9：{{}} 模板占位符（decoration 渲染，纯视觉；保存内容仍为字面 {{...}}） */
+.tpl-placeholder {
+  color: #9ca3af;
+  font-style: italic;
+  border-bottom: 1px dashed #cbd5e1;
+  border-radius: 3px;
+  background: rgba(107, 114, 128, 0.08);
+  padding: 0 1px;
+  user-select: none;
+}

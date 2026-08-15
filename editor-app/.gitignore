@@ -8,3 +8,4 @@ demo-shots/
 
 # e2e 临时产物
 tests/e2e/node_modules/
+tsconfig.tsbuildinfo

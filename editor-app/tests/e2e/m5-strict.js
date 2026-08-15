@@ -10,8 +10,8 @@ const { chromium } = require('playwright');
   // 模板 rules mode 改 strict + 周报无版本章节（制造 error）
   await page.evaluate(() => {
     const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');
-    const rules = fs.files['template/demo/demo.rules.ts'] || '';
-    fs.files['template/demo/demo.rules.ts'] = rules.replace("export const mode: 'hint' | 'strict' = 'hint'", "export const mode: 'hint' | 'strict' = 'strict'");
+    const rules = fs.files['.template/demo/demo.rules.ts'] || '';
+    fs.files['.template/demo/demo.rules.ts'] = rules.replace("export const mode: 'hint' | 'strict' = 'hint'", "export const mode: 'hint' | 'strict' = 'strict'");
     fs.files['笔记/周报.md'] = fs.files['笔记/周报.md'].replace('## 版本\n\nv0.2.1\n', '');
     localStorage.setItem('milkdown-note-mock-fs-v2', JSON.stringify(fs));
   });
