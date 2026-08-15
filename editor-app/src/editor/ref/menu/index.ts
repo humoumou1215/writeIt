@@ -11,12 +11,11 @@ import { TextSelection, type EditorState, type PluginView } from '@milkdown/kit/
 import { editorCtx, parserCtx } from '@milkdown/kit/core'
 import { createApp, reactive, type App } from 'vue'
 
-import { fs } from '../../../fs'
 import type { FsEntry } from '../../../fs/types'
 import { materializeBlock } from '../resolve'
 import { refreshBrokenState } from '../app-plugin'
-import { templateService } from '../../../template/service'
 import RefMenu from './RefMenu.vue'
+import { refConfigCtx, type RefConfig } from '../config'
 
 export const refMenu = slashFactory('REF_MENU')
 
@@ -284,11 +283,30 @@ class RefMenuView implements PluginView {
   readonly #app: App
   readonly #slashProvider: SlashProvider
   readonly #editor: import('@milkdown/kit/core').Editor
+  readonly #cfg: RefConfig
   #view: EditorView
 
   constructor(ctx: Ctx, view: EditorView, editor: import('@milkdown/kit/core').Editor) {
     this.#view = view
     this.#editor = editor
+    // P0：配置经 ctx 注入（装配层已 set refConfigCtx；未注入时降级空配置）
+    this.#cfg = ctx.get(refConfigCtx.key) ?? {
+      fs: {
+        readFile: () => Promise.reject(new Error('refConfig 未注入')),
+        readTree: () => Promise.reject(new Error('refConfig 未注入')),
+        writeFile: () => Promise.reject(new Error('refConfig 未注入')),
+      },
+      toast: () => undefined,
+      openFile: () => undefined,
+      reSelect: () => undefined,
+      getTreeVersion: () => 0,
+      templateService: {
+        get: () => undefined,
+        ensureSuggest: async () => null,
+        loadSuggestForFile: async () => null,
+        loadHeadingsForFile: async () => null,
+      },
+    }
     const content = document.createElement('div')
     content.classList.add('milkdown-slash-menu')
     content.dataset.refMenu = 'true'
@@ -364,7 +382,7 @@ class RefMenuView implements PluginView {
       refMenuState.visible = true
       // 树加载后手动重新定位（flip 用真实高度测量溢出）。
       // 不走 provider.update() —— 那会再次触发 show → onShow 形成递归循环
-      void loadTree().then(() => {
+      void loadTree(this.#cfg).then(() => {
         perfMark('treeDone')
         this.#reposition()
       })
@@ -490,7 +508,7 @@ class RefMenuView implements PluginView {
         kind: 'file' as const,
       }
       // 传 parser：让 loadSuggestForFile 运行 objectsFor 合并动态对象（如接口文档字段说明表的字段）
-      const objs = await templateService.loadSuggestForFile(
+      const objs = await this.#cfg.templateService.loadSuggestForFile(
         path,
         this.#editor.action((c) => c.get(parserCtx))
       )
@@ -509,7 +527,7 @@ class RefMenuView implements PluginView {
         )
         return
       }
-      const headings = await templateService.loadHeadingsForFile(path)
+      const headings = await this.#cfg.templateService.loadHeadingsForFile(path)
       if (headings && headings.length) {
         this.openEntities(path, [fileSelf, ...headings])
         return
@@ -580,7 +598,7 @@ class RefMenuView implements PluginView {
   /** 替换模式：显示菜单（由 manager 的断链重选调用） */
   showReplace = () => {
     this.#slashProvider.show()
-    void loadTree()
+    void loadTree(this.#cfg)
   }
 
   /** 本菜单所属编辑器是否持有焦点（多标签时只有活动编辑器处理键盘） */
@@ -659,15 +677,15 @@ function perfFlush(label: string) {
 // 树缓存：菜单打开不再每次都 readTree（按 app 的 treeVersion 失效）
 let menuTreeCache: { version: number; tree: FsEntry[] } | null = null
 
-async function loadTree() {
+async function loadTree(cfg: RefConfig) {
   try {
-    const v = (await import('../../../state/store')).state.treeVersion
+    const v = cfg.getTreeVersion()
     if (menuTreeCache && menuTreeCache.version === v) {
       refMenuState.tree = menuTreeCache.tree
       return
     }
     const t0 = performance.now()
-    const tree = await fs.readTree(true)
+    const tree = await cfg.fs.readTree(true)
     perfMark('readTree', performance.now() - t0)
     menuTreeCache = { version: v, tree }
     refMenuState.tree = tree

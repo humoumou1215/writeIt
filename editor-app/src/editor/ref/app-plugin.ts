@@ -1,43 +1,22 @@
-// M3：文件树联动插件集
-//   1. refClickPlugin      —— file_ref chip 点击跳转；断链 chip 点击进入重选
+// M3：文件树联动插件集（P0 依赖注入版：fs/toast/回调经 refConfigCtx 注入，插件包不 import app 模块）
+//   1. refClickPlugin      —— file_ref chip 点击跳转；断链 chip 点击进入重选（openFile/reSelect 回调注入）
 //   2. readonlyGuardPlugin —— 只读 file_block 事务守卫（过滤一切修改只读容器的事务）
 //   3. brokenRefPlugin     —— 断链装饰（目标文件不存在 → 红色警告态），配合 refreshBrokenState 刷新
 import { Plugin, PluginKey, type Plugin as PluginType } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
-import { fs } from '../../fs'
-import { toast } from '../../state/store'
-
-// ---------- 桥接（避免与 manager 循环依赖）----------
-
-export type OpenRefHandler = (path: string, fragment: string | null) => void
-let openRefHandler: OpenRefHandler | null = null
-export function registerOpenRefHandler(fn: OpenRefHandler) {
-  openRefHandler = fn
-}
-export function triggerOpenRef(path: string, fragment: string | null) {
-  openRefHandler?.(path, fragment)
-}
-
-export type ReSelectHandler = (path: string) => void
-let reSelectHandler: ReSelectHandler | null = null
-export function registerReSelectHandler(fn: ReSelectHandler) {
-  reSelectHandler = fn
-}
-export function triggerReSelect(path: string) {
-  reSelectHandler?.(path)
-}
+import { getRefConfig, type RefConfig } from './config'
 
 // ---------- 路径存在性检查（Obsidian 风格补扩展名）----------
 
 const existsCache = new Map<string, boolean>()
-export async function refPathExists(path: string): Promise<boolean> {
+export async function refPathExists(cfg: RefConfig, path: string): Promise<boolean> {
   if (existsCache.has(path)) return existsCache.get(path)!
   const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
   for (const c of candidates) {
     try {
-      await fs.readFile(c)
+      await cfg.fs.readFile(c)
       existsCache.set(path, true)
       return true
     } catch {
@@ -49,11 +28,11 @@ export async function refPathExists(path: string): Promise<boolean> {
 }
 
 /** 解析引用路径为真实文件路径（Obsidian 风格补扩展名） */
-export async function resolveRefPath(path: string): Promise<string | null> {
+export async function resolveRefPath(cfg: RefConfig, path: string): Promise<string | null> {
   const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
   for (const c of candidates) {
     try {
-      await fs.readFile(c)
+      await cfg.fs.readFile(c)
       return c
     } catch {
       /* try next */
@@ -62,7 +41,7 @@ export async function resolveRefPath(path: string): Promise<string | null> {
   // Obsidian 风格：无目录前缀时搜索整个工作区（文件名匹配，取第一个命中）
   const base = path.split('/').pop() ?? path
   try {
-    const tree = await fs.readTree(true)
+    const tree = await cfg.fs.readTree(true)
     const found: string[] = []
     const walk = (list: import('../../fs/types').FsEntry[]) => {
       for (const n of list) {
@@ -78,38 +57,40 @@ export async function resolveRefPath(path: string): Promise<string | null> {
   }
 }
 
-// ---------- 1. 点击跳转 / 断链重选 ----------
+// ---------- 1. 点击跳转 / 断链重选（工厂：回调经 cfg 注入，替换原全局桥）----------
 
-export const refClickPlugin = new Plugin({
-  key: new PluginKey('REF_CLICK'),
-  props: {
-    handleClick: (_view, _pos, event) => {
-      const target = event.target as HTMLElement | null
-      // 对象引用（object_ref）→ 打开目标文件 + 按锚点标题跳转
-      const objSpan = target?.closest?.('span.ref-object')
-      if (objSpan) {
-        const path = objSpan.getAttribute('data-path')
-        if (path) {
-          const fragment = objSpan.getAttribute('data-fragment')
-          triggerOpenRef(path, fragment)
+export function createRefClickPlugin(cfg: RefConfig): Plugin {
+  return new Plugin({
+    key: new PluginKey('REF_CLICK'),
+    props: {
+      handleClick: (_view, _pos, event) => {
+        const target = event.target as HTMLElement | null
+        // 对象引用（object_ref）→ 打开目标文件 + 按锚点标题跳转
+        const objSpan = target?.closest?.('span.ref-object')
+        if (objSpan) {
+          const path = objSpan.getAttribute('data-path')
+          if (path) {
+            const fragment = objSpan.getAttribute('data-fragment')
+            cfg.openFile(path, fragment)
+            return true
+          }
+        }
+        const a = target?.closest?.('a.ref-file')
+        if (!a) return false
+        const path = a.getAttribute('data-path')
+        if (!path) return false
+        // 断链 chip → 重选
+        if (a.classList.contains('ref-broken')) {
+          cfg.reSelect(path)
           return true
         }
-      }
-      const a = target?.closest?.('a.ref-file')
-      if (!a) return false
-      const path = a.getAttribute('data-path')
-      if (!path) return false
-      // 断链 chip → 重选
-      if (a.classList.contains('ref-broken')) {
-        triggerReSelect(path)
+        const fragment = a.getAttribute('data-fragment')
+        cfg.openFile(path, fragment)
         return true
-      }
-      const fragment = a.getAttribute('data-fragment')
-      triggerOpenRef(path, fragment)
-      return true
+      },
     },
-  },
-})
+  })
+}
 
 // ---------- 2. 只读事务守卫 ----------
 
@@ -174,6 +155,8 @@ export const brokenRefPlugin: PluginType = new Plugin({
 
 /** 异步刷新断链状态：收集引用 → 检查存在性 → 派发事务触发装饰重算 */
 export async function refreshBrokenState(editor: Editor): Promise<void> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return
   try {
     existsCache.clear()
     const targets = editor.action((ctx) => {
@@ -189,7 +172,7 @@ export async function refreshBrokenState(editor: Editor): Promise<void> {
     })
     brokenPaths.clear()
     for (const p of targets) {
-      if (!(await refPathExists(p))) brokenPaths.add(p)
+      if (!(await refPathExists(cfg, p))) brokenPaths.add(p)
     }
     // 派发空事务触发 decorations 重算
     editor.action((ctx) => {
@@ -199,9 +182,4 @@ export async function refreshBrokenState(editor: Editor): Promise<void> {
   } catch {
     /* 容错：断链检测失败不影响编辑 */
   }
-}
-
-// 供 toast 提示
-export function notifyBroken(path: string) {
-  toast(`文件不存在：${path}`, 'error')
 }

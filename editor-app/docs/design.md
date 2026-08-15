@@ -560,6 +560,31 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - 已打开编辑器不感知模板注册表变更（重开标签生效）
 - 脏检测双条件（§6.7 缺口）、只读拖拽加固剩余项、fs.watch、模板继承、目录级模板
 
+### P0/P1 架构改造（2026-08-14：插件依赖净化 + 校验插件化）
+
+按 milkdown 插件体系（源码 packages/plugins/* 范式）重构编辑器侧接线，消除插件包对 app 模块的直接 import：
+
+**P0 — ref 插件包依赖净化（$ctx 注入）**：
+- 新增 `src/editor/ref/config.ts`：`refConfigCtx = $ctx<RefConfig|null>`（fs 最小接口 / toast / templateService 最小接口 / openFile / reSelect / getTreeVersion）。插件内一律 `ctx.get(refConfigCtx.key)` 读取；未注入降级不中断。
+- `resolve.ts` / `app-plugin.ts` / `writeback.ts` / `menu/index.ts` 删除 `import { fs } / toast / templateService`；无 ctx 的自由函数改传 cfg 参数（`readRefFile(cfg, path)`、`refPathExists(cfg, path)` 等）。
+- 删除全局桥 `registerOpenRefHandler / registerReSelectHandler` → 装配层直接注入回调（manager mountEditor 组装 refCfg，`crepe.editor.config(ctx.set(refConfigCtx.key, ...))`）。
+- 点击跳转插件工厂化：`refClickPlugin` 模块级实例 → `createRefClickPlugin(cfg)`（回调经 cfg）。
+
+**P0 — 批注绑定切片化**：
+- 新增 `src/annotations/config.ts`：`annotationConfigCtx`（tabId + getRuntimeAnnotations 读取器）；`bindAnnotationDecorations(tabId)` 闭包绑定 → 插件内 ctx 读取；`annotationPlugin = [configCtx, ...$remark, ...schema, $prose]` 整体 use。
+
+**P1 — 校验插件化（引擎留 app 侧）**：
+- 新增 `src/validate/plugin.ts`：`validatePlugin = [validateConfigCtx, $prose(事务监听→防抖→run), $command('validate')]`。
+- `$prose` 插件 `state.apply` 检测 docChanged → 防抖（默认 1.5s，按 tabId 隔离）→ 调注入的 `run`（= validateEditor）；`shouldSkip` 注入 suppressing 判断（物化/保存期程序化事务不触发）。
+- manager.ts 删除 `scheduleDebouncedValidation` 与 `validationTimers`；saveTab strict 门禁 / refreshValidation 保持调引擎；closeTab 清理 `clearValidationTimer`。
+- 命令 `validate`（$command）：手动触发入口（当前未接线 UI，供后续面板/快捷键用）。
+
+**装配时序（milkdown 源码确认）**：`editor.config(fn)` 回调在 ConfigReady timer 内执行，先于所有 `$prose`/schema 插件工厂（它们 wait SchemaReady/InitReady）→ ctx 注入安全。
+
+**关键坑**：裸 `createSlice` 不注册进容器，`ctx.get` 抛 "Context not found"——配置切片必须用 `$ctx`（插件形式，`.key` 即 SliceType）。
+
+**回归**：19 套件全绿（含 xxljob-e2e）+ `npm run build` 通过。另修复 mock.ts seed 漂移：接口文档「数据来源」列仍指向已删除的 `数据库/loan/表结构.md`（M8 重构遗留）→ 更新为 `loan_apply` / `customer_info`（m7-apidoc A3 依赖）。
+
 ## 12. 未来工作（v2）
 
 - 模板继承（extends）与规则合并优先级

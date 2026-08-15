@@ -6,9 +6,8 @@
 // 只读变体不参与；失败降级 toast，不中断保存主流程（§7.1）。
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx, parserCtx, schemaCtx, serializerCtx } from '@milkdown/kit/core'
-import { fs } from '../../fs'
-import { toast } from '../../state/store'
 import { readRefFile, cacheContent, collectBlocks, materializeBlock } from './resolve'
+import { getRefConfig } from './config'
 
 /** 保存后更新源内容缓存（broadcastBlockRefresh 物化时读缓存） */
 export function cacheRefFileContent(path: string, content: string): void {
@@ -80,43 +79,61 @@ export function collectBlockContentsSync(editor: Editor): Map<string, string> {
  * 写回事务：对比源文件，仅写有差异的可编辑块（§6.7 步骤 1-3）。
  * 返回写回的 { 真实路径 → 内容 }（供源标签刷新/广播）。
  */
+/** 解析真实文件路径（Obsidian 风格补扩展名；不存在返回 null） */
+async function resolveRealPath(cfg: import('./config').RefConfig, path: string): Promise<string | null> {
+  const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
+  for (const c of candidates) {
+    try {
+      await cfg.fs.readFile(c)
+      return c
+    } catch {
+      /* try next */
+    }
+  }
+  return null
+}
+
 export async function writeBackBlocks(editor: Editor): Promise<Map<string, string>> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return new Map()
   const written = new Map<string, string>()
   try {
     const byPath = collectBlockContentsSync(editor)
     for (const [path, content] of byPath) {
       let current: string
       try {
-        current = await readRefFile(path)
+        current = await readRefFile(cfg, path)
       } catch {
         continue // 断链：源文件不存在，跳过写回
       }
       if (current === content) continue
       try {
         // 写回用真实路径（块 attrs.path 常缺扩展名，直接写会创建无扩展名新文件）
-        const real = await resolveRealPath(path)
+        const real = await resolveRealPath(cfg, path)
         if (!real) continue
-        await fs.writeFile(real, content)
+        await cfg.fs.writeFile(real, content)
         cacheContent(real, content) // 更新缓存，避免广播刷新读到旧内容
         written.set(real, content)
         console.log('[writeback] 写回:', real)
       } catch (e) {
-        toast(`嵌入内容写回失败：${path}`, 'error')
+        cfg.toast(`嵌入内容写回失败：${path}`, 'error')
       }
     }
   } catch (e) {
     console.error('[writeback] 写回事务异常:', e)
-    toast('嵌入内容写回异常（已降级）', 'error')
+    cfg.toast('嵌入内容写回异常（已降级）', 'error')
   }
   return written
 }
 
 /** 本标签所有可编辑块的源真实路径（写回/联动目标） */
 export async function collectSourcePaths(editor: Editor): Promise<Set<string>> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return new Set()
   const entries = collectBlockEntries(editor).filter((b) => !b.readonly)
   const paths = new Set<string>()
   for (const b of entries) {
-    const real = await resolveRealPath(b.path)
+    const real = await resolveRealPath(cfg, b.path)
     if (real) paths.add(real)
   }
   return paths
@@ -127,20 +144,6 @@ function sameSource(a: string, b: string): boolean {
   if (a === b) return true
   const norm = (p: string) => p.replace(/\.(md|markdown|txt)$/i, '')
   return norm(a) === norm(b)
-}
-
-/** 解析真实文件路径（Obsidian 风格补扩展名；不存在返回 null） */
-export async function resolveRealPath(path: string): Promise<string | null> {
-  const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
-  for (const c of candidates) {
-    try {
-      await fs.readFile(c)
-      return c
-    } catch {
-      /* try next */
-    }
-  }
-  return null
 }
 
 /** 广播：其他打开该源文件的标签刷新对应 file_block 的物化内容（§6.7 步骤 5） */

@@ -11,7 +11,8 @@ import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
-import { refPlugin, resolveRefs } from './ref'
+import { refPlugin, resolveRefs, refConfigCtx } from './ref'
+import type { RefConfig } from './ref/config'
 import { registerRefStringify } from './ref/stringify'
 import {
   writeBackBlocks,
@@ -22,11 +23,8 @@ import {
   collectSourcePaths,
 } from './ref/writeback'
 import {
-  registerOpenRefHandler,
-  registerReSelectHandler,
   refreshBrokenState,
   resolveRefPath,
-  notifyBroken,
 } from './ref/app-plugin'
 import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
@@ -40,12 +38,10 @@ import {
   hasStrictBlock,
   clearValidation,
 } from '../validate/service'
-import { annotationSchema } from '../annotations/nodes'
-import { remarkAnnotation } from '../annotations/remark-annotation'
-import { bindAnnotationDecorations } from '../annotations'
+import { validatePlugin, validateConfigCtx, clearValidationTimer } from '../validate/plugin'
+import { annotationPlugin, annotationConfigCtx } from '../annotations'
 import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
-import { clearAnnotations } from '../annotations/service'
-import { $remark } from '@milkdown/kit/utils'
+import { getRuntimeAnnotations, clearAnnotations } from '../annotations/service'
 
 interface Instance {
   crepe: Crepe
@@ -57,20 +53,6 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
-
-// M5：编辑防抖实时校验（1.5s；规则简单/文档小无所谓，大文档后续可配置关闭）
-const validationTimers = new Map<string, ReturnType<typeof setTimeout>>()
-function scheduleDebouncedValidation(tabId: string, inst: Instance) {
-  const prev = validationTimers.get(tabId)
-  if (prev) clearTimeout(prev)
-  validationTimers.set(
-    tabId,
-    setTimeout(() => {
-      validationTimers.delete(tabId)
-      void validateEditor(inst.crepe.editor, tabId, { silent: true })
-    }, 1500)
-  )
-}
 
 // ---------- M7：源码查看模式（Ctrl+E 切换） ----------
 // 每标签独立视图模式：源码 = 容器内 textarea 覆盖层（不销毁 Crepe 实例），
@@ -516,25 +498,8 @@ initRefTooltip()
 // M6：批注卡（点击展开/收起，幂等初始化）
 initAnnotationCard()
 
-// M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）
-registerOpenRefHandler(async (path, fragment) => {
-  const real = await resolveRefPath(path)
-  if (!real) {
-    notifyBroken(path)
-    return
-  }
-  await openTab(real)
-  if (fragment) await scrollToHeading(fragment)
-})
-
-// M3：断链 chip 点击 → 打开菜单重选（替换模式）
-registerReSelectHandler((path) => {
-  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
-  if (!inst) return
-  void import('./ref/menu').then((menuMod) =>
-    menuMod.openReplaceMenu(inst.crepe.editor, path)
-  )
-})
+// M3：引用 chip 点击跳转（扩展名补全 + #片段滚动到标题）——P0 改为经 refConfigCtx 注入（见 mountEditor）
+// M3：断链 chip 点击 → 打开菜单重选（替换模式）——同上，reSelect 回调注入
 
 // 等待编辑器实例挂载（mountEditor 异步；标签刚打开时实例可能还没建）
 function waitForInstance(tabId: string, timeout = 5000): Promise<Instance | null> {
@@ -685,6 +650,38 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M4：斜杠菜单「模板」组依赖模板注册表，创建编辑器前确保扫描完成（失败也降级）
   await templateService.ready()
 
+  // P0：ref 插件依赖注入——fs/toast/模板服务/打开文件与重选回调经 refConfigCtx 注入，
+  // 插件包本身不 import app 模块。openFile/reSelect 回调内延迟调用（避免 TDZ）。
+  const refCfg: RefConfig = {
+    fs: {
+      readFile: (p: string) => fs.readFile(p),
+      readTree: (showAll?: boolean) => fs.readTree(Boolean(showAll)),
+      writeFile: (p: string, c: string) => fs.writeFile(p, c),
+    },
+    toast,
+    openFile: (path, fragment) => {
+      void handleOpenRef(path, fragment)
+    },
+    reSelect: (path) => {
+      const inst = instances.get(tabId)
+      if (inst) {
+        void import('./ref/menu').then((m) => m.openReplaceMenu(inst.crepe.editor, path))
+      }
+    },
+    getTreeVersion: () => state.treeVersion,
+    templateService,
+  }
+  /** 引用 chip 点击 → 解析真实路径 → 打开标签 → #片段滚动（原 registerOpenRefHandler 逻辑） */
+  async function handleOpenRef(path: string, fragment: string | null) {
+    const real = await resolveRefPath(refCfg, path)
+    if (!real) {
+      toast(`文件不存在：${path}`, 'error')
+      return
+    }
+    await openTab(real)
+    if (fragment) await scrollToHeading(fragment)
+  }
+
   const crepe = new Crepe({
     root: container,
     defaultValue: tab.savedContent,
@@ -695,11 +692,25 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     featureConfigs: featureConfigs(),
   })
   // 注册引用机制自定义节点与 stringify handler（必须在 create 之前）
+  crepe.editor.config((ctx) => {
+    ctx.set(refConfigCtx.key, refCfg)
+    // P0：批注配置注入（tabId + 运行时批注读取器）
+    ctx.set(annotationConfigCtx.key, {
+      tabId,
+      getRuntimeAnnotations,
+    })
+    // P1：校验配置注入（执行器 = validateEditor；shouldSkip = suppressing 期不触发）
+    ctx.set(validateConfigCtx.key, {
+      tabId,
+      run: (tid, opts) => validateEditor(crepe.editor, tid, opts),
+      shouldSkip: () => instances.get(tabId)?.suppressing ?? true,
+    })
+  })
   crepe.editor.use(refPlugin)
-  // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，绑定当前标签）
-  crepe.editor.use($remark('annotationRemark', () => remarkAnnotation as never))
-  crepe.editor.use(annotationSchema)
-  crepe.editor.use(bindAnnotationDecorations(tabId))
+  // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，tabId 经 ctx 注入）
+  crepe.editor.use(annotationPlugin)
+  // P1：校验插件（编辑防抖监听 + validate 命令；引擎 validateEditor 由 config 注入）
+  crepe.editor.use(validatePlugin)
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
     // M7：Ctrl+E 让位给源码模式切换——inline-code 快捷键改绑 Ctrl+Shift+E
@@ -747,8 +758,7 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       t.lastModified = Date.now()
       // §6.7：块编辑 → 源文件标签联动刷新（防抖）
       if (blockDirty) scheduleExternalSync(tabId)
-      // M5：编辑防抖实时校验（§5.1 默认关闭；v1 内置 1.5s 防抖，后续可加开关）
-      scheduleDebouncedValidation(tabId, inst)
+      // M5：编辑防抖实时校验 → 已由 validatePlugin 的 $prose 监听接管（manager 不再调度）
     })
   })
 
@@ -968,8 +978,9 @@ export async function saveActiveTab(): Promise<boolean> {
 export async function closeTab(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
-  // 关闭标签时清理校验结果（订阅面板/报告不残留）
+  // 关闭标签时清理校验结果（订阅面板/报告不残留）+ 防抖定时器
   clearValidation(tabId)
+  clearValidationTimer(tabId)
   clearAnnotations(tabId)
   setAnnotationCardContext(tabId, null)
   if (tab.dirty) {

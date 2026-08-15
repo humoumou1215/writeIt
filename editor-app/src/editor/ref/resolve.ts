@@ -7,10 +7,9 @@
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx, parserCtx } from '@milkdown/kit/core'
 import type { Node } from '@milkdown/kit/prose/model'
-import { fs } from '../../fs'
-import { toast } from '../../state/store'
-import { templateService, extractDoctype } from '../../template/service'
+import { extractDoctype } from '../../template/service'
 import { createSuggestContext } from '../../template/suggest-context'
+import { getRefConfig, type RefConfig } from './config'
 
 const MAX_DEPTH = 3
 /** 源内容缓存：path → 原始 markdown（限制条数，避免内存膨胀） */
@@ -26,14 +25,14 @@ function cacheContent(path: string, content: string) {
 }
 
 /** Obsidian 风格路径解析：先原样尝试，再补常见扩展名（带缓存） */
-async function readRefFile(path: string): Promise<string> {
+async function readRefFile(cfg: RefConfig, path: string): Promise<string> {
   const cached = contentCache.get(path)
   if (cached !== undefined) return cached
   const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
   let lastErr: unknown = null
   for (const c of candidates) {
     try {
-      const content = await fs.readFile(c)
+      const content = await cfg.fs.readFile(c)
       cacheContent(c, content)
       return content
     } catch (e) {
@@ -52,11 +51,13 @@ export async function materializeBlock(
   path: string,
   readonly: boolean
 ): Promise<void> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return
   let source: string
   try {
-    source = await readRefFile(path)
+    source = await readRefFile(cfg, path)
   } catch {
-    toast(`引用失败：找不到文件「${path}」`, 'error')
+    cfg.toast(`引用失败：找不到文件「${path}」`, 'error')
     return
   }
 
@@ -151,17 +152,19 @@ async function resolveObjectRef(
   editor: Editor,
   ref: { pos: number; type: 'object_ref' | 'file_ref'; path: string; fragment: string | null; object: string | null }
 ): Promise<void> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return
   let target: string
   try {
-    target = await readRefFile(ref.path)
+    target = await readRefFile(cfg, ref.path)
   } catch {
     return // 断链：文件不存在（断链警告由 app-plugin 处理）
   }
   const doctype = extractDoctype(target)
   if (!doctype) return
-  const tpl = templateService.get(doctype)
+  const tpl = cfg.templateService.get(doctype)
   if (!tpl) return
-  const staticObjs = (await templateService.ensureSuggest(tpl)) ?? []
+  const staticObjs = (await cfg.templateService.ensureSuggest(tpl)) ?? []
   const objectId = ref.type === 'object_ref' ? ref.object : ref.fragment
 
   // 先解析目标：动态对象 objectsFor 与对象 resolve 都需要 SuggestContext
@@ -216,12 +219,14 @@ async function resolveObjectRef(
 
 /** 全文档 resolve：物化 file_block + 消歧/定型对象引用（循环/深度有上限） */
 export async function resolveRefs(editor: Editor): Promise<void> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return
   try {
     // 1. 块物化（倒序，避免位置漂移）
     const blocks = collectBlocks(editor).sort((a, b) => b.pos - a.pos)
     for (const b of blocks) {
       if (b.depth >= MAX_DEPTH) {
-        toast(`引用深度超过 ${MAX_DEPTH} 层，已截断`, 'info')
+        cfg.toast(`引用深度超过 ${MAX_DEPTH} 层，已截断`, 'info')
         continue
       }
       await materializeBlock(editor, b.pos, b.path, b.readonly)
@@ -232,6 +237,6 @@ export async function resolveRefs(editor: Editor): Promise<void> {
       await resolveObjectRef(editor, r)
     }
   } catch (e) {
-    toast(`引用解析失败：${(e as Error).message}`, 'error')
+    cfg.toast(`引用解析失败：${(e as Error).message}`, 'error')
   }
 }
