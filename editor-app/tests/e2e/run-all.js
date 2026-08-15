@@ -23,7 +23,9 @@ const SUITES = [
   'm7-apidoc-e2e',// M7 接口文档：动态对象 objectsFor + findCodeBlocks
   'xxljob-e2e',   // M7 xxljob：一文件一任务校验 + 属性对象引用
   'm8-db-e2e',    // M8 数据库：字段对象 objectsFor + 表清单↔字段表一致性
+  'm9-placeholder-e2e', // M9 占位符：{{}} decoration 渲染（代码块内保留字面）
   'mermaid-zoom-e2e', // Mermaid 预览放大查看（悬停放大镜 + Lightbox + ESC）
+  'mermaid-ref-e2e', // M9 Mermaid 代码块 @ 联想 + 文本级引用跳转
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 
@@ -45,7 +47,13 @@ for (const name of SUITES) {
   process.stdout.write(`▶ ${name} … `)
   const r = await run(name)
   const m = /结果: (\d+) 通过 \/ (\d+) 失败/.exec(r.out)
-  const summary = m ? `✅ ${m[1]}/${m[2]}` : r.code === 0 ? '✅ done' : `❌ code=${r.code}`
+  const summary = m
+    ? Number(m[2]) === 0
+      ? `✅ ${m[1]}/${m[2]}`
+      : `❌ ${m[1]}/${m[2]}`
+    : r.code === 0
+      ? '✅ done'
+      : `❌ code=${r.code}`
   process.stdout.write(summary + '\n')
   if (!m && r.code !== 0) {
     // 崩溃：打印尾部日志

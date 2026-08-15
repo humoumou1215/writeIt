@@ -119,7 +119,7 @@ function openLightbox(source: SVGSVGElement, trigger: HTMLElement | null) {
   document.addEventListener('keydown', onKeyDown, true)
 }
 
-function closeLightbox(restoreFocus = true) {
+export function closeLightbox(restoreFocus = true) {
   if (!state) return
   const st = state
   state = null

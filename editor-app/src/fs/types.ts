@@ -40,7 +40,8 @@ export function isEditableFile(name: string): boolean {
 export function shouldShowInTree(path: string, name: string, showAll: boolean): boolean {
   if (showAll) return true
   if (isEditableFile(name)) return true
-  return path.startsWith('template/')
+  // .template 模板域目录本身及其内容始终显示（隐藏目录仅联想层排除，见 core.loadTree）
+  return path === '.template' || path.startsWith('.template/')
 }
 
 export function joinPath(dir: string, name: string): string {

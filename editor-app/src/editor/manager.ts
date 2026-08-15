@@ -32,6 +32,7 @@ import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings } from '../state/settings'
 import type { Tab } from '../state/store'
 import { featureConfigs } from './features'
+import { registerMermaidRefDeps } from './mermaid-ref'
 import { templateService } from '../template/service'
 import {
   validateEditor,
@@ -681,6 +682,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     await openTab(real)
     if (fragment) await scrollToHeading(fragment)
   }
+  // M9：mermaid 联想/链接的数据源与打开回调（复用同一 refCfg + handleOpenRef；多标签 cfg 一致）
+  registerMermaidRefDeps(refCfg, (path, fragment) => {
+    void handleOpenRef(path, fragment)
+  })
 
   const crepe = new Crepe({
     root: container,

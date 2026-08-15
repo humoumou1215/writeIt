@@ -11,6 +11,8 @@ import type { FsEntry } from '../../../fs/types'
 import type { RefMode } from './index'
 
 const props = defineProps<{
+  /** mermaid 联想等场景隐藏模式选择器（无 embed 语义） */
+  hideModeSelector?: boolean
   menu: {
     select: (path: string, mode?: RefMode) => void
     selectFile: (path: string, mode: RefMode) => void
@@ -213,6 +215,9 @@ function onKeydown(e: KeyboardEvent) {
       e.preventDefault(); e.stopPropagation()
       const obj = props.state.entities[hoverIndex.value]
       if (obj) props.menu.selectEntity(obj.id, obj.kind)
+    } else if (e.key === 'ArrowRight') {
+      // 实体级最末继续按 → 不移动光标（无操作；保持 hover）
+      e.preventDefault(); e.stopPropagation()
     }
     return
   }
@@ -279,7 +284,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, { capture
 <template>
   <div v-if="state.visible" ref="host" @pointerdown.prevent>
     <!-- 模式选择器（tab-group 视觉） -->
-    <nav v-if="!inEntity" class="tab-group">
+    <nav v-if="!inEntity && !hideModeSelector" class="tab-group">
       <ul>
         <li
           v-for="m in MODES"
@@ -341,15 +346,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown, { capture
 </template>
 
 <style>
-/* 容器由 SlashProvider 定位；class 与 crepe / 菜单一致，主题 CSS 直接生效 */
-.milkdown-ref-menu {
-  /* fixed 由 SlashProvider strategy:'fixed' 决定（视口定位，随光标准确） */
-  position: fixed;
-  z-index: 10;
-}
-.milkdown-ref-menu[data-show='false'] {
-  display: none;
-}
+/* 容器样式由 crepe 主题提供（.milkdown-slash-menu：背景/圆角/阴影/li hover/data-show 显隐）——
+ * 正文菜单与 mermaid 联想共用同一容器 class，交互与外观保持一致 */
 </style>
 
 <style scoped>

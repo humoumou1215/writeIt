@@ -13,6 +13,7 @@ import {
   readonlyGuardPlugin,
   brokenRefPlugin,
 } from './app-plugin'
+import { placeholderDecorationPlugin } from './placeholder'
 import { refConfigCtx } from './config'
 
 import './styles.css'
@@ -55,4 +56,6 @@ export const refPlugin: MilkdownPlugin[] = [
   }),
   $prose(() => readonlyGuardPlugin),
   $prose(() => brokenRefPlugin),
+  // M9：{{}} 占位符渲染（decoration，不改内容；代码块内保留字面）
+  $prose(() => placeholderDecorationPlugin),
 ]

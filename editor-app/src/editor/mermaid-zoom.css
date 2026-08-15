@@ -126,3 +126,27 @@
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* M9：mermaid 流程图内文本级引用链接（与外部编辑器 chip 同款背景色） */
+a.mmd-text-ref {
+  cursor: pointer;
+  color: var(--chrome-primary, inherit);
+  background: color-mix(in srgb, var(--chrome-primary), transparent 88%);
+  border-radius: 4px;
+  padding: 0 2px;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+a.mmd-text-ref:hover {
+  background: color-mix(in srgb, var(--chrome-primary), transparent 72%);
+}
+
+/* M9：SVG <text> 内文本级引用（时序图消息等）——SVG 上下文用 fill + 下划线 */
+tspan.mmd-text-ref {
+  cursor: pointer;
+  fill: var(--crepe-color-primary, inherit);
+  text-decoration: underline;
+}
+tspan.mmd-text-ref:hover {
+  fill: color-mix(in srgb, var(--crepe-color-primary, currentColor), black 20%);
+}

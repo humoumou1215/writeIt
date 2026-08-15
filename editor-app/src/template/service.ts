@@ -12,7 +12,7 @@ import { loadTsModule } from './ts-loader'
 import type { Node } from '@milkdown/kit/prose/model'
 import { createSuggestContext } from './suggest-context'
 
-const WORKSPACE_TEMPLATE_DIR = 'template'
+const WORKSPACE_TEMPLATE_DIR = '.template'
 // doctype 支持中文与任意非空白字符（中文模板名是普通用户常态；排除 # 防与 markdown 标题冲突）
 const DOCTYPE_RE = /^doctype\s*:\s*([^\s#]+)\s*$/
 

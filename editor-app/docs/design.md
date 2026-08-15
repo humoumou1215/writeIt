@@ -585,6 +585,39 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 **回归**：19 套件全绿（含 xxljob-e2e）+ `npm run build` 通过。另修复 mock.ts seed 漂移：接口文档「数据来源」列仍指向已删除的 `数据库/loan/表结构.md`（M8 重构遗留）→ 更新为 `loan_apply` / `customer_info`（m7-apidoc A3 依赖）。
 
+### M9：Mermaid 流程图中引用（联想输入 + 文本级链接跳转，2026-08-15）
+
+**需求**：mermaid 代码块内输入 `@` 快速联想引用（复用存量 ref 菜单）；渲染后**节点内文字**（非整节点）可点击跳转；显示去掉 `[[ ]]` 只显路径、chip 同款背景色。
+
+**存量复用（不重复实现）**：
+- 新增 `ref/menu/core.ts` **共享内核**：触发检测（matchTrigger/normalizeTriggers，从 menu/index.ts 移入）、树缓存 loadTree(cfg, state)、实体级加载 loadEntitiesForPath(cfg, path, parser?)、导航状态机（enterDir/goUp/openEntities/closeEntities 操作传入 state 实例）。
+- 正文菜单（menu/index.ts）与 mermaid 联想（mermaid-ref.ts）**共用内核 + RefMenu.vue UI**（mermaid 传独立 reactive state 实例 + hideModeSelector 隐藏 embed 模式选择器）。
+- 数据源沿用 refConfigCtx（P0 成果）；打开跳转复用 manager 的 handleOpenRef（resolveRefPath → openTab → scrollToHeading）。
+
+**mermaid 实现**（新增 `editor/mermaid-ref.ts`）：
+1. **CodeMirror 联想**（mermaidRefMenuExtension，ViewPlugin）：语言识别 = 代码块 DOM 语言按钮文本 == 'mermaid'（js 等不触发）；光标行文本 matchTrigger（仅 link 模式）；recentTyped 校验（全选替换也累积插入文本）；floating-ui 定位到 cm 光标；选择后删除触发词插入 `[[path]]` / `[[path#fragment]]` 纯文本。
+2. **渲染文本链接化**（linkifyMermaidRefs）：mermaid.render 后把 foreignObject 内 HTML 文本的 `[[path#frag]]` 替换为 `<a class="mmd-text-ref" data-ref>`（去 [[ ]] 显示路径；DOMPurify 保留 <a>/data-*；edge label 同样生效）。
+3. **点击委托**：document capture click——`a.mmd-text-ref`（data-ref）与旧内容 `a[xlink|href^="[["]]`（节点级 click 指令防御）→ 解析 `path#frag` → 打开回调（manager 注册，复用 handleOpenRef）；Lightbox 内点击同样生效（先关 Lightbox）。
+
+**语法要求**：节点文本含 `[[` 必须用引号包裹（`B["修改 [[path#amount]] 的值为 1"]`）——mermaid 语法限制；不自动补引号（用户场景引号已开时自然工作）。
+
+**测试**：新增 mermaid-ref-e2e 11 断言（渲染链接/去 [[ ]] / 点击跳转 / @ 联想 / 实体级 / 插入 / 非 mermaid 不触发 / 菜单关闭）；修 run-all.js 判定 bug（失败被 ✅ 掩盖：`结果: X 通过 / Y 失败` 只看 Y 是否 0）。
+
+**M9 修复轮（用户反馈两问题，2026-08-15）**：
+1. **联想插入后渲染失败**（节点文本含 `[[` 未引号包裹）：insertText 自动补引号——nodeQuoteRange 找光标所在节点边界（行内最近未闭合 `[`/`{`，排除 `[[` 第二位，配对其 `}`/`]`），节点文本未以引号开头时在左右括号内侧补 `"`（changes 三处：左引号 + 触发词替换 + 右引号，quoteShift 校正光标）。边文本（`-->|…|`）mermaid 语法不支持引号，不自动处理。渲染层另有兜底（外部：无引号 `[[..]]` 预处理，mermaid-ref-e2e F 组）。
+2. **无法回到第一级目录**：进入目录/实体级时文档里的过滤词残留 → 后续任何输入/光标移动触发 checkTrigger 从残留文本重新提取 query → 菜单跳回过滤态。修复：adapter enterDir/selectFile 先 `deleteQueryText()`（删文档过滤词保留触发词，triggerTo 同步收缩），导航后文档干净，`←`/Backspace 逐级返回正常（G 组验证 Aaa → 深层 → ← 回第一级）。
+3. 顺带修复：mermaid 菜单容器统一 `.milkdown-slash-menu`（crepe 主题样式）+ 浮层挂 `.milkdown` 容器内（block-edit.css 样式嵌套在 `.milkdown` 选择器下，挂 body 样式失效）；mermaid-ref-e2e 扩展至 21 断言（C5/C6 补引号、F 无引号渲染、G 目录返回）。
+
+### M10：template → .template + 联想范围/键位/边标签/时序图（2026-08-15）
+
+1. **template → .template**：demo 目录改名（`demo/消金业务合作/template/` → `.template/`，sync:demo 重新生成 mock-samples.generated.ts）；`TemplateService.WORKSPACE_TEMPLATE_DIR = '.template'`；`shouldShowInTree` 显示 `.template` 目录本身及其内容（模板域文件始终显示）；受影响测试路径同步（m4/drag/m9/m5-strict）。
+2. **`.` 开头目录不进联想**：core.ts `loadTree` 递归过滤隐藏目录（`.template`/`.git` 等；正文菜单 + mermaid 联想共用）；文件树仍显示 `.template`。
+3. **实体级 → 键不移动光标**：RefMenu.vue 实体级分支拦截 ArrowRight（preventDefault，无操作）。
+4. **边标签引用**：`-->|"是 [[...]]"|` 引号可解析（实验确认）；nodeQuoteRange 扩展支持边标签 `|...|`（光标前最近未闭合 `|`）自动补引号；无引号边标签走外部 prepareMermaidRefs fallback（占位符渲染）。
+5. **时序图（sequenceDiagram）点击跳转**：消息文本渲染在 SVG `<text>`（非 foreignObject）→ linkifyMermaidRefs 扩展处理 `<text>` 块（`<tspan class="mmd-text-ref" data-ref>`，DOMPurify 保留验证过）；**mermaid sequence 消息会丢弃 `#` 及其后内容**（`[[path#frag]]` 的 # 段丢失）→ 新增 `escapeRefHash`：渲染前把 `[[ ]]` 内半角 # 转全角 ＃（渲染完整保留），linkify 时还原半角；点击委托支持 `tspan.mmd-text-ref`；CSS `tspan.mmd-text-ref`（fill + 下划线）。
+
+**回归**：全量 21 套件全绿（mermaid-ref-e2e 26 断言含 H 组：时序图 tspan 跳转/边标签链接/.template 过滤/→ 键不移动光标）+ build 通过。
+
 ## 12. 未来工作（v2）
 
 - 模板继承（extends）与规则合并优先级

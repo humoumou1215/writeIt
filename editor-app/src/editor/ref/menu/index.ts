@@ -9,117 +9,34 @@ import { SlashProvider, slashFactory } from '@milkdown/kit/plugin/slash'
 import { computePosition, flip, offset, shift } from '@floating-ui/dom'
 import { TextSelection, type EditorState, type PluginView } from '@milkdown/kit/prose/state'
 import { editorCtx, parserCtx } from '@milkdown/kit/core'
-import { createApp, reactive, type App } from 'vue'
+import { createApp, type App } from 'vue'
 
-import type { FsEntry } from '../../../fs/types'
 import { materializeBlock } from '../resolve'
 import { refreshBrokenState } from '../app-plugin'
 import RefMenu from './RefMenu.vue'
 import { refConfigCtx, type RefConfig } from '../config'
+import {
+  createRefMenuState,
+  matchTrigger,
+  normalizeTriggers,
+  loadTree,
+  loadEntitiesForPath,
+  enterDir,
+  goUp,
+  openEntities,
+  closeEntities,
+} from './core'
 
 export const refMenu = slashFactory('REF_MENU')
 
-export type RefMode = 'link' | 'embed' | 'embed-ro'
-
-export interface RefMenuState {
-  visible: boolean
-  mode: RefMode
-  query: string
-  tree: FsEntry[]
-  /** 触发文本在文档中的范围（删除用） */
-  triggerFrom: number
-  triggerTo: number
-  /** 文件树导航：当前所在目录（'' = 根） */
-  currentDir: string
-  /** 第二级：选中文件（有 suggest 时进入实体级） */
-  selectedPath: string | null
-  /** 第二级：实体列表（首项=文件本身，其后 suggest 对象 / Obsidian 标题） */
-  entities: { id: string; label: string; kind: 'file' | 'object' | 'heading'; fragment?: string | null }[]
-  /** 最近键入的字符（验证触发词是刚输入的，避免段落里旧 [[ 误触发） */
-  recentTyped: string
-  /** 当前触发词类型（仅触发词变化时重置模式，不覆盖用户手动选择） */
-  triggerKind: '@' | '[[' | '![[' | null
-  /** 替换模式：非空时 select 替换该位置上的节点（断链重选） */
-  replacePos: number | null
-  /** 替换模式的输入起点（光标位置，用于计算过滤词与替换范围） */
-  replaceStart: number
-  /** 被替换的旧引用路径（按路径重查节点，避免位置漂移） */
-  replacePath: string | null
-}
+export type RefMode = import('./core').RefMode
 
 ;(window as unknown as { __refMenuState?: unknown }).__refMenuState = null
-export const refMenuState = reactive<RefMenuState>({
-  visible: false,
-  mode: 'link',
-  query: '',
-  tree: [],
-  triggerFrom: 0,
-  triggerTo: 0,
-  currentDir: '',
-  selectedPath: null,
-  entities: [],
-  recentTyped: '',
-  triggerKind: null,
-  replacePos: null,
-  replaceStart: 0,
-  replacePath: null,
-})
+export const refMenuState = createRefMenuState()
 ;(window as unknown as { __refMenuState?: unknown }).__refMenuState = refMenuState
 
-// ---------- 触发检测 ----------
-
-interface TriggerMatch {
-  mode: RefMode
-  query: string
-  /** 触发词类型（用于验证最近键入） */
-  kind: '@' | '[[' | '![[' | null
-  /** 触发词在文本中的起始偏移（@ 指向 @ 本身，[[ 指向第一个 [） */
-  start: number
-}
-
-// 全角符号 → 半角（中文输入法输出的 ＠！【 等也能触发对应功能）
-const FULLWIDTH_MAP: Record<string, string> = {
-  '＠': '@',
-  '！': '!',
-  '【': '[',
-  '［': '[',
-  '】': ']',
-  '］': ']',
-}
-
-function normalizeTriggers(text: string): string {
-  let out = text
-  for (const [fw, hw] of Object.entries(FULLWIDTH_MAP)) {
-    if (out.includes(fw)) out = out.split(fw).join(hw)
-  }
-  return out
-}
-
-function matchTrigger(raw: string): TriggerMatch | null {
-  // 检测层归一化全角符号（1:1 字符映射，偏移不变）；文档文本保持原样
-  const text = normalizeTriggers(raw)
-  // 收集全部候选触发词，取「终点离光标最近」者（同终点取更长更具体的触发词）。
-  // 这样段落里更早的旧 [[ 不会抢占新输入的 @ / [[（触发词后不能有 ] = 已完成引用）。
-  const cands: TriggerMatch[] = []
-  const embedIdx = text.lastIndexOf('![[')
-  if (embedIdx >= 0 && !text.slice(embedIdx + 3).includes(']')) {
-    cands.push({ mode: 'embed', query: text.slice(embedIdx + 3), start: embedIdx, kind: '![[' })
-  }
-  const linkIdx = text.lastIndexOf('[[')
-  if (linkIdx >= 0 && !text.slice(linkIdx + 2).includes(']')) {
-    cands.push({ mode: 'link', query: text.slice(linkIdx + 2), start: linkIdx, kind: '[[' })
-  }
-  // @（边界感知：块首或前一字符为空白）
-  const at = /(?:^|\s)@([^\s]*)$/.exec(text)
-  if (at) {
-    const atStart = text.length - at[1].length - 1
-    cands.push({ mode: 'link', query: at[1], start: atStart, kind: '@' })
-  }
-  if (!cands.length) return null
-  const end = (t: TriggerMatch) => t.start + (t.kind?.length ?? 0)
-  cands.sort((a, b) => end(b) - end(a) || (b.kind?.length ?? 0) - (a.kind?.length ?? 0))
-  return cands[0]
-}
+// ---------- 触发检测 / 树缓存 / 实体加载 / 导航状态机 ----------
+// 已提取至 core.ts（正文菜单与 mermaid 代码块联想共用）
 
 function getTextBeforeCursor(view: EditorView): string | null {
   const { selection } = view.state
@@ -382,7 +299,7 @@ class RefMenuView implements PluginView {
       refMenuState.visible = true
       // 树加载后手动重新定位（flip 用真实高度测量溢出）。
       // 不走 provider.update() —— 那会再次触发 show → onShow 形成递归循环
-      void loadTree(this.#cfg).then(() => {
+      void loadTree(this.#cfg, refMenuState).then(() => {
         perfMark('treeDone')
         this.#reposition()
       })
@@ -501,35 +418,14 @@ class RefMenuView implements PluginView {
       return
     }
     try {
-      // 实体级首项 = 文件本身（整文件链接，Obsidian 模式）
-      const fileSelf = {
-        id: '',
-        label: path.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? path,
-        kind: 'file' as const,
-      }
-      // 传 parser：让 loadSuggestForFile 运行 objectsFor 合并动态对象（如接口文档字段说明表的字段）
-      const objs = await this.#cfg.templateService.loadSuggestForFile(
+      // 实体级：suggest 对象 / Obsidian 标题（core 共享加载；传 parser 合并 objectsFor 动态对象）
+      const res = await loadEntitiesForPath(
+        this.#cfg,
         path,
         this.#editor.action((c) => c.get(parserCtx))
       )
-      if (objs && objs.length) {
-        this.openEntities(
-          path,
-          [
-            fileSelf,
-            ...objs.map((o) => ({
-              id: o.id,
-              label: o.label,
-              kind: 'object' as const,
-              fragment: o.fragment ?? null,
-            })),
-          ]
-        )
-        return
-      }
-      const headings = await this.#cfg.templateService.loadHeadingsForFile(path)
-      if (headings && headings.length) {
-        this.openEntities(path, [fileSelf, ...headings])
+      if (res) {
+        this.openEntities(path, res.entities)
         return
       }
     } catch {
@@ -598,7 +494,7 @@ class RefMenuView implements PluginView {
   /** 替换模式：显示菜单（由 manager 的断链重选调用） */
   showReplace = () => {
     this.#slashProvider.show()
-    void loadTree(this.#cfg)
+    void loadTree(this.#cfg, refMenuState)
   }
 
   /** 本菜单所属编辑器是否持有焦点（多标签时只有活动编辑器处理键盘） */
@@ -608,19 +504,14 @@ class RefMenuView implements PluginView {
     refMenuState.mode = mode
   }
 
-  /** 目录导航：进入目录 */
+  /** 目录导航：进入目录（core 状态机） */
   enterDir = (dir: string) => {
-    refMenuState.currentDir = dir
-    refMenuState.query = ''
+    enterDir(refMenuState, dir)
   }
 
-
-
-  /** 返回上级目录 */
+  /** 返回上级目录（core 状态机） */
   goUp = () => {
-    refMenuState.currentDir = refMenuState.currentDir.includes('/')
-      ? refMenuState.currentDir.slice(0, refMenuState.currentDir.lastIndexOf('/'))
-      : ''
+    goUp(refMenuState)
   }
 
   /**
@@ -640,16 +531,14 @@ class RefMenuView implements PluginView {
     this.goUp()
   }
 
-  /** 进入实体级（suggest 对象 / Obsidian 标题） */
+  /** 进入实体级（suggest 对象 / Obsidian 标题）——core 状态机 */
   openEntities = (path: string, entities: { id: string; label: string; kind: 'file' | 'object' | 'heading'; fragment?: string | null }[]) => {
-    refMenuState.selectedPath = path
-    refMenuState.entities = entities
+    openEntities(refMenuState, path, entities)
   }
 
-  /** 返回文件级 */
+  /** 返回文件级——core 状态机 */
   closeEntities = () => {
-    refMenuState.selectedPath = null
-    refMenuState.entities = []
+    closeEntities(refMenuState)
   }
 }
 
@@ -674,22 +563,4 @@ function perfFlush(label: string) {
   perfMarks = []
 }
 
-// 树缓存：菜单打开不再每次都 readTree（按 app 的 treeVersion 失效）
-let menuTreeCache: { version: number; tree: FsEntry[] } | null = null
-
-async function loadTree(cfg: RefConfig) {
-  try {
-    const v = cfg.getTreeVersion()
-    if (menuTreeCache && menuTreeCache.version === v) {
-      refMenuState.tree = menuTreeCache.tree
-      return
-    }
-    const t0 = performance.now()
-    const tree = await cfg.fs.readTree(true)
-    perfMark('readTree', performance.now() - t0)
-    menuTreeCache = { version: v, tree }
-    refMenuState.tree = tree
-  } catch {
-    refMenuState.tree = []
-  }
-}
+// 树缓存 / 实体加载 / 触发检测 → core.ts（正文与 mermaid 联想共用）
