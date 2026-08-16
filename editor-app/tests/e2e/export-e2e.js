@@ -83,7 +83,7 @@ const { chromium } = require('playwright');
 
   // ---------- 4：图标列 📤 独立导出弹窗 UI（左树 + 右列表 + 每文件格式） ----------
   {
-    await page.locator('.icon-btn', { hasText: '📤' }).click();
+    await page.locator('.icon-btn[title^="导出"]').click();
     await page.waitForTimeout(600);
     const modalVisible = await page.locator('.export-modal').isVisible();
     ok('导出弹窗打开（图标列 📤 独立按钮）', modalVisible);
@@ -316,7 +316,7 @@ export const build = (ctx) => ({ content: '# 自定义标题\\n\\n来自 export.
     await page.waitForTimeout(400);
     await page.locator('.tree .name', { hasText: '助贷接口.md' }).first().click();
     await page.waitForTimeout(3000);
-    await page.locator('.icon-btn', { hasText: '📤' }).click();
+    await page.locator('.icon-btn[title^="导出"]').click();
     await page.waitForTimeout(800);
     const selFmt = await page.evaluate(() =>
       Array.from(document.querySelectorAll('.sel-row .sel-fmt')).map((s) => s.value)

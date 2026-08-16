@@ -87,10 +87,16 @@ function mergeWordsFallback(
       hasCtx = true
     } else if (w.kind === 'del') {
       out += `{--${w.text}--}`
-      if (ai < aAdds.length) out += `{++${aAdds[ai++]++}`
+      if (ai < aAdds.length) {
+        out += `{++${aAdds[ai]}++}`
+        ai++
+      }
     }
   }
-  while (ai < aAdds.length) out += `{++${aAdds[ai++]++}`
+  while (ai < aAdds.length) {
+    out += `{++${aAdds[ai]}++}`
+    ai++
+  }
   return hasCtx ? out : null
 }
 
@@ -109,11 +115,17 @@ function mergeTablePair(del: DiffLine, add: DiffLine, out: string[], notes: Diff
   const n = Math.max(dc.length, ac.length)
   const cells: string[] = []
   let changed = false
+  let anchorD = ''
+  let anchorA = ''
   for (let k = 0; k < n; k++) {
     const d = dc[k] ?? ''
     const a = ac[k] ?? ''
     if (d !== a) {
       changed = true
+      if (!anchorA) {
+        anchorD = d
+        anchorA = a
+      }
       cells.push(`${d ? `{--${d}--}` : ''}${a ? `{++${a}++}` : ''}`)
     } else {
       cells.push(a)
@@ -125,7 +137,116 @@ function mergeTablePair(del: DiffLine, add: DiffLine, out: string[], notes: Diff
   }
   const line = `| ${cells.join(' | ')} |`
   out.push(line)
-  notes.push(makeNote('table', '修改了表格单元格', del.text, add.text, line))
+  // 锚点用变更单元格值（渲染层 .diff-ins/.diff-del 按 value 定位）
+  notes.push(makeNote('table', '修改了表格单元格', anchorD || del.text, anchorA || add.text, line))
+}
+
+/** 行级标记：表格行 → 逐单元格标记（整行包 {++..++} 会被 GFM 表格解析吃掉）；普通行 → 整行标记 */
+function markLine(line: string, kind: 'add' | 'del'): { text: string; anchor: string } {
+  if (TABLE_RE.test(line)) {
+    const cells = parseCells(line)
+    const marked = cells.map((c) =>
+      c ? (kind === 'add' ? `{++${c}++}` : `{--${c}--}`) : ''
+    )
+    return { text: `| ${marked.join(' | ')} |`, anchor: cells.find((c) => c) ?? '' }
+  }
+  return { text: kind === 'add' ? `{++${line}++}` : `{--${line}--}`, anchor: line }
+}
+
+/** 纯 del 段 → 每行 {--行--}（表格行逐单元格）；纯 add 段 → 每行 {++行++}；修改对 → 词级 {--}{++} 或整行重写 */
+function handleSeg(
+  seg: { dels: DiffLine[]; adds: DiffLine[] },
+  out: string[],
+  notes: DiffNote[]
+) {
+  const { dels, adds } = seg
+  if (adds.length === 0) {
+    // 纯删除（空行无可视标记，跳过）
+    const visible = dels.filter((d) => d.text !== '')
+    for (const d of visible) out.push(markLine(d.text, 'del').text)
+    if (visible.length) {
+      notes.push(
+        makeNote(
+          'block',
+          `删除了此段${visible.length > 1 ? `（${visible.length} 行）` : ''}`,
+          visible.map((d) => d.text).join('\n'),
+          undefined,
+          markLine(visible[0].text, 'del').anchor.slice(0, 30)
+        )
+      )
+    }
+    return
+  }
+  if (dels.length === 0) {
+    // 纯新增
+    const visible = adds.filter((a) => a.text !== '')
+    for (const a of visible) out.push(markLine(a.text, 'add').text)
+    if (visible.length) {
+      notes.push(
+        makeNote(
+          'block',
+          `新增了此段${visible.length > 1 ? `（${visible.length} 行）` : ''}`,
+          undefined,
+          visible.map((a) => a.text).join('\n'),
+          markLine(visible[0].text, 'add').anchor.slice(0, 30)
+        )
+      )
+    }
+    return
+  }
+
+  // 修改对
+  const n = Math.min(dels.length, adds.length)
+  for (let k = 0; k < n; k++) {
+    const del = dels[k]
+    const add = adds[k]
+    if (TABLE_RE.test(del.text) && TABLE_RE.test(add.text)) {
+      mergeTablePair(del, add, out, notes)
+      continue
+    }
+    const dw = del.words ?? []
+    const aw = add.words ?? []
+    // 中文友好行内 diff：共同前缀/后缀（porcelain words 对无空格中文不可靠）
+    const r = splitCommon(del.text, add.text)
+    if (r !== null) {
+      // 空 del/add 不生成标记（PM 不允许空文本节点）
+      const line = `${r.prefix}${r.del ? `{--${r.del}--}` : ''}${r.add ? `{++${r.add}++}` : ''}${r.suffix}`
+      if (r.del || r.add) {
+        out.push(line)
+        const noteText = r.del && r.add
+          ? `修改"${r.del}"为"${r.add}"`
+          : r.add
+            ? `新增"${r.add}"`
+            : `删除"${r.del}"`
+        notes.push(makeNote('word', noteText, r.del, r.add, line))
+      } else {
+        // 两行完全相同（理论上 diff 不产生）→ 原样
+        out.push(add.text)
+      }
+      continue
+    }
+    // 兜底：porcelain words 有共同 ctx 时
+    if (dw.length && aw.length && dw.some((w) => w.kind === 'ctx')) {
+      const merged = mergeWordsFallback(dw, aw)
+      if (merged !== null) {
+        out.push(merged)
+        continue
+      }
+    }
+    // 整行重写 → 行内 {--旧行--}{++新行++}
+    const line = `${del.text ? `{--${del.text}--}` : ''}${add.text ? `{++${add.text}++}` : ''}`
+    if (line) {
+      out.push(line)
+      notes.push(makeNote('block', '修改了此行', del.text, add.text, (add.text || del.text).slice(0, 30)))
+    }
+  }
+  // 多余 del / add（段首/段尾行数不对称）
+  for (const d of dels.slice(n)) {
+    if (d.text) out.push(markLine(d.text, 'del').text)
+  }
+  for (const a of adds.slice(n)) {
+    if (a.text) out.push(markLine(a.text, 'add').text)
+  }
 }
 
 // ---------- mermaid fence ----------
@@ -160,113 +281,6 @@ function handleMermaidFence(
   out.push(close)
   notes.push(makeNote('mermaid', `${label}：${parts.join('、')}`, undefined, undefined, `${label}节点`))
   mermaidList.push(d)
-}
-
-// ---------- 段处理 ----------
-
-function handleSeg(
-  seg: { dels: DiffLine[]; adds: DiffLine[] },
-  out: string[],
-  notes: DiffNote[],
-  mermaidList: MermaidNodeDiff[]
-) {
-  const { dels, adds } = seg
-  if (adds.length === 0) {
-    // 纯删除
-    out.push('')
-    out.push('```diff-del')
-    for (const d of dels) out.push(d.text)
-    out.push('```')
-    out.push('')
-    notes.push(
-      makeNote(
-        'block',
-        `删除了此段${dels.length > 1 ? `（${dels.length} 行）` : ''}`,
-        dels.map((d) => d.text).join('\n'),
-        undefined,
-        dels[0].text.slice(0, 30)
-      )
-    )
-    return
-  }
-  if (dels.length === 0) {
-    // 纯新增
-    out.push('')
-    out.push('```diff-add')
-    for (const a of adds) out.push(a.text)
-    out.push('```')
-    out.push('')
-    notes.push(
-      makeNote(
-        'block',
-        `新增了此段${adds.length > 1 ? `（${adds.length} 行）` : ''}`,
-        undefined,
-        adds.map((a) => a.text).join('\n'),
-        adds[0].text.slice(0, 30)
-      )
-    )
-    return
-  }
-  // 修改对
-  const n = Math.min(dels.length, adds.length)
-  for (let k = 0; k < n; k++) {
-    const del = dels[k]
-    const add = adds[k]
-    if (TABLE_RE.test(del.text) && TABLE_RE.test(add.text)) {
-      mergeTablePair(del, add, out, notes)
-      continue
-    }
-    const dw = del.words ?? []
-    const aw = add.words ?? []
-    // 中文友好行内 diff：共同前缀/后缀（porcelain words 对无空格中文不可靠）
-    const r = splitCommon(del.text, add.text)
-    if (r !== null) {
-      // 空 del/add 不生成标记（PM 不允许空文本节点）
-      const line = `${r.prefix}${r.del ? `{--${r.del}--}` : ''}${r.add ? `{++${r.add}++}` : ''}${r.suffix}`
-      if (r.del || r.add) {
-        out.push(line)
-        notes.push(makeNote('word', `修改"${r.del}"为"${r.add}"`, r.del, r.add, line))
-      } else {
-        // 两行完全相同（理论上 diff 不产生）→ 原样
-        out.push(add.text)
-      }
-      continue
-    }
-    // 兜底：porcelain words 有共同 ctx 时
-    if (dw.length && aw.length && dw.some((w) => w.kind === 'ctx')) {
-      const merged = mergeWordsFallback(dw, aw)
-      if (merged !== null) {
-        out.push(merged)
-        continue
-      }
-    }
-    // 整行重写 → 两个代码块（旧红 + 新绿）
-    out.push('')
-    out.push('```diff-del')
-    out.push(del.text)
-    out.push('```')
-    out.push('')
-    out.push('```diff-add')
-    out.push(add.text)
-    out.push('```')
-    out.push('')
-    notes.push(makeNote('block', '修改了此行', del.text, add.text, add.text.slice(0, 30)))
-  }
-  // 多余 del / add
-  if (dels.length > n) {
-    out.push('')
-    out.push('```diff-del')
-    for (const d of dels.slice(n)) out.push(d.text)
-    out.push('```')
-    out.push('')
-  }
-  if (adds.length > n) {
-    out.push('')
-    out.push('```diff-add')
-    for (const a of adds.slice(n)) out.push(a.text)
-    out.push('```')
-    out.push('')
-  }
 }
 
 // ---------- hunk 处理 ----------
@@ -322,7 +336,7 @@ function processHunk(
         adds.push(lines[j])
         j++
       }
-      handleSeg({ dels, adds }, out, notes, mermaidList)
+      handleSeg({ dels, adds }, out, notes)
       i = j
     }
   }

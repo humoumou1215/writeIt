@@ -29,28 +29,49 @@ export function detectMermaidType(src: string): MermaidNodeDiff['type'] {
   return 'unknown'
 }
 
+// M13：mermaid 节点级 diff——flowchart / sequenceDiagram / stateDiagram
+// M14：不再用 classDef/id:::class 标注源码（用户拍板）——
+//   合并源码 = 新版本源码 + 删除节点加回（原样语法），差异改由渲染后 DOM 标注（applyMermaidAnnotations）
+
 // ---------- flowchart ----------
 
 const FC_NODE_RE = /^\s*([A-Za-z0-9_]+)\s*(\[[^\]]*\]|\{[^}]*\}|\(\([^)]*\)\)|\(\[[^\]]*\]\)|\[\[[^\]]*\]\]|\([^)]*\))/
-const FC_EDGE_RE = /^\s*([A-Za-z0-9_]+)\s*(-->|---|==>|-.->)\s*(.*)$/
+const EDGE_SEP_RE = /(-->|---|==>|-.->)/
 const FC_KEYWORDS = new Set([
   'graph', 'flowchart', 'end', 'subgraph', 'direction', 'classDef', 'click', 'style', 'linkStyle',
 ])
 
-function extractFlowchartNodes(src: string): Map<string, string> {
-  const nodes = new Map<string, string>()
+interface FcNodeInfo {
+  label: string
+  /** 节点首次定义行（合并源码加回删除节点时用整行，保留边） */
+  line: string
+  /** 有形状定义（id[形状]）才算真实 label——裸 id 出现不视为修改 */
+  hasShape: boolean
+}
+
+/** 提取 flowchart 节点（id → label + 定义行）。
+ *  支持带边标签的行（B -- 是 --> C[...] / A -->|label| B）——M14 修复：
+ *  按边分隔符拆段逐段解析；有形状的节点定义优先，裸 id 不覆盖已有形状定义。 */
+function extractFlowchartNodes(src: string): Map<string, FcNodeInfo> {
+  const nodes = new Map<string, FcNodeInfo>()
   for (const line of src.split('\n')) {
-    const m = FC_NODE_RE.exec(line)
-    if (m && !FC_KEYWORDS.has(m[1])) {
-      nodes.set(m[1], m[2].slice(1, -1).trim())
-      continue
-    }
-    // 边行：A --> B / A -->|label| B（无形状节点也定义节点）
-    const em = FC_EDGE_RE.exec(line)
-    if (em && !FC_KEYWORDS.has(em[1])) {
-      nodes.set(em[1], em[1])
-      const tm = /^(?:\|[^|]*\|)?\s*([A-Za-z0-9_]+)/.exec(em[3])
-      if (tm && !FC_KEYWORDS.has(tm[1])) nodes.set(tm[1], tm[1])
+    const t = line.trim()
+    if (!t || FC_KEYWORDS.has(t.split(/\s+/)[0])) continue
+    for (let seg of t.split(EDGE_SEP_RE)) {
+      // 去掉边的 |label| 前缀（A -->|label| B）
+      seg = seg.replace(/^\|\[[^|]*\]\|/, '').trim()
+      if (!seg) continue
+      const m = FC_NODE_RE.exec(seg)
+      if (m && !FC_KEYWORDS.has(m[1])) {
+        const info = nodes.get(m[1])
+        if (info && info.hasShape) continue // 已有形状定义，裸后现不覆盖
+        nodes.set(m[1], { label: m[2].slice(1, -1).trim(), line, hasShape: true })
+        continue
+      }
+      const idm = /^([A-Za-z0-9_]+)/.exec(seg)
+      if (idm && !FC_KEYWORDS.has(idm[1]) && !nodes.has(idm[1])) {
+        nodes.set(idm[1], { label: idm[1], line, hasShape: false })
+      }
     }
   }
   return nodes
@@ -62,9 +83,13 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id, label] of newNodes) {
-    if (!oldNodes.has(id)) add.push(id)
-    else if (oldNodes.get(id) !== label) mod.push({ id, old: oldNodes.get(id)!, new: label })
+  for (const [id, info] of newNodes) {
+    const old = oldNodes.get(id)
+    if (!old) add.push(id)
+    else if (old.label !== info.label && old.hasShape && info.hasShape) {
+      // 两侧都有真实形状 label 且不同 → 修改
+      mod.push({ id, old: old.label, new: info.label })
+    }
   }
   for (const id of oldNodes.keys()) {
     if (!newNodes.has(id)) del.push(id)
@@ -75,38 +100,18 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
 
 function mergeFlowchart(
   newSrc: string,
-  oldNodes: Map<string, string>,
+  oldNodes: Map<string, FcNodeInfo>,
   diff: { add: string[]; del: string[]; mod: MermaidMod[] }
 ): string {
-  const out: string[] = [
-    'classDef diffAdd fill:#dff0d8,stroke:#3c763d,color:#2e5d2e',
-    'classDef diffDel fill:#f2dede,stroke:#a94442,color:#7a2a2a',
-    'classDef diffMod fill:#fdf6e3,stroke:#b58900,color:#7a5c00',
-  ]
-  const isChanged = (id: string) => diff.add.includes(id) || diff.mod.some((x) => x.id === id)
-  const cls = (id: string) =>
-    diff.add.includes(id) ? ':::diffAdd' : diff.mod.some((x) => x.id === id) ? ':::diffMod' : ''
-  for (const line of newSrc.split('\n')) {
-    const m = FC_NODE_RE.exec(line)
-    if (m && isChanged(m[1])) {
-      out.push(`${line}${cls(m[1])}`)
-      continue
-    }
-    // 边行：目标节点标注（A --> B:::diffAdd）
-    const em = FC_EDGE_RE.exec(line)
-    if (em) {
-      const tm = /^(?:\|[^|]*\|)?\s*([A-Za-z0-9_]+)/.exec(em[3])
-      if (tm && isChanged(tm[1])) {
-        out.push(`${line}${cls(tm[1])}`)
-        continue
-      }
-    }
-    out.push(line)
-  }
-  // 删除节点加回（保持可见，红底划线）
+  const out = newSrc.split('\n')
+  // 删除节点加回（原定义行含边，保持可见；渲染后 DOM 标注红标）——不带任何标注语法（M14）
+  const addedLines = new Set<string>()
   for (const id of diff.del) {
-    const label = oldNodes.get(id)
-    if (label !== undefined) out.push(`${id}[${label}]:::diffDel`)
+    const info = oldNodes.get(id)
+    if (info && !addedLines.has(info.line)) {
+      out.push(info.line)
+      addedLines.add(info.line)
+    }
   }
   return out.join('\n')
 }
@@ -192,11 +197,16 @@ function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
 
 const ST_RE = /^\s*state\s+(?:"([^"]*)"\s+as\s+)?(\w+)/
 
-function extractStates(src: string): Map<string, string> {
-  const states = new Map<string, string>()
+interface StNodeInfo {
+  label: string
+  line: string
+}
+
+function extractStates(src: string): Map<string, StNodeInfo> {
+  const states = new Map<string, StNodeInfo>()
   for (const line of src.split('\n')) {
     const m = ST_RE.exec(line)
-    if (m) states.set(m[2], m[1] ?? m[2])
+    if (m) states.set(m[2], { label: m[1] ?? m[2], line })
   }
   return states
 }
@@ -207,9 +217,9 @@ function diffState(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id, label] of newStates) {
+  for (const [id, info] of newStates) {
     if (!oldStates.has(id)) add.push(id)
-    else if (oldStates.get(id) !== label) mod.push({ id, old: oldStates.get(id)!, new: label })
+    else if (oldStates.get(id)!.label !== info.label) mod.push({ id, old: oldStates.get(id)!.label, new: info.label })
   }
   for (const id of oldStates.keys()) if (!newStates.has(id)) del.push(id)
   const merged = mergeState(newSrc, oldStates, { add, del, mod })
@@ -218,23 +228,18 @@ function diffState(oldSrc: string, newSrc: string): MermaidNodeDiff {
 
 function mergeState(
   newSrc: string,
-  oldStates: Map<string, string>,
+  oldStates: Map<string, StNodeInfo>,
   diff: { add: string[]; del: string[]; mod: MermaidMod[] }
 ): string {
-  const out: string[] = [
-    'classDef diffAdd fill:#dff0d8,stroke:#3c763d,color:#2e5d2e',
-    'classDef diffDel fill:#f2dede,stroke:#a94442,color:#7a2a2a',
-    'classDef diffMod fill:#fdf6e3,stroke:#b58900,color:#7a5c00',
-  ]
-  for (const line of newSrc.split('\n')) {
-    const m = ST_RE.exec(line)
-    if (m && diff.add.includes(m[2])) out.push(line + ':::diffAdd')
-    else if (m && diff.mod.some((x) => x.id === m[2])) out.push(line + ':::diffMod')
-    else out.push(line)
-  }
+  const out = newSrc.split('\n')
+  // 删除状态加回（原定义行，渲染后 DOM 标注）
+  const addedLines = new Set<string>()
   for (const id of diff.del) {
-    const label = oldStates.get(id)
-    if (label !== undefined) out.push(`state "${label}" as ${id}:::diffDel`)
+    const info = oldStates.get(id)
+    if (info && !addedLines.has(info.line)) {
+      out.push(info.line)
+      addedLines.add(info.line)
+    }
   }
   return out.join('\n')
 }

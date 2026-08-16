@@ -56,6 +56,16 @@ interface Instance {
 
 const instances = new Map<string, Instance>()
 
+// M14：diff 渲染模式 Crepe 实例注册（批注抽屉在 diff 模式下用它做定位/连线）
+const renderInstances = new Map<string, Crepe>()
+export function registerRenderInstance(tabId: string, crepe: Crepe | null): void {
+  if (crepe) renderInstances.set(tabId, crepe)
+  else renderInstances.delete(tabId)
+}
+export function getRenderInstance(tabId: string): Crepe | null {
+  return renderInstances.get(tabId) ?? null
+}
+
 // ---------- M7：源码查看模式（Ctrl+E 切换） ----------
 // 每标签独立视图模式：源码 = 容器内 textarea 覆盖层（不销毁 Crepe 实例），
 // 进入时 getMarkdown()（canonical）填入，退出时 replaceAll() 解析回 doc。

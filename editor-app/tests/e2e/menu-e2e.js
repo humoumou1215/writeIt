@@ -36,7 +36,7 @@ const { chromium } = require('playwright');
   };
 
   // 打开测试文件
-  await page.locator('.sidebar-actions .mini', { hasText: '＋文件' }).click();
+  await page.locator('.sidebar-actions .mini[title="新建文件"]').click();
   await page.waitForTimeout(300);
   await page.locator('.tree .rename-input').fill('菜单测试.md');
   await page.keyboard.press('Enter');
@@ -73,7 +73,8 @@ const { chromium } = require('playwright');
   await page.keyboard.type('会议');
   await page.waitForTimeout(300);
   const filtered = await entryLabels();
-  check('过滤显示 笔记/会议记录', filtered.length === 1 && filtered[0].includes('笔记/会议记录'));
+  // M14：Git 演示仓库新增 Git演示/笔记/会议纪要.md → 过滤 '会议' 命中 2 个（原断言 length===1 需适配）
+  check('过滤显示 笔记/会议记录（含 Git 演示同名）', filtered.length >= 2 && filtered.some(t => t.includes('笔记/会议记录')) && filtered.some(t => t.includes('Git演示/笔记/会议纪要')));
   await page.keyboard.press('Backspace');
   await page.waitForTimeout(300);
   const h6AfterBs = await page.locator('[data-ref-menu] .menu-group h6').textContent();
@@ -84,7 +85,8 @@ const { chromium } = require('playwright');
   check('清空过滤回到树', (await entryLabels()).some(t => t === '笔记'));
 
   // ===== 4. Enter 文件 → 实体级（Obsidian：首项=文件本身）→ Enter 插入链接 =====
-  await page.keyboard.type('会议');
+  // M14：Git 演示同名文件存在 → 用更精确的过滤词「会议记录」只命中 fs 演示文件
+  await page.keyboard.type('记录');
   await page.waitForTimeout(300);
   await page.keyboard.press('Enter');
   await page.waitForTimeout(800);

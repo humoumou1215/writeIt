@@ -25,7 +25,8 @@ const width = ref(Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
 const anns = ref<Annotation[]>([])
 const activeId = ref<string | null>(null)
 const draft = ref<Record<string, string>>({}) // 卡 id → 回复草稿
-const collapsed = ref<Record<string, boolean>>({}) // 卡 id → 折叠（折叠时不显示评论输入框）
+// v6：当前展开的人工批注卡 id——默认全部收起，只有点击卡片时才展开（点击其他卡/外部收起）
+const expandedId = ref<string | null>(null)
 let unsub: (() => void) | null = null
 
 const activeTabId = computed(() => state.activeTabId)
@@ -34,6 +35,14 @@ async function refresh() {
   const tabId = state.activeTabId
   if (!tabId) {
     anns.value = []
+    return
+  }
+  // M14：diff 模式下只显示 diff 改动批注（运行时 source='diff'，定位在渲染 Crepe doc）
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (tab?.viewMode === 'diff') {
+    const { getRuntimeAnnotations } = await import('../annotations/service')
+    anns.value = getRuntimeAnnotations(tabId).filter((a) => a.source === 'diff')
+    activeId.value = getActiveAnnotationId()
     return
   }
   const { getActiveInstance } = await import('../editor/manager')
@@ -51,16 +60,32 @@ onMounted(() => {
   unsub = subscribeAnnotations(refresh)
   refresh()
   window.addEventListener('resize', refresh)
+  document.addEventListener('click', onDocClick, true)
 })
 onBeforeUnmount(() => {
   unsub?.()
   window.removeEventListener('resize', refresh)
+  document.removeEventListener('click', onDocClick, true)
 })
-watch(activeTabId, refresh)
+watch(activeTabId, () => {
+  expandedId.value = null // 切换标签：全部收起
+  refresh()
+})
+
+// v6：只有被点击的卡片才展开——点击卡片外部（或切换到其他卡片）时收起当前展开的人工批注卡
+function onDocClick(e: MouseEvent) {
+  const t = e.target as HTMLElement | null
+  const card = t?.closest?.('.ad-card') as HTMLElement | null
+  // 点击当前展开卡内部（评论/输入框/头部）→ 保持展开；头部展开/收起由 locate 处理
+  if (card && expandedId.value === card.dataset.id) return
+  expandedId.value = null
+}
 
 const errorCount = computed(() => anns.value.filter((a) => a.level === 'error').length)
 const warningCount = computed(() => anns.value.filter((a) => a.level === 'warning').length)
 const commentCount = computed(() => anns.value.filter((a) => a.level === 'comment').length)
+/** M14：diff 改动说明卡计数（level=info + source=diff） */
+const infoCount = computed(() => anns.value.filter((a) => a.source === 'diff' || a.level === 'info').length)
 
 // ---------- 用户名（tauri git / 设置） ----------
 const userName = ref(settings.annotationUsername || '我')
@@ -102,8 +127,13 @@ async function toggleResolved(ann: Annotation, c: Comment) {
 
 /** 点击批注卡 = 定位 + 激活（显示该卡连线）+ 展开/折叠 */
 async function locate(ann: Annotation) {
-  if (ann.from >= 0) {
-    const tabId = state.activeTabId
+  const tabId = state.activeTabId
+  const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
+  if (tab?.viewMode === 'diff') {
+    // M14：diff 模式 → 渲染 Crepe doc 定位（滚动 .render-main + 激活）
+    if (tabId) setActiveAnnotation(tabId, ann.id)
+    if (ann.from >= 0) await locateDiff(ann)
+  } else if (ann.from >= 0) {
     if (tabId) {
       setActiveAnnotation(tabId, ann.id)
       const { scrollToPos } = await import('../editor/manager')
@@ -111,10 +141,39 @@ async function locate(ann: Annotation) {
     }
   } else {
     // 无锚点（如缺需求表整体违规）：仅激活 + 展开
-    const tabId = state.activeTabId
     if (tabId) setActiveAnnotation(tabId, ann.id)
   }
-  collapsed.value[ann.id] = !collapsed.value[ann.id]
+  // v6：只有被点击的人工批注卡展开；再点收起（只读卡无展开概念）
+  if (ann.level === 'comment') {
+    expandedId.value = expandedId.value === ann.id ? null : ann.id
+  }
+}
+
+/** M14：diff 模式定位——渲染 Crepe coordsAtPos → 滚动 .render-main 到锚点 */
+async function locateDiff(ann: Annotation) {
+  const tabId = state.activeTabId
+  if (!tabId || ann.from < 0) return
+  const { getRenderInstance } = await import('../editor/manager')
+  const crepe = getRenderInstance(tabId)
+  if (!crepe) return
+  const { editorViewCtx } = await import('@milkdown/kit/core')
+  try {
+    crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const pos = Math.min(ann.from, view.state.doc.content.size)
+      const c = view.coordsAtPos(pos)
+      const container = document.querySelector('.git-diff-view .render-main') as HTMLElement | null
+      if (container) {
+        const cr = container.getBoundingClientRect()
+        container.scrollTo({
+          top: container.scrollTop + (c.top - cr.top) - container.clientHeight * 0.2,
+          behavior: 'smooth',
+        })
+      }
+    })
+  } catch {
+    /* 渲染编辑器已销毁 */
+  }
 }
 
 /** 回复输入：Ctrl/Cmd+Enter 提交；Enter 换行；ESC 清空草稿 */
@@ -161,29 +220,39 @@ function drawConnector() {
   const path = connector.value
   const drawer = drawerEl.value
   const active = anns.value.find((a) => a.id === activeId.value)
-  if (!svg || !path || !drawer || !active) {
+  if (!svg || !path || !drawer || !active || active.from < 0) {
     if (svg) svg.style.display = 'none'
     return
   }
   void (async () => {
     const m = await import('../editor/manager')
-    const inst = m.getActiveInstance()
-    if (!inst) return
+    const tabId = state.activeTabId
+    const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
+    // M14：diff 模式下用渲染 Crepe（doc = 组合 md）；否则主编辑器
+    const crepe =
+      tab?.viewMode === 'diff'
+        ? m.getRenderInstance(tabId ?? '')
+        : m.getActiveInstance()?.crepe ?? null
+    if (!crepe) return
     const { editorViewCtx } = await import('@milkdown/kit/core')
-    inst.crepe.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      let anchorRect: DOMRect
-      const dom = view.domAtPos(Math.min(active.from, view.state.doc.content.size))
-      const el = (dom.node as HTMLElement)?.closest?.('mark.annotation, .annotation-dynamic') as HTMLElement | null
-      if (el && el.getBoundingClientRect().width) {
-        anchorRect = el.getBoundingClientRect()
-      } else {
-        const c = view.coordsAtPos(active.from)
-        anchorRect = {
-          left: c.left, right: c.right, top: c.top, bottom: c.bottom,
-          width: c.right - c.left, height: c.bottom - c.top,
-        } as DOMRect
-      }
+    try {
+      crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        let anchorRect: DOMRect
+        const pos = Math.min(active.from, view.state.doc.content.size)
+        const dom = view.domAtPos(pos)
+        const el = (dom.node as HTMLElement)?.closest?.(
+          'mark.annotation, .annotation-dynamic, .diff-del, .diff-ins'
+        ) as HTMLElement | null
+        if (el && el.getBoundingClientRect().width) {
+          anchorRect = el.getBoundingClientRect()
+        } else {
+          const c = view.coordsAtPos(pos)
+          anchorRect = {
+            left: c.left, right: c.right, top: c.top, bottom: c.bottom,
+            width: c.right - c.left, height: c.bottom - c.top,
+          } as DOMRect
+        }
       const drawerRect = drawer.getBoundingClientRect()
       const x1 = drawerRect.left
       const y1 = drawerRect.top + drawerRect.height / 2
@@ -191,10 +260,13 @@ function drawConnector() {
       const y2 = anchorRect.top + Math.min(anchorRect.height, 24) / 2
       const cx = (x1 + x2) / 2
       path.setAttribute('d', `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`)
-      path.setAttribute('stroke', LEVEL_COLOR[active.level])
-      svg.style.display = 'block'
-      svg.classList.remove('annotation-connector-strong')
-    })
+        path.setAttribute('stroke', LEVEL_COLOR[active.level])
+        svg.style.display = 'block'
+        svg.classList.remove('annotation-connector-strong')
+      })
+    } catch {
+      /* 编辑器已销毁 */
+    }
   })()
 }
 
@@ -250,9 +322,9 @@ function onAnchorHover(strong: boolean) {
   <div v-if="state.activeTabId" class="annotation-drawer" :class="{ open }" :style="{ width: open ? width + 'px' : '0px' }">
     <!-- 折叠态：右下角小胶囊按钮（不占布局空间，不再是一整条竖栏） -->
     <button v-if="!open" class="annotation-open-btn" title="展开批注抽屉" @click="open = true">
-      <span class="dot" :class="{ has: commentCount + errorCount + warningCount > 0 }"></span>
+      <span class="dot" :class="{ has: commentCount + errorCount + warningCount + infoCount > 0 }"></span>
       <span>批注</span>
-      <span v-if="commentCount + errorCount + warningCount > 0" class="badge">{{ commentCount + errorCount + warningCount }}</span>
+      <span v-if="commentCount + errorCount + warningCount + infoCount > 0" class="badge">{{ commentCount + errorCount + warningCount + infoCount }}</span>
     </button>
 
     <div v-else class="annotation-drawer-body" ref="drawerEl">
@@ -263,9 +335,15 @@ function onAnchorHover(strong: boolean) {
           <span v-if="commentCount" class="ok">{{ commentCount }}</span>
           <span v-if="warningCount" class="warn">{{ warningCount }}</span>
           <span v-if="errorCount" class="err">{{ errorCount }}</span>
+          <span v-if="infoCount" class="info">📝{{ infoCount }}</span>
         </span>
         <div class="ad-head-actions">
-          <button class="ad-icon-btn refresh" title="重新校验" @click="revalidate">
+          <button
+            v-if="state.activeTabId && state.tabs.find(t => t.id === state.activeTabId)?.viewMode !== 'diff'"
+            class="ad-icon-btn refresh"
+            title="重新校验"
+            @click="revalidate"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
           </button>
           <button class="ad-icon-btn" title="折叠抽屉" @click="open = false">
@@ -281,7 +359,7 @@ function onAnchorHover(strong: boolean) {
           暂无批注。<br />选中文本后使用工具栏「添加批注」，或从模板文件触发校验。
         </div>
 
-        <!-- 校验违规卡（只读；点击卡片 = 定位） -->
+        <!-- 只读卡（校验违规 / M14 diff 改动说明；点击卡片 = 定位） -->
         <div
           v-for="a in anns.filter(x => x.level !== 'comment')"
           :key="a.id"
@@ -290,11 +368,17 @@ function onAnchorHover(strong: boolean) {
           @mouseenter="onCardHover(true)"
           @mouseleave="onCardHover(false)"
           @click="locate(a)"
-          :title="a.from >= 0 ? '点击定位到违规位置' : ''"
+          :title="a.from >= 0 ? (a.source === 'diff' ? '点击定位到改动位置' : '点击定位到违规位置') : ''"
         >
           <div class="ad-card-head">
-            <span class="ad-ic" :class="a.level">{{ a.level === 'error' ? '⛔' : '⚠️' }}</span>
-            <span class="ad-card-title">校验提示</span>
+            <template v-if="a.source === 'diff'">
+              <span class="ad-ic info">📝</span>
+              <span class="ad-card-title">改动说明</span>
+            </template>
+            <template v-else>
+              <span class="ad-ic" :class="a.level">{{ a.level === 'error' ? '⛔' : '⚠️' }}</span>
+              <span class="ad-card-title">校验提示</span>
+            </template>
           </div>
           <div class="ad-card-content">{{ a.thread[0]?.content }}</div>
         </div>
@@ -304,7 +388,8 @@ function onAnchorHover(strong: boolean) {
           v-for="a in anns.filter(x => x.level === 'comment')"
           :key="a.id"
           class="ad-card"
-          :class="{ active: a.id === activeId, resolved: a.thread.every(c => c.resolved), collapsed: collapsed[a.id] }"
+          :data-id="a.id"
+          :class="{ active: a.id === activeId, resolved: a.thread.every(c => c.resolved), collapsed: expandedId !== a.id }"
           @mouseenter="onCardHover(true)"
           @mouseleave="onCardHover(false)"
         >
@@ -312,7 +397,7 @@ function onAnchorHover(strong: boolean) {
             <span class="ad-ic comment">💬</span>
             <span class="ad-anchor" :title="a.anchorText">{{ a.anchorText || '（无锚定文本）' }}</span>
             <span class="ad-comment-count">{{ a.thread.length }} 条</span>
-            <span class="ad-fold">{{ collapsed[a.id] ? '▸' : '▾' }}</span>
+            <span class="ad-fold">{{ expandedId === a.id ? '▾' : '▸' }}</span>
           </div>
           <div class="ad-thread">
               <div v-for="c in a.thread" :key="c.id" class="ad-comment" :class="{ resolved: c.resolved }">
@@ -333,8 +418,8 @@ function onAnchorHover(strong: boolean) {
                 </div>
               </div>
             </div>
-            <!-- 回复输入（折叠时隐藏；Ctrl+Enter 提交 / Enter 换行 / ESC 清空） -->
-            <div v-if="!collapsed[a.id]" class="ad-reply">
+            <!-- 回复输入（v6：仅点击展开时显示；Ctrl+Enter 提交 / Enter 换行 / ESC 清空） -->
+            <div v-if="expandedId === a.id" class="ad-reply">
               <textarea
                 v-model="draft[a.id]"
                 rows="2"
@@ -369,6 +454,10 @@ function onAnchorHover(strong: boolean) {
   background: var(--chrome-surface);
 }
 .annotation-drawer-body {
+  /* 撑满抽屉宽度：flex-basis 为 0 避免按内容 max-content 收缩（短内容时右边空出） */
+  flex: 1;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -439,6 +528,7 @@ function onAnchorHover(strong: boolean) {
 .ad-counts .err { color: var(--chrome-error, #ba1a1a); }
 .ad-counts .warn { color: #e6a23c; }
 .ad-counts .ok { color: var(--chrome-primary, #4caf50); }
+.ad-counts .info { color: #8a8a8a; font-size: 11px; }
 /* 头部图标按钮组（刷新/折叠）——融入主题：颜色/悬停/强调色全部来自 --chrome-* */
 .ad-head-actions {
   display: flex;
@@ -520,6 +610,7 @@ function onAnchorHover(strong: boolean) {
 .ad-ic { font-size: 12px; }
 .ad-ic.error { color: var(--chrome-error, #ba1a1a); }
 .ad-ic.warning { color: #e6a23c; }
+.ad-ic.info { color: #8a8a8a; }
 .ad-card-title {
   font-weight: 600;
   color: var(--chrome-on-surface);

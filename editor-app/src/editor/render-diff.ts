@@ -2,6 +2,7 @@
 // 流程：composeDiff（hunks+words → 组合 md + 批注卡）→ 单 readonly Crepe（+ diff 节点插件）直接渲染
 // 降级链：Crepe 失败/渲染异常 → 双栏全文对比（renderSplitFallback）
 import { Crepe } from '@milkdown/crepe'
+import { editorViewCtx } from '@milkdown/kit/core'
 import { refPlugin, refConfigCtx, type RefConfig } from './ref'
 import { resolveRefs } from './ref/resolve'
 import { registerRefStringify } from './ref/stringify'
@@ -16,6 +17,7 @@ export interface RenderDiffOptions {
   newMd: string
   hunks: DiffHunk[]
   refCfg: RefConfig
+  path: string
   onFallback?: (reason: string) => void
 }
 
@@ -27,6 +29,8 @@ export interface RenderDiffResult {
   handle: RenderDiffHandle
   notes: DiffNote[]
   mermaid: MermaidNodeDiff[]
+  /** M14：渲染 Crepe 实例（批注抽屉定位/连线用；调用方负责 register/destroy） */
+  crepe: Crepe
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -34,7 +38,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** 等待 mermaid 预览渲染（renderPreview 异步） */
 async function waitForRender(host: HTMLElement, waitMs = 2500): Promise<boolean> {
   const start = Date.now()
-  const ready = () => !!host.querySelector('.mermaid, svg[data-processed], .preview-container')
+  const ready = () => !!host.querySelector('.mermaid, svg[data-processed], .preview-container, .preview svg, .mmd-zoomable')
   await sleep(200)
   if (ready()) return true
   while (Date.now() - start < waitMs) {
@@ -88,29 +92,67 @@ async function mountRenderCrepe(
   }
 }
 
-/** fenced code 块标注：diff-add / diff-del 语言 → 加类（绿/红底） */
-function annotateDiffCodeBlocks(target: HTMLElement) {
-  target.querySelectorAll('.milkdown-code-block').forEach((el) => {
-    const btn = el.querySelector('.language-button')
-    const lang = (btn?.textContent ?? '').trim().toLowerCase()
-    if (lang === 'diff-add') el.classList.add('diff-code-add')
-    else if (lang === 'diff-del') el.classList.add('diff-code-del')
-  })
-}
-
-/** sequence 图：渲染后按消息文本定位 SVG 元素加 class（flowchart/state 用 classDef，无需操作） */
+/** mermaid 渲染后 DOM 标注（M14：不用 classDef/id:::class 语法）：
+ *  flowchart / stateDiagram → 按节点 id 定位 SVG <g> 元素加 class（add 绿 / del 红 / mod 黄）
+ *  sequence → 按消息文本定位加 class（M13 保留） */
 function applyMermaidAnnotations(target: HTMLElement, mermaidList: MermaidNodeDiff[]) {
   for (const d of mermaidList) {
-    if (d.type !== 'sequence' || !d.messages?.length) continue
-    const svg = target.querySelector('.mermaid svg, svg[data-processed]') as HTMLElement | null
+    const svg = target.querySelector(
+      '.mermaid svg, svg[data-processed], .preview svg, .mmd-zoomable svg'
+    ) as HTMLElement | null
     if (!svg) continue
-    for (const msg of d.messages) {
-      const el = [...svg.querySelectorAll('text, tspan, div')].find((e) =>
-        (e.textContent || '').includes(msg.text)
-      )
-      if (el) el.classList.add(msg.kind === 'add' ? 'diff-seq-add' : 'diff-seq-mod')
+    if (d.type === 'sequence') {
+      if (!d.messages?.length) continue
+      for (const msg of d.messages) {
+        const el = [...svg.querySelectorAll('text, tspan, div')].find((e) =>
+          (e.textContent || '').includes(msg.text)
+        )
+        if (el) el.classList.add(msg.kind === 'add' ? 'diff-seq-add' : 'diff-seq-mod')
+      }
+      continue
     }
+    if (d.type !== 'flowchart' && d.type !== 'state') continue
+    const prefix = d.type === 'flowchart' ? 'flowchart' : 'state'
+    // 变更节点：新增绿 / 删除红 / 修改黄
+    // <g class="node|state"> 的 id 形如 "mmd-N-flowchart-A-0"（带 mermaid 实例前缀）→ 子串匹配
+    const nodes = [...svg.querySelectorAll('g.node, g.state')] as HTMLElement[]
+    const apply = (id: string, cls: string) => {
+      if (!id) return
+      const el = nodes.find((g) => {
+        const gid = g.id || ''
+        return gid.includes(`-${prefix}-${id}-`) || gid.endsWith(`-${prefix}-${id}`)
+      })
+      if (el) el.classList.add(cls)
+    }
+    for (const id of d.add) apply(id, 'diff-node-add')
+    for (const id of d.del) apply(id, 'diff-node-del')
+    for (const m of d.mod) apply(m.id, 'diff-node-mod')
   }
+}
+
+/** M14：嵌入块源文件有未提交改动 → 卡片右上角「内容有改动」角标（场景 A 角标方案） */
+async function annotateEmbedDiffBadges(target: HTMLElement) {
+  const { git } = await import('../git')
+  if (!git.available) return
+  let changed: string[] = []
+  try {
+    changed = (await git.status()).map((s) => s.path)
+  } catch {
+    return
+  }
+  if (!changed.length) return
+  target.querySelectorAll('.ref-file-block').forEach((card) => {
+    if (card.querySelector('.ref-embed-diff-badge')) return
+    const p = card.querySelector('.ref-file-block-path')?.textContent?.trim() ?? ''
+    if (!p) return
+    if (changed.some((sp) => sp === p || sp.endsWith('/' + p))) {
+      const b = document.createElement('span')
+      b.className = 'ref-embed-diff-badge'
+      b.textContent = '内容有改动'
+      b.title = `源文件 ${p} 有未提交改动`
+      card.appendChild(b)
+    }
+  })
 }
 
 /** 渲染单 Crepe 组合 md 到 target。返回句柄 + 批注卡 + mermaid 变更（调用方负责 destroy） */
@@ -130,14 +172,15 @@ export async function renderDiffToContainer(
       return null
     }
     await waitForRender(target, 2500)
-    // CodeMirror 语言按钮可能晚于 mermaid 渲染 → 轮询标注
+    // mermaid 渲染完成 + 节点标注（异步）→ 立即 + 轮询补标
     const annotateNow = () => {
-      annotateDiffCodeBlocks(target)
       applyMermaidAnnotations(target, mermaid)
+      void annotateEmbedDiffBadges(target)
     }
     annotateNow()
     setTimeout(annotateNow, 400)
     setTimeout(annotateNow, 1200)
+    setTimeout(annotateNow, 2500)
     return {
       handle: {
         destroy: () => {
@@ -146,6 +189,7 @@ export async function renderDiffToContainer(
       },
       notes,
       mermaid,
+      crepe,
     }
   } catch (e) {
     console.warn('[render-diff] 渲染异常:', e)

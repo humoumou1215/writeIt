@@ -4,6 +4,12 @@ import type { FileSystem, FsEntry, FsBackendKind } from './types'
 import { shouldShowInTree, dirName, baseName } from './types'
 import mermaidMd from '../editor/mermaid.md?raw'
 import { DEMO_FILES, DEMO_DIRS } from './mock-samples.generated'
+// M14：Git 演示仓库（git/mock-data 真实 git diff 数据）——文件树可见，内容与工作区一致
+import {
+  README_WORKTREE as GIT_DEMO_README,
+  MEETING_WORKTREE as GIT_DEMO_MEETING,
+  TABLE_WORKTREE as GIT_DEMO_TABLE,
+} from '../git/mock-data'
 
 const KEY = 'milkdown-note-mock-fs-v2'
 
@@ -46,6 +52,10 @@ console.log('hello milkdown note')
 Milkdown 也能编辑 txt，以 Markdown 语法渲染。
 
 2026-08-11 00:00`,
+  // M14：Git 演示仓库文件（与 git/mock-data 工作区版本一致）
+  'Git演示/README.md': GIT_DEMO_README,
+  'Git演示/笔记/会议纪要.md': GIT_DEMO_MEETING,
+  'Git演示/数据/需求表.md': GIT_DEMO_TABLE,
   '.template/demo/demo.md': `doctype:demo
 
 # 周报模板
@@ -234,6 +244,9 @@ const MOCK_EXTRA_DIRS: string[] = [
   '.template/demo',
   '数据',
   '笔记',
+  'Git演示',
+  'Git演示/笔记',
+  'Git演示/数据',
 ]
 const SAMPLE_DIRS: string[] = [...DEMO_DIRS, ...MOCK_EXTRA_DIRS]
 
@@ -422,6 +435,38 @@ function load(): MockData {
 
 function persist(data: MockData) {
   localStorage.setItem(KEY, JSON.stringify(data))
+}
+
+/**
+ * 刷新 Mock 本地缓存：把最新 SAMPLE（demo 示例 + mock 专有演示）全量合并回 localStorage。
+ * 与 load() 的增量同步不同：被用户删除的示例文件也会恢复、内容按最新示例覆盖
+ * （显式刷新 = 回到最新示例状态）；用户自建文件（无 fileHash 记录）保留。
+ * 返回统计供 toast 展示。
+ */
+export function refreshMockSamples(): { files: number; dirs: number; updated: number } {
+  const data = load()
+  data.fileHash = data.fileHash ?? {}
+  let updated = 0
+  for (const [path, content] of Object.entries(SAMPLE)) {
+    const h = hash(content)
+    if (data.files[path] !== content) updated++
+    data.files[path] = content
+    data.fileHash[path] = h
+  }
+  // demo 中已不存在的同步文件（曾由示例同步）→ 一并移除
+  for (const path of Object.keys(data.files)) {
+    if (data.fileHash[path] !== undefined && !(path in SAMPLE)) {
+      delete data.files[path]
+      delete data.fileHash[path]
+    }
+  }
+  for (const dir of SAMPLE_DIRS) {
+    if (!data.dirs.includes(dir)) data.dirs.push(dir)
+  }
+  data.seeded = true
+  data.seededVersion = SEED_VERSION
+  persist(data)
+  return { files: Object.keys(SAMPLE).length, dirs: SAMPLE_DIRS.length, updated }
 }
 
 /** 诊断钩子（用户反馈 template 目录空时，可复制 console 输出提供） */

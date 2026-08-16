@@ -392,8 +392,8 @@ file_block : block,        content: 'block+',                    // ![[…]]
 
 ## 11. v1 里程碑拆解
 
-> 状态：**M1-M7 已完成并全量回归通过**（M7：源码查看模式 Ctrl+E 切换所见即所得/源码；M7b：文件树拖拽移动 + 瞄准定位）。
-> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 9/9、m6c 20/20、m6d 10/10、source 26/26、**drag 31/31**、app 28/28
+> 状态：**M1-M7 已完成并全量回归通过**（M7：源码查看模式 Ctrl+E 切换所见即所得/源码；M7b：文件树拖拽移动 + 瞄准定位）。M10-M14 亦完成（导出/M11 Git 工作台/M12 浏览器演示/M13 单 Crepe 组合 md/M14 全内联+mermaid DOM 标注+批注复用+mock 真实化——见 [git-workbench.md](git-workbench.md)）。
+> 测试：ref 15/15、menu 26/26、m3 9/9、m4 13/13、m4b 9/9、m4c 6/6、m5 9/9、m5-strict 3/3、m6 6/6、m6-toolbar 9/9、m6c 28/28、m6d 10/10、source 26/26、drag 31/31、git-m11a-e2e 61/61、git-m11a-smoke 35/35、app 32/32
 
 ### 里程碑状态
 
@@ -492,6 +492,29 @@ file_block : block,        content: 'block+',                    // ![[…]]
 2. **评论输入**：Enter 换行 / **Ctrl+Enter（或 Cmd+Enter）提交** / **ESC 清空草稿**——改为显式 @keydown 处理（onReplyKeydown），不再依赖 Vue 修饰符；添加批注浮窗（showAnnotationInput）也支持 ESC 关闭
 3. **点击批注卡 = 定位 + 激活（显示该卡连线）+ 折叠切换**：locate() 增加 setActiveAnnotation（连线跟随点击的卡片）；无锚点整体违规仅激活+展开
 4. 测试：m6c 20/20、m6-toolbar 9/9（含 Enter 换行/ESC/Ctrl+Enter/Ctrl+R）
+
+**M6 v6（批注卡交互优化 + 抽屉宽度修复，按用户反馈）**：
+
+1. **抽屉宽度 bugfix**：`.annotation-drawer-body` 是 `.annotation-drawer`（row flex）的子元素，默认 `flex: 0 1 auto` → `flex-basis: auto` 按内容 max-content 计算宽度，批注内容短时 body 收缩、卡片右边空出（“有时候”出现 = 取决于内容长度）。修复：body 加 `flex: 1; min-width: 0; width: 100%`（basis 0 撑满抽屉宽）；m6c 新增回归断言「抽屉 body 撑满宽度（无右侧空隙）」
+2. **卡片展开态改造**：`collapsed: Record<id, boolean>`（默认全展开、点击头部折叠）→ `expandedId: string | null`（默认全部收起，**只有被点击时才展开**）。规则：点击人工批注卡头部 = 定位 + 激活 + 展开自己（再点收起）；点击其他卡片（含只读卡）或卡片外部（编辑器/抽屉头部/空白）→ 收起当前展开卡（document click capture 监听，排除当前展开卡内部）；点击输入框/评论区保持展开不打断输入；切换标签重置收起；校验违规只读卡无展开概念（点击仅定位+激活）
+3. 测试：m6c 28/28（新增 body 宽度断言 + 激活后默认收起/点其他卡收起断言）、m6-toolbar 9/9（点击头部展开后操作回复框）；m6 6/6、m5 9/9、m5-strict 3/3 同步回归通过
+
+**M6 v7（代码块整块批注，变体 D，按用户拍板）**：
+
+1. **问题**：mermaid（及任意代码块）内选中文本添加批注 → `addAnnotation` 把 inline 的 annotation 节点插进 code_block（schema `content: 'text*'` 只允许纯文本）→ 序列化畸形：代码块在 `<mark>` 前提前闭合、内容散落成普通段落 → mermaid 代码块变空，预览报 `No diagram type detected`；round-trip 后 markdown 永久损坏
+2. **方案（变体 D：自动升级为整块批注）**：选区涉及 code_block 时（`findCodeBlockInSelection`，部分或整体覆盖均命中）→ 批注锚定整个代码块：锚点文本 = 摘要（`makeCodeBlockAnchorText`：`代码块 (语言)：首行`，首行截断 24 字符），批注节点插入代码块**上方**新段落（`addBlockAnnotation`：`tr.insert(codeBlockPos, paragraph[annotation[摘要]])`，dispatch 后按节点对象引用重定位，返回 `shift` = 插入段落 nodeSize）
+3. **输入浮窗提示**：块级模式下 placeholder 改为「代码块内批注将以整个代码块为锚点；esc取消，enter确认」；提交后光标恢复到代码块内原选区（`inputFrom/to + shift`）
+4. **删除清理**：`removeAnnotationNode` 扩展——段落只含该 mark（块级摘要段落）→ 删除 mark 后整个段落一并删除（避免残留孤儿摘要）；普通批注仍保留锚定文本
+5. **入口**：Ctrl+R 与工具栏「添加批注」统一走 `showAnnotationInput`，内部检测；代码块摘要段落随保存正常 round-trip（`paragraph[annotation[text]]` + `code_block`）
+6. 测试：**m6e-e2e 19/19**（代码块内选中→块级提示→摘要段落+代码块完整+预览不破坏→批注卡锚点=摘要→回复→round-trip→普通段落批注不受影响）；m6c 28/28、m6-toolbar 9/9、m6 6/6、m5 9/9、m5-strict 3/3 同步回归
+
+**M6 v7.1（note 属性可读性优化，按用户反馈）**：
+
+1. **问题**：`<mark data-note="...">` 双引号属性 + `&quot;` 转义，md 里批注内容（线程 JSON）几乎不可读：`data-note="[{&quot;a&quot;:&quot;我&quot;,...}]"`
+2. **方案**：属性值改**单引号**包裹 → JSON 的双引号原样保留：`data-note='[{"a":"我","c":"评论",...}]'`（md 里就是可读 JSON）；`escapeAttr` 仅转义会破坏标签的字符：`'` → `&#39;`（防属性提前闭合）、`&` → `&amp;`、`<` → `&lt;`（`>` 不转义，引号值内合法）
+3. **解析兼容**：`remark-annotation.ts` 的 OPEN_RE 改为 `(["'])((?:(?!\1).)*)\1`——负向前瞻允许值内出现与包裹引号不同的引号（单引号属性值内的 JSON 双引号）；**同时兼容旧格式**（双引号 + `&quot;`，`unescapeAttr` 保留 &quot; → " 解码）
+4. **关键坑**：不能写 `[^'"]*`（遇 JSON 双引号提前终止 → 批注解析失败、退化为普通 html 节点不可交互）；真实 round-trip（保存→重开）由 m6d 覆盖验证
+5. 测试：m6 6/6、m6c 28/28、m6d 11/11（写回断言改单引号格式）、m6e 19/19、m6-toolbar 9/9、m5 9/9、m5-strict 3/3
 
 **M6 修复：嵌入块批注写回双重转义（&amp;quot;）**：
 

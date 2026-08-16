@@ -174,15 +174,15 @@ async function installMock(repoJson) {
     }
   }
 
-  // 1. tauri 模式下 Git 图标可用
-  const gitBtn = page.locator('.icon-col .icon-btn', { hasText: '🔀' }).first();
+  // 1. tauri 模式下 Git 图标可用（图标列第 2 个按钮）
+  const gitBtn = page.locator('.icon-col .icon-btn:nth-child(2)').first();
   const inlineOp = await gitBtn.evaluate((el) => el.style.opacity);
   check('Git 图标可用（无灰置 inline style）', inlineOp === '' || inlineOp === undefined || inlineOp === null);
 
   // 2. 打开 Git 面板
   await gitBtn.click();
   await page.waitForTimeout(800);
-  check('Git tab 激活', await page.locator('.panel-tab.active', { hasText: 'Git' }).count() === 1);
+  check('Git 面板激活（Git 按钮高亮）', await page.locator('.icon-col .icon-btn:nth-child(2).active').count() === 1);
   check('状态条显示分支 main', (await page.locator('.repo-badge').textContent() || '').includes('main'));
   check('分支区 3 项', await page.locator('.branch').count() === 3);
   check('工作区 2 文件', await page.locator('.section', { hasText: '工作区' }).locator('.ws-file').count() === 2);
@@ -244,19 +244,19 @@ async function installMock(repoJson) {
   check('M13 渲染模式：组合 md 渲染（diff 标注）', await page.locator('.render-host .diff-del, .render-host .diff-ins').count() > 0);
   check('M13 行内修改（删除字划线/新增字绿底）', await page.locator('.render-host .diff-del', { hasText: '旧' }).count() >= 1 && await page.locator('.render-host .diff-ins', { hasText: '新' }).count() >= 1);
   // annotate / notes / 嵌入物化是异步的 → 等待就绪
-  try { await page.waitForSelector('.render-host .diff-code-add, .render-host .diff-code-del', { timeout: 8000 }); } catch {}
-  try { await page.waitForSelector('.diff-note-panel', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.render-host .diff-del, .render-host .diff-ins', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.annotation-drawer .ad-card', { timeout: 8000 }); } catch {}
   try { await page.waitForSelector('.render-host .ref-file-block', { timeout: 8000 }); } catch {}
-  check('M13 块级标注（diff-add/del 代码块）', await page.locator('.render-host .diff-code-add, .render-host .diff-code-del').count() >= 1);
-  check('M13 批注卡面板', await page.locator('.diff-note-panel').count() === 1);
-  check('M13 批注卡（修改"旧"为"新"）', (await page.locator('.dnp-card').first().textContent() || '').includes('修改'));
+  check('M14 块级纯删除/新增也走行内标记（diff-del/diff-ins）', await page.locator('.render-host .diff-del').count() >= 2 && await page.locator('.render-host .diff-ins').count() >= 2);
+  check('M14 批注抽屉「改动说明」卡（复用存量批注体系）', await page.locator('.annotation-drawer .ad-card .ad-card-title', { hasText: '改动说明' }).count() >= 1);
+  check('M14 批注卡（修改"旧"为"新"）', (await page.locator('.annotation-drawer .ad-card').allTextContents().then((t) => t.join(''))).includes('修改'));
   check('M13 mermaid 渲染图（svg）', await page.locator('.render-host svg, .render-host .mermaid').count() > 0);
   const embedCards = await page.locator('.render-host .ref-file-block').count();
 
   check('M13 嵌入引用卡片渲染', embedCards > 0);
-  await page.locator('.dnp-card').first().click();
+  await page.locator('.annotation-drawer .ad-card.read-only').first().click();
   await page.waitForTimeout(400);
-  check('M13 批注卡激活', await page.locator('.dnp-card.active').count() === 1);
+  check('M14 批注卡激活', await page.locator('.annotation-drawer .ad-card.active').count() === 1);
   await page.screenshot({ path: '/tmp/m13-render-mode.png' });
   // annotate 延迟（CodeMirror 语言按钮晚渲染）→ 等待标注完成
   await page.waitForTimeout(1800);

@@ -1,6 +1,6 @@
 # Git 工作台（M11）— 设计文档
 
-> 状态：**设计定稿（v3，2026-08-15 与用户拍板）** ｜ 里程碑：M11a–M11d
+> 状态：**设计定稿（v3，2026-08-15 与用户拍板）** ｜ 里程碑：M11a–M11d、M12、M13、M14
 > 前置知识：`design.md` §6.7（保存/写回）、§11（viewMode/sourceMode 架构）、`features.ts`（Crepe featureConfigs）、`fs/` 三实现、批注抽屉模式
 > 关联：`raw/milkdown-srouce/`（Crepe `setReadonly` 已验证：`view.setProps({ editable })`，渲染照常仅禁编辑）
 
@@ -22,6 +22,8 @@ WriteIt 是本地目录式 Markdown 笔记应用（Tauri + Vue + Crepe）。用�
 |---|---|
 | **v1（M11a–M11c）** | Git 面板（分支查看/工作区/历史/**范围对比 a..b**）；编辑区 diff 视图；文本模式（分栏/统一/词级）；**渲染模式（单栏融合，默认）** |
 | **v1.5（M11d）** | 还原（整文件/单 hunk）；分支切换（checkout）；标签右键菜单；状态栏分支徽标 |
+| **M12/M13** | 浏览器演示模式（mock git 后端）；渲染模式重构（单 Crepe + 组合 md） |
+| **M14** | 全内联标记；mermaid 节点级 DOM 标注；批注复用存量抽屉；mock 真实化 |
 | **v2** | 历史提交细节页；文件级历史时间线；渲染↔文本映射增强 |
 
 ## 2. 决策记录（已拍板）
@@ -238,6 +240,39 @@ M11d  ✅ 还原（整文件 + 单 hunk，仅工作区 diff，危险确认 + 标
 - **测试**：git-m11a-e2e 扩展至 **60**（状态栏徽标、还原确认/退出 diff/toast、hunk 还原按钮、标签右键 → diff、分支切换 → 徽标更新）；全量 24 套件全绿
 
 ### M12 实现记录（浏览器演示模式，2026-08-15）
+
+### M14 实现记录（全内联标记 + mermaid DOM 标注 + 批注复用 + mock 真实化，2026-08-16）
+
+**背景**：用户 4 点反馈——① 纯 del/add 段与整行重写也用 `{--删词--}{++增词++}` 表达；② mermaid 图看不出删除/新增节点；③ 右侧批注卡不该另起抽屉（DiffNotePanel），应复用存量批注体系（连线/定位）；④ mock 示例是手写的、与真实 git diff 不符，要用真实数据。
+
+**① 组合规则全内联化（diff-compose.ts）**：
+- `handleSeg` 重写：纯 del 段 → 每行 `{--行--}`；纯 add 段 → 每行 `{++行++}`；整行重写 → `{--旧行--}{++新行++}`；有共同部分修改对保留词级合并（splitCommon / mergeWordsFallback）
+- 删除 ```` ```diff-del/diff-add ```` fenced code 路径（annotateDiffCodeBlocks 移除；RenderDiff 的 diff-code-* 样式移除）
+- 表格行纯 add/del：**逐单元格标记**（`| {++消息通知++} | ... |`）——整行包 `{++..++}` 会被 GFM 表格解析器吃掉（remark 表续行）
+- 表格修改对：锚点改存变更单元格值（渲染层按 value 定位）
+- 卡片文案：空 del → `新增"X"`；空 add → `删除"X"`（不再 `修改""为"X"`）
+
+**② mermaid 节点级（不用 classDef/id:::class 语法，用户拍板）**：
+- `mermaid-diff.ts`：`extractFlowchartNodes` 按边分隔符（`-->`/`---`/`==>`/`-.->`）拆段解析——支持带边标签行（`B -- 是 --> C[...]`）与 `A -->|label| B`；有形状定义优先、裸 id 不覆盖；`mergeFlowchart`/`mergeState` 合并源码 = 新源码 + **删除节点原定义行加回**（保留边，无标注语法）
+- `render-diff.ts` `applyMermaidAnnotations`：渲染后按节点 id 定位 SVG `<g class="node|state">`（id 形如 `mmd-N-flowchart-A-0`，子串匹配）加 class：add 绿 / del 红（虚线+划线）/ mod 黄；sequence 保留消息文本标注
+- 样式：RenderDiff.vue `:deep(.diff-node-*)` 覆盖 rect/circle/nodeLabel（mermaid 内联 style 需 !important）
+
+**③ 批注复用存量体系（删 DiffNotePanel.vue）**：
+- `Annotation.source?: 'validation' | 'diff'` 字段；diff 改动说明 = 运行时批注（level=info，source=diff，persist=false）
+- RenderDiff.vue：渲染完成后 notes → Annotation[]（锚点 pos = 渲染 doc 中 diffDel/diffIns 节点按 value 匹配；mermaid 按 code_block 语言）→ `setRuntimeAnnotations(tabId, list)` → **存量批注抽屉展示**（「改动说明」📝 只读卡）；`registerRenderInstance(tabId, crepe)` 注册渲染实例；onBeforeUnmount 注销 + 清 runtime（不残留 wysiwyg）
+- AnnotationDrawer.vue：diff 模式下（viewMode==='diff'）只显示 source=diff 批注；locate/drawConnector 改用渲染 Crepe（coordsAtPos + 滚动 .render-main）；点击卡 = 激活 + 连线 + 平滑滚动；折叠胶囊计数含 info；diff 模式隐藏「重新校验」按钮
+- `remark-inline.ts` 修复两个解析 bug：① 整行/整段单标记被 `parts.length > 1` 拒绝（`{--> 旧版本说明...--}` 原样输出）→ 改 `parts.some(p => p.type !== 'text')`；② 标记内容含 markdown 语法时被强调先拆开（`{++**词级**++}` → text"{++"+strong+"++}高亮"）→ 文本末尾未闭合标记跨节点向后合并（flattenText 按源码还原 strong→`**..**` 等）
+- 嵌入块「内容有改动」角标（场景 A）：render-diff 渲染后对比 git.status()，源文件有未提交改动 → 卡片右上角黄标（`.ref-embed-diff-badge`）
+
+**④ mock 真实化（真实 git diff 数据）**：
+- `tests/scratch/gen-mock-git.js`：/tmp 建真实 git 仓库（Git演示/README.md 含 mermaid/嵌入/词级/纯删除 + 笔记/会议纪要.md 嵌入块内容调整 + 数据/需求表.md 表格单元格级；两提交 + feature 分支 + 工作区改动）→ 真实 `git diff`（unified + word-diff=porcelain）→ node 版解析器（照搬 Rust parse_unified_diff/parse_word_groups/groups_to_rows）→ 输出静态 TS
+- `src/git/mock-data.ts`（新）：版本内容 + hunks + 仓库元信息（DEMO_* 导出）；`src/git/mock.ts` 重写（文件路径 Git演示/ 前缀，diffFile 按路径分发 hunks，commit diff 走 README_COMMIT_HUNKS）；`src/fs/mock.ts` MOCK_EXTRA 加 Git演示 文件（树可见、内容一致）
+- 中文路径 -z NUL 解析 + `core.quotepath=false`（numstat）；**嵌入/引用路径用完整 `Git演示/...` 前缀**（resolveRefs 按 mock 工作区根解析）
+- 坑：Git演示/笔记/会议纪要.md 与 fs 演示 笔记/会议记录.md 基名冲突 → 改名 会议纪要（menu-e2e/m4b-e2e 的过滤断言适配）
+
+**测试**：git-m11a-smoke 重写 35 断言（面板 3 文件/渲染内联/mermaid 节点 class/嵌入角标/抽屉批注卡/会议纪要词级/需求表单元格/Esc）；git-m11a-e2e 61 断言（M13 渲染断言迁移到新体系：抽屉卡、无 diff-code-*）；menu-e2e 26（过滤适配）；全量 24 套件全绿
+
+**遗留**：diff 内容含 `**加粗**` 跨节点合并已处理（flattenText 还原源码）；mermaid 合并源码的删除节点保留原边；批注卡位置在渲染 doc（coordsAtPos）非严格字符级。
 
 **背景**：Git 功能此前仅 tauri 可用，vite dev（浏览器）无法预览 diff 效果。M12 让浏览器 mock 模式完整可用——内置「演示笔记」示例仓库，直接查看 git diff 预期效果。
 

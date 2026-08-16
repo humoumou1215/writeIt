@@ -1,13 +1,16 @@
 <script setup lang="ts">
 // M13：渲染模式视图——单 Crepe 渲染组合 md（diff 标注内嵌）
-// 流程：loadRenderData 取新旧内容 → renderDiffToContainer（组合 + 渲染）→ notes 显示右侧批注卡
+// M14：批注卡复用存量批注体系——notes → AnnotationService.setRuntimeAnnotations（抽屉展示/连线/定位）
+// 流程：loadRenderData 取新旧内容 → renderDiffToContainer（组合 + 渲染）→ 注册渲染实例 + 注入批注
 // 降级：渲染失败 → renderSplitFallback 双栏全文
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
+import type { Crepe } from '@milkdown/crepe'
+import { editorViewCtx } from '@milkdown/kit/core'
 import { state } from '../state/store'
-import { loadRenderData } from '../editor/manager'
+import { loadRenderData, registerRenderInstance } from '../editor/manager'
 import type { RenderDiffHandle, RenderDiffResult } from '../editor/render-diff'
 import type { DiffNote } from '../editor/diff-compose'
-import DiffNotePanel from './DiffNotePanel.vue'
+import { setRuntimeAnnotations, type Annotation } from '../annotations/service'
 
 const props = defineProps<{ tabId: string }>()
 
@@ -16,9 +19,69 @@ const diff = computed(() => tab.value?.diff ?? null)
 
 const hostEl = ref<HTMLDivElement | null>(null)
 const status = ref<string | null>(null)
-const notes = ref<DiffNote[]>([])
 let handle: RenderDiffHandle | null = null
 let renderSeq = 0
+
+// ---------- M14：diff 批注注入（notes → Annotation[] → 存量抽屉） ----------
+
+/** 在渲染 doc 中定位每个 note 的锚点 pos（diffDel/diffIns 按 value 匹配；mermaid 按 code_block 语言） */
+function computeNotePositions(notes: DiffNote[], crepe: Crepe): Map<string, number> {
+  const positions = new Map<string, number>()
+  try {
+    crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      for (const note of notes) {
+        if (note.kind === 'mermaid') {
+          let pos = -1
+          view.state.doc.descendants((n, p) => {
+            if (n.type.name === 'code_block' && (n.attrs.language as string) === 'mermaid') {
+              pos = p
+              return false
+            }
+            return true
+          })
+          positions.set(note.id, pos)
+          continue
+        }
+        // 锚点：新增值优先（渲染元素 .diff-ins）；删除值次之（.diff-del）；块级取首行。
+        // 注意：diffDel/diffIns 的 value 是精确文本（含前导空格），不能 trim
+        const needle = (note.add ?? note.del ?? '').split('\n')[0]
+        if (!needle.trim()) {
+          positions.set(note.id, -1)
+          continue
+        }
+        let pos = -1
+        view.state.doc.descendants((n, p) => {
+          if ((n.type.name === 'diffIns' || n.type.name === 'diffDel') && (n.attrs.value as string) === needle) {
+            pos = p
+            return false
+          }
+          return true
+        })
+        positions.set(note.id, pos)
+      }
+    })
+  } catch {
+    /* 编辑器已销毁 */
+  }
+  return positions
+}
+
+function applyDiffNotes(result: RenderDiffResult) {
+  registerRenderInstance(props.tabId, result.crepe)
+  const positions = computeNotePositions(result.notes, result.crepe)
+  const list: Annotation[] = result.notes.map((n, i) => ({
+    id: `diff-${props.tabId}-${i}`,
+    from: positions.get(n.id) ?? -1,
+    to: -1,
+    anchorText: n.text,
+    level: 'info',
+    thread: [{ id: `d${i}`, author: '', content: n.text, createdAt: 0, resolved: false }],
+    persist: false,
+    source: 'diff',
+  }))
+  setRuntimeAnnotations(props.tabId, list)
+}
 
 async function render() {
   const d = diff.value
@@ -50,14 +113,14 @@ async function render() {
       result = null
     }
     if (!result && seq === renderSeq) {
-      // 主路径失败 → 降级双栏全文
+      // 主路径失败 → 降级双栏全文（无批注卡）
       handle = await renderSplitFallback(host, opts)
       if (handle && seq === renderSeq) status.value = status.value ?? '已降级为双栏全文对比'
       return
     }
     if (result && seq === renderSeq) {
       handle = result.handle
-      notes.value = result.notes
+      applyDiffNotes(result)
     }
   } catch (e) {
     console.error('[RenderDiff] render 异常:', e)
@@ -97,6 +160,9 @@ onBeforeUnmount(() => {
   renderSeq++
   handle?.destroy()
   handle = null
+  // M14：注销渲染实例 + 清理 diff 运行时批注（不残留到 wysiwyg 编辑器）
+  registerRenderInstance(props.tabId, null)
+  setRuntimeAnnotations(props.tabId, [])
 })
 </script>
 
@@ -111,7 +177,6 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="status" class="render-status fallback">{{ status }}</div>
     </div>
-    <DiffNotePanel v-if="notes.length" :notes="notes" :host="hostEl" />
   </div>
 </template>
 
@@ -193,17 +258,61 @@ onBeforeUnmount(() => {
 :deep(.render-host .milkdown) {
   color: var(--chrome-on-background);
 }
-/* fenced code 块标注（diff-add / diff-del 语言） */
-:deep(.diff-code-add) {
-  background: color-mix(in srgb, #2e7d32, transparent 90%);
-  box-shadow: inset 3px 0 0 #2e7d32;
-  border-radius: 8px;
+/* 嵌入块「内容有改动」角标（M14：源文件有未提交改动） */
+:deep(.ref-embed-diff-badge) {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #7a4f00;
+  background: #fff3cd;
+  border: 1px solid #f0c040;
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 18px;
+  z-index: 2;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
 }
-:deep(.diff-code-del) {
-  background: color-mix(in srgb, #c62828, transparent 90%);
-  box-shadow: inset 3px 0 0 #c62828;
-  border-radius: 8px;
-  opacity: 0.92;
+/* mermaid 节点级标注（M14 渲染后 DOM 操作）——flowchart/state 节点 <g> */
+:deep(.diff-node-add rect),
+:deep(.diff-node-add circle),
+:deep(.diff-node-add .node-bkg) {
+  fill: color-mix(in srgb, #2e7d32, transparent 78%) !important;
+  stroke: #2e7d32 !important;
+  stroke-width: 2px !important;
+}
+:deep(.diff-node-add .nodeLabel),
+:deep(.diff-node-add .state-label) {
+  color: #1b5e20 !important;
+  font-weight: 600 !important;
+}
+:deep(.diff-node-del rect),
+:deep(.diff-node-del circle),
+:deep(.diff-node-del .node-bkg) {
+  fill: color-mix(in srgb, #c62828, transparent 78%) !important;
+  stroke: #c62828 !important;
+  stroke-width: 2px !important;
+  stroke-dasharray: 4 3 !important;
+}
+:deep(.diff-node-del .nodeLabel),
+:deep(.diff-node-del .state-label) {
+  color: #8e0000 !important;
+  text-decoration: line-through !important;
+  text-decoration-thickness: 1.5px !important;
+  opacity: 0.85;
+}
+:deep(.diff-node-mod rect),
+:deep(.diff-node-mod circle),
+:deep(.diff-node-mod .node-bkg) {
+  fill: color-mix(in srgb, #b58900, transparent 80%) !important;
+  stroke: #b58900 !important;
+  stroke-width: 2px !important;
+}
+:deep(.diff-node-mod .nodeLabel),
+:deep(.diff-node-mod .state-label) {
+  color: #6d5300 !important;
+  font-weight: 600 !important;
 }
 /* sequence 消息标注 */
 :deep(.diff-seq-add) {

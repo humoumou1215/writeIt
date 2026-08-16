@@ -34,6 +34,8 @@ export interface Annotation {
   /** 评论线程（人工批注 ≥1 条；校验批注 1 条只读） */
   thread: Comment[]
   persist: boolean
+  /** M14：来源标记——校验违规 / diff 改动说明（抽屉只读卡按来源区分） */
+  source?: 'validation' | 'diff'
 }
 
 // ---------- 运行时批注（校验等动态场景）----------
@@ -201,6 +203,74 @@ export function addAnnotation(
   return ok
 }
 
+// ---------- 代码块整块批注（v7 变体 D：代码块内选中文本 → 自动升级为整块批注） ----------
+// code_block 的 schema content 是 'text*'（只允许纯文本），annotation 直接插入会破坏
+// 序列化（代码块提前闭合、内容散落成普通段落，mermaid 预览解析失败）。
+// 因此批注锚定「整个代码块」：锚点文本 = 代码块摘要（语言 + 首行），
+// 批注节点插入代码块上方的新段落，随保存正常 round-trip。
+
+/** 选区是否涉及 code_block（部分或整体覆盖）→ 返回第一个 code_block 的起始 pos 与节点 */
+export function findCodeBlockInSelection(
+  doc: Node,
+  from: number,
+  to: number
+): { pos: number; node: Node } | null {
+  let found: { pos: number; node: Node } | null = null
+  doc.nodesBetween(from, to, (n, pos) => {
+    if (n.type.name === 'code_block') {
+      found = { pos, node: n }
+      return false
+    }
+    return true
+  })
+  return found
+}
+
+/** 代码块摘要锚点文本：`代码块 (语言)：首行`（首行截断 24 字符） */
+export function makeCodeBlockAnchorText(node: Node): string {
+  const language = String(node.attrs.language ?? '').trim()
+  const firstLine = (node.textContent.split('\n')[0] ?? '').trim().slice(0, 24)
+  const label = language ? `代码块 (${language})` : '代码块'
+  return firstLine ? `${label}：${firstLine}` : label
+}
+
+/**
+ * 整块批注：在 code_block 前插入 `paragraph[annotation[摘要]]`，返回新批注节点信息。
+ * shift = 插入段落的 nodeSize（供提交后把光标恢复到代码块内原位）。
+ */
+export function addBlockAnnotation(
+  editor: Editor,
+  codeBlockPos: number,
+  content: string,
+  author: string
+): { pos: number; nodeSize: number; shift: number } | null {
+  let info: { pos: number; nodeSize: number; shift: number } | null = null
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const { schema } = view.state
+    const type = schema.nodes.annotation
+    const block = view.state.doc.nodeAt(codeBlockPos)
+    if (!type || !block || block.type.name !== 'code_block') return
+    const thread: Comment[] = [
+      { id: `c-${Date.now()}`, author, content, createdAt: Date.now(), resolved: false },
+    ]
+    const anchorText = makeCodeBlockAnchorText(block)
+    const annNode = type.create({ note: serializeThread(thread) }, schema.text(anchorText))
+    const para = schema.nodes.paragraph.create(null, annNode)
+    const tr = view.state.tr.insert(codeBlockPos, para)
+    view.dispatch(tr)
+    // 插入后位置漂移：用节点对象引用在 dispatch 后的 doc 中重定位（引用持久化不变）
+    tr.doc.descendants((n, pos) => {
+      if (n === annNode) {
+        info = { pos, nodeSize: n.nodeSize, shift: para.nodeSize }
+        return false
+      }
+      return true
+    })
+  })
+  return info
+}
+
 /** 追加评论（回复） */
 export function addComment(editor: Editor, pos: number, content: string, author: string): boolean {
   let ok = false
@@ -246,15 +316,31 @@ export function setCommentResolved(
   return ok
 }
 
-/** 删除整个批注（保留锚定文本） */
+/**
+ * 删除整个批注：普通批注保留锚定文本；
+ * 块级批注（段落只含该 mark，即代码块摘要段落）→ 段落一并删除，避免残留孤儿摘要。
+ */
 export function removeAnnotationNode(editor: Editor, pos: number): boolean {
   let ok = false
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
-    const node = view.state.doc.nodeAt(pos)
+    const doc = view.state.doc
+    const node = doc.nodeAt(pos)
     if (!node || node.type.name !== 'annotation') return
-    const inner = node.textContent
-    const tr = view.state.tr.replaceWith(pos, pos + node.nodeSize, view.state.schema.text(inner))
+    const $p = doc.resolve(pos)
+    const parent = $p.parent
+    const tr = view.state.tr
+    if (
+      parent.type.name === 'paragraph' &&
+      parent.childCount === 1 &&
+      parent.child(0) === node
+    ) {
+      // 块级批注段落（只有摘要 mark）→ 删除整个段落
+      tr.delete($p.before($p.depth), $p.after($p.depth))
+    } else {
+      // 普通批注：删除 mark，保留锚定文本
+      tr.replaceWith(pos, pos + node.nodeSize, view.state.schema.text(node.textContent))
+    }
     view.dispatch(tr)
     ok = true
   })
