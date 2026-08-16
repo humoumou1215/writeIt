@@ -202,6 +202,48 @@ export const build = (ctx) => ({ content: '# 自定义标题\\n\\n来自 export.
     ok('含 mermaid 的 DOCX 导出成功（PK zip）', outcomeDocx.ok && (outcomeDocx.size || 0) > 2000);
   }
 
+  // ---------- 7：数学公式（katex）渲染图片导出 ----------
+  {
+    await page.evaluate(() => {
+      const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');
+      fs.files['公式测试.md'] =
+        '# 公式测试\n\n行内公式 $E = mc^2$ 与块级公式：\n\n$$\n\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}\n$$\n';
+      localStorage.setItem('milkdown-note-mock-fs-v2', JSON.stringify(fs));
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2500);
+
+    // md：保留公式原文（可编辑）
+    const [dl, outcome] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('公式测试.md', 'md')),
+    ]);
+    ok('公式文档 md 导出 ok', outcome.ok);
+    const stream = await dl.createReadStream();
+    const text = await new Promise((resolve, reject) => {
+      const chunks = [];
+      stream.on('data', (c) => chunks.push(c));
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('error', reject);
+    });
+    ok('md 导出保留行内公式原文（$E = mc^2$）', text.includes('$E = mc^2$'));
+    ok('md 导出块级公式为 latex 代码块', text.includes('```latex'));
+
+    // PDF：公式渲染为图片嵌入
+    const [dlPdf, oPdf] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('公式测试.md', 'pdf')),
+    ]);
+    ok('含公式 PDF 导出成功（>40KB 含公式图片）', oPdf.ok && (oPdf.size || 0) > 40000);
+
+    // DOCX：公式渲染为图片嵌入
+    const [dlDocx, oDocx] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('公式测试.md', 'docx')),
+    ]);
+    ok('含公式 DOCX 导出成功（>10KB 含公式图片）', oDocx.ok && (oDocx.size || 0) > 10000);
+  }
+
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
   await browser.close();
   process.exit(fail ? 1 : 0);

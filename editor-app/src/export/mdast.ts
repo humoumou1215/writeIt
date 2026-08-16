@@ -8,6 +8,7 @@ import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkStringify from 'remark-stringify'
+import remarkMath from 'remark-math'
 import { remarkRef } from '../editor/ref/remark-ref'
 import { remarkAnnotation } from '../annotations/remark-annotation'
 import { fs } from '../fs'
@@ -32,7 +33,15 @@ export interface InlineLink {
   text: InlineNode[]
 }
 
-export type InlineNode = InlineText | InlineLink
+/** 行内图片（katex 公式 / 行内图片） */
+export interface InlineImage {
+  kind: 'image'
+  dataUri: string
+  width: number
+  height: number
+}
+
+export type InlineNode = InlineText | InlineLink | InlineImage
 
 export interface ExportHeading {
   kind: 'heading'
@@ -61,6 +70,8 @@ export interface ExportTable {
   kind: 'table'
   header: InlineNode[][]
   rows: InlineNode[][]
+  /** 列对齐（remark-gfm align：'left' | 'center' | 'right' | null） */
+  align?: Array<'left' | 'center' | 'right' | null>
 }
 
 export interface ExportCode {
@@ -97,6 +108,40 @@ export type ExportBlock =
   | ExportQuote
   | ExportHr
   | ExportImage
+
+/** 代码块语言 → 展示名（PDF/DOCX 语言徽标用；未知语言原样） */
+export function languageLabel(lang: string): string {
+  const map: Record<string, string> = {
+    ts: 'TypeScript',
+    tsx: 'TSX',
+    js: 'JavaScript',
+    jsx: 'JSX',
+    json: 'JSON',
+    yml: 'YAML',
+    yaml: 'YAML',
+    md: 'Markdown',
+    markdown: 'Markdown',
+    html: 'HTML',
+    css: 'CSS',
+    scss: 'SCSS',
+    sql: 'SQL',
+    sh: 'Shell',
+    bash: 'Bash',
+    python: 'Python',
+    java: 'Java',
+    c: 'C',
+    'c++': 'C++',
+    cpp: 'C++',
+    go: 'Go',
+    rust: 'Rust',
+    latex: 'LaTeX',
+    xml: 'XML',
+    http: 'HTTP',
+    text: 'Text',
+    plaintext: 'Text',
+  }
+  return map[lang.toLowerCase()] ?? lang
+}
 
 // ---------- mdast 类型（宽松，兼容 remark 11 + 自定义节点） ----------
 
@@ -199,11 +244,12 @@ async function withChain(nodes: MdastNode[], depth: number, chain: Set<string>):
   return out
 }
 
-/** 解析 markdown 到 mdast（引用 + 批注自定义节点） */
+/** 解析 markdown 到 mdast（引用 + 批注 + 公式自定义节点） */
 function parseToMdast(md: string): MdastNode[] {
   const processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(remarkMath)
     // 自定义插件：类型不匹配（mdast 泛型），运行时兼容，转译期断言
     .use(remarkRef as never)
     .use(remarkAnnotation as never)
@@ -443,9 +489,105 @@ function svgToPngDataUri(svg: string, w: number, h: number): Promise<string | nu
   })
 }
 
-// ---------- 导出前准备（引用展示 + mermaid 图片，递归） ----------
+// ---------- katex 公式渲染为 PNG ----------
 
-async function prepareForExport(nodes: MdastNode[]): Promise<MdastNode[]> {
+let katexCssReady: Promise<void> | null = null
+const katexImageCache = new Map<string, { dataUri: string; width: number; height: number } | null>()
+
+type KatexMod = { default?: { renderToString: (tex: string, opts: unknown) => string } }
+type H2cMod = {
+  default?: (el: HTMLElement, opts?: unknown) => Promise<{ toDataURL: (t: string) => string }>
+}
+
+/** 注入 katex 样式（Vite 处理字体资源）+ 预触发字体加载；幂等 */
+async function ensureKatexCss(): Promise<void> {
+  if (katexCssReady) return katexCssReady
+  katexCssReady = (async () => {
+    await import('katex/dist/katex.min.css') // Vite 注入 <style>，字体 url 自动处理
+    const warm = document.createElement('div')
+    warm.className = 'katex'
+    warm.innerHTML = 'x'
+    document.body.appendChild(warm)
+    await document.fonts.ready
+    warm.remove()
+  })()
+  katexCssReady.catch(() => {
+    katexCssReady = null
+  })
+  return katexCssReady
+}
+
+/** 公式 → PNG data URI（katex 渲染 HTML → offscreen DOM → html2canvas；失败返回 null） */
+async function renderKatexImage(
+  tex: string,
+  displayMode: boolean
+): Promise<{ dataUri: string; width: number; height: number } | null> {
+  const key = (displayMode ? 'd:' : 'i:') + tex
+  const cached = katexImageCache.get(key)
+  if (cached !== undefined) return cached
+  try {
+    await ensureKatexCss()
+    const katexMod = (await import('katex')) as unknown as KatexMod
+    const katex = (katexMod.default ?? katexMod) as NonNullable<KatexMod['default']>
+    const html = katex.renderToString(tex, { throwOnError: false, displayMode })
+    const div = document.createElement('div')
+    div.style.cssText = 'position:fixed;left:-9999px;top:0;line-height:1;'
+    div.className = 'katex'
+    div.innerHTML = html
+    document.body.appendChild(div)
+    await document.fonts.ready
+    const h2cMod = (await import('html2canvas')) as unknown as H2cMod
+    const h2c = (h2cMod.default ?? h2cMod) as NonNullable<H2cMod['default']>
+    const canvas = await h2c(div, { backgroundColor: '#ffffff', scale: 2 })
+    const dataUri = canvas.toDataURL('image/png')
+    const w = Math.max(1, div.offsetWidth)
+    const h = Math.max(1, div.offsetHeight)
+    div.remove()
+    const result = { dataUri, width: w, height: h }
+    katexImageCache.set(key, result)
+    return result
+  } catch (e) {
+    console.error('[export] katex 渲染失败（降级为文本）:', tex, e)
+    katexImageCache.set(key, null)
+    return null
+  }
+}
+
+// ---------- 导出前准备（引用展示 + mermaid 图片 + 公式 + 普通图片，递归） ----------
+
+/** 普通图片转 data URI（http(s)/data: 可 fetch；跨域/失败 → null 降级）。带缓存。 */
+const imageFetchCache = new Map<string, string | null>()
+
+async function fetchImageDataUri(url: string): Promise<string | null> {
+  const cached = imageFetchCache.get(url)
+  if (cached !== undefined) return cached
+  if (url.startsWith('data:')) {
+    imageFetchCache.set(url, url)
+    return url
+  }
+  try {
+    const res = await fetch(url, { mode: 'cors' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    if (!blob.type.startsWith('image/')) throw new Error('not image')
+    const dataUri = await new Promise<string | null>((resolve) => {
+      const fr = new FileReader()
+      fr.onload = () => resolve(String(fr.result))
+      fr.onerror = () => resolve(null)
+      fr.readAsDataURL(blob)
+    })
+    imageFetchCache.set(url, dataUri)
+    return dataUri
+  } catch (e) {
+    console.warn('[export] 图片加载失败（降级为文本）:', url, (e as Error).message)
+    imageFetchCache.set(url, null)
+    return null
+  }
+}
+
+/** 导出前准备（引用展示 + mermaid 图片 + 公式 + 普通图片，递归）。
+ *  renderMath：true = 公式渲染为图片（pdf/docx）；false = 保留原文（md 导出）。 */
+async function prepareForExport(nodes: MdastNode[], renderMath: boolean): Promise<MdastNode[]> {
   const out: MdastNode[] = []
   for (const n of nodes) {
     if (n.type === 'fileRef') {
@@ -467,8 +609,47 @@ async function prepareForExport(nodes: MdastNode[]): Promise<MdastNode[]> {
       } else {
         out.push(n) // 渲染失败：保留代码块
       }
+    } else if (n.type === 'inlineMath' || n.type === 'math') {
+      const tex = String(n.value ?? '')
+      if (!renderMath) {
+        // md 导出：保留原文（$..$ / latex 代码块）
+        out.push(n.type === 'math'
+          ? { type: 'code', lang: 'latex', value: tex }
+          : { type: 'text', value: `$${tex}$` })
+        continue
+      }
+      // 公式：katex 渲染为图片（行内/块级）；失败降级原文
+      const display = n.type === 'math'
+      const img = await renderKatexImage(tex, display)
+      if (img) {
+        const imageNode: MdastNode = {
+          type: 'image',
+          url: img.dataUri,
+          alt: tex.slice(0, 40),
+          width: img.width,
+          height: img.height,
+        }
+        // 块级公式包 paragraph（image 是 inline 节点，顶层会被吸入前一块）
+        out.push(display ? { type: 'paragraph', children: [imageNode] } : imageNode)
+      } else {
+        // 降级：inline 保留 $..$ 原文；块级保留 latex 代码块
+        out.push(
+          display
+            ? { type: 'code', lang: 'latex', value: tex }
+            : { type: 'text', value: `$${tex}$` }
+        )
+      }
+    } else if (n.type === 'image') {
+      // 普通图片：尝试 fetch 转 data URI（PDF/DOCX 嵌入用；失败则 md 保留原 URL、pdf/docx 降级文本）
+      const url = n.url ?? ''
+      const dataUri = await fetchImageDataUri(url)
+      if (dataUri && dataUri !== url) {
+        out.push({ ...n, url, dataUri, alt: n.alt ?? '图片' })
+      } else {
+        out.push({ ...n, dataUri: dataUri ?? undefined })
+      }
     } else if (n.children) {
-      out.push({ ...n, children: await prepareForExport(n.children) })
+      out.push({ ...n, children: await prepareForExport(n.children, renderMath) })
     } else {
       out.push(n)
     }
@@ -478,10 +659,10 @@ async function prepareForExport(nodes: MdastNode[]): Promise<MdastNode[]> {
 
 // ---------- 对外 API ----------
 
-/** 解析并展开：md → ExportBlock[]（引用展示 + mermaid 图片已处理） */
+/** 解析并展开：md → ExportBlock[]（引用展示 + mermaid/公式图片已处理） */
 export async function mdToExportBlocks(md: string): Promise<ExportBlock[]> {
   const nodes = await withChain(parseToMdast(md), 0, new Set())
-  const prepared = await prepareForExport(nodes)
+  const prepared = await prepareForExport(nodes, true)
   return prepared.flatMap(mdastToBlocks)
 }
 
@@ -492,7 +673,8 @@ export async function mdToExportBlocks(md: string): Promise<ExportBlock[]> {
  */
 export async function mdToExportMarkdown(md: string): Promise<string> {
   const nodes = await withChain(parseToMdast(md), 0, new Set())
-  const prepared = await prepareForExport(nodes)
+  // md 导出：公式保留原文（renderMath=false）、mermaid 转图片、嵌入/引用展开
+  const prepared = await prepareForExport(nodes, false)
   const converted = prepared.flatMap((n) => mdastForStringify([n]))
   const tree = { type: 'root' as const, children: converted }
   const processor = unified()
@@ -501,12 +683,13 @@ export async function mdToExportMarkdown(md: string): Promise<string> {
   return processor.stringify(tree as never)
 }
 
-/** 源文件/引用/mermaid 变化后调用（保存/写回时清缓存，保证导出内容新鲜） */
+/** 源文件/引用/mermaid/图片变化后调用（保存/写回时清缓存，保证导出内容新鲜） */
 export function clearEmbedCache(): void {
   EMBED_CACHE.clear()
   refTextCache.clear()
   refDisplayCache.clear()
   mermaidImageCache.clear()
+  imageFetchCache.clear()
 }
 
 /** 序列化前转换：fileRef → link、doctype 删除、annotation 解包（image 节点由 remark-stringify 原生处理） */
@@ -560,14 +743,31 @@ function inlineToNodes(nodes: MdastNode[] | undefined): InlineNode[] {
       // 防御：prepareForExport 已转换；未经过时按路径文本
       const label = n.fragment ? `${n.path}#${n.fragment}` : (n.path ?? '')
       out.push({ kind: 'link', href: n.path ?? '', text: [{ kind: 'text', value: label }] })
+    } else if (n.type === 'inlineMath' || n.type === 'math') {
+      // 公式：md 导出保留原文（$..$ / latex 代码块），由 remark-stringify 输出
+      const tex = String(n.value ?? '')
+      out.push(n.type === 'math'
+        ? { type: 'code', lang: 'latex', value: tex }
+        : { type: 'text', value: `$${tex}$` })
     } else if (n.type === 'annotation') {
       // <mark data-note> 批注 → 高亮文本
       const inner = inlineToNodes(n.children)
       for (const c of inner) if (c.kind === 'text') c.highlight = true
       out.push(...inner)
     } else if (n.type === 'image') {
-      // 段落内图片：降级为文本（顶层 mermaid 图片由 mdastToBlocks case 'image' 处理）
-      out.push({ kind: 'text', value: `[图片：${n.alt ?? ''}]` })
+      // 行内图片（katex 公式 data URI / 普通图片降级）
+      const url = n.url ?? ''
+      const dataUri = (n.dataUri as string | undefined) ?? (url.startsWith('data:image/') ? url : undefined)
+      if (dataUri) {
+        out.push({
+          kind: 'image',
+          dataUri,
+          width: Number(n.width ?? 32),
+          height: Number(n.height ?? 16),
+        })
+      } else {
+        out.push({ kind: 'text', value: `[图片：${n.alt ?? ''}]` })
+      }
     } else if (n.type === 'break') {
       out.push({ kind: 'text', value: '\n' })
     } else {
@@ -606,8 +806,21 @@ function mdastToBlocks(node: MdastNode): ExportBlock[] {
       const level = Math.min(6, Math.max(1, Number(node.depth ?? 1))) as 1 | 2 | 3 | 4 | 5 | 6
       return [{ kind: 'heading', level, text: inlineToNodes(node.children) }]
     }
-    case 'paragraph':
-      return [{ kind: 'paragraph', text: inlineToNodes(node.children) }]
+    case 'paragraph': {
+      // 纯图片段落（块级公式 / mermaid 图 / 独立图片）→ 块级图片
+      const text = inlineToNodes(node.children)
+      if (text.length === 1 && text[0].kind === 'image') {
+        const img = text[0]
+        return [{
+          kind: 'image',
+          alt: '图片',
+          dataUri: img.dataUri,
+          width: img.width,
+          height: img.height,
+        }]
+      }
+      return [{ kind: 'paragraph', text }]
+    }
     case 'list': {
       // GFM 任务列表：checked 属性非 null
       const allTasks = (node.children ?? []).every((li) => li.checked !== undefined && li.checked !== null)
@@ -626,7 +839,12 @@ function mdastToBlocks(node: MdastNode): ExportBlock[] {
       const cellText = (c: MdastNode | undefined): InlineNode[] => inlineToNodes(c?.children)
       const header = rows[0]?.children?.map((c) => cellText(c)) ?? []
       const body = rows.slice(1).map((r) => (r.children ?? []).map((c) => cellText(c)))
-      return [{ kind: 'table', header, rows: body }]
+      return [{
+        kind: 'table',
+        header,
+        rows: body,
+        align: Array.isArray(node.align) ? node.align : undefined,
+      }]
     }
     case 'code':
       return [{ kind: 'code', language: String(node.lang ?? ''), content: String(node.value ?? '') }]
@@ -634,13 +852,18 @@ function mdastToBlocks(node: MdastNode): ExportBlock[] {
       return [{ kind: 'quote', blocks: (node.children ?? []).flatMap(mdastToBlocks) }]
     case 'thematicBreak':
       return [{ kind: 'hr' }]
+    case 'math': {
+      // 防御：prepareForExport 已处理；未经过时按 latex 代码输出
+      return [{ kind: 'code', language: 'latex', content: String(node.value ?? '') }]
+    }
     case 'image': {
       const url = node.url ?? ''
-      if (url.startsWith('data:image/png')) {
+      const dataUri = (node.dataUri as string | undefined) ?? (url.startsWith('data:image/png') ? url : undefined)
+      if (dataUri) {
         return [{
           kind: 'image',
           alt: node.alt ?? '图',
-          dataUri: url,
+          dataUri,
           width: Number(node.width ?? 600),
           height: Number(node.height ?? 400),
         }]

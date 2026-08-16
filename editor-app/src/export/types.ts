@@ -27,6 +27,11 @@ export interface ExportResult {
   filename?: string
   /** 导出内容（markdown；缺省 = ctx.content） */
   content?: string
+  /**
+   * true = content 原样导出，跳过公共处理管线（嵌入块展开 / 引用展示 / mermaid 渲染 / 图片嵌入）。
+   * 仅 md 格式生效；pdf/docx 必须结构化，忽略此标记。缺省 false = 自动套用公共规则。
+   */
+  raw?: boolean
 }
 
 /** export.ts 模块导出形状 */
@@ -37,6 +42,8 @@ export interface ExportModule {
   filename?: string
   /** 可选：自定义导出内容/格式/文件名；返回 null = 走默认 */
   build?: (ctx: ExportContext) => ExportResult | null
+  /** 可选：true = 默认内容跳过公共处理管线（仅 md 格式生效） */
+  raw?: boolean
 }
 
 /** 导出选项（设置弹窗「导出」页签传入） */

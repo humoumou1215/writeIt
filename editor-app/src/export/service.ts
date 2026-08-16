@@ -108,6 +108,7 @@ export async function exportActiveTab(options: ExportOptions): Promise<ExportOut
   let filename: string
   let exportContent: string
   let usedExportTs = false
+  let rawExport = false
 
   if (exportMod) {
     usedExportTs = true
@@ -116,6 +117,8 @@ export async function exportActiveTab(options: ExportOptions): Promise<ExportOut
     format = (eff.format ?? exportMod.format ?? 'pdf') as ExportFormat
     filename = safeFilename((eff.filename ?? exportMod.filename ?? name).replace(/\.(pdf|docx|md)$/i, ''))
     exportContent = eff.content ?? exportMod.content ?? ctx.content
+    // raw：build 返回或模块顶层声明（仅 md 格式生效，见 types.ts）
+    rawExport = Boolean(eff.raw ?? exportMod.raw)
   } else {
     // 默认：用户选择（auto 回落 pdf）
     format = options.format === 'auto' ? 'pdf' : options.format
@@ -126,8 +129,8 @@ export async function exportActiveTab(options: ExportOptions): Promise<ExportOut
   // ---- 生成文件 ----
   try {
     if (format === 'md') {
-      // markdown：展开嵌入块后序列化（![[path]] 内容合并进导出文件）
-      const expanded = await mdToExportMarkdown(exportContent)
+      // markdown：展开嵌入块后序列化（![[path]] 内容合并进导出文件）；raw = 原文
+      const expanded = rawExport ? exportContent : await mdToExportMarkdown(exportContent)
       const blob = new Blob([expanded], { type: 'text/markdown;charset=utf-8' })
       return await persist(blob, `${filename}.md`, format, usedExportTs)
     }

@@ -2,6 +2,7 @@
 // 字体：Noto Sans CJK SC（GB2312 常用字子集，Regular + Bold 双字重，约 3MB × 2）
 // 以 ?url 静态资源打包，运行时 fetch → base64 注册进 pdfmake 的 vfs（只做一次）。
 import type { ExportBlock, ExportImage, ExportTable, InlineNode } from './mdast'
+import { languageLabel } from './mdast'
 import regularFontUrl from './assets/NotoSansCJKsc-Regular.sub.otf?url'
 import boldFontUrl from './assets/NotoSansCJKsc-Bold.sub.otf?url'
 
@@ -71,7 +72,10 @@ function ensurePdfMake(): Promise<PdfMakeModule> {
 // ---------- 中间结构 → pdfmake document ----------
 
 interface PdfTextSegment {
-  text: string
+  text?: string
+  image?: string
+  width?: number
+  height?: number
   bold?: boolean
   italics?: boolean
   decoration?: 'lineThrough' | 'underline'
@@ -92,6 +96,9 @@ function inlineToSegments(nodes: InlineNode[], baseSize: number): PdfTextSegment
         color: '1a73e8',
         fontSize: baseSize,
       })
+    } else if (n.kind === 'image') {
+      // pdfmake 文本数组支持行内图片
+      segs.push({ image: n.dataUri, width: n.width, height: n.height })
     } else if (n.kind === 'text') {
       segs.push({
         text: n.value,
@@ -107,7 +114,7 @@ function inlineToSegments(nodes: InlineNode[], baseSize: number): PdfTextSegment
 }
 
 function flattenInline(nodes: InlineNode[]): string {
-  return nodes.map((n) => (n.kind === 'text' ? n.value : flattenInline(n.text))).join('')
+  return nodes.map((n) => (n.kind === 'text' ? n.value : n.kind === 'link' ? flattenInline(n.text) : '')).join('')
 }
 
 function headingText(segments: PdfTextSegment[], level: number) {
@@ -121,22 +128,24 @@ function headingText(segments: PdfTextSegment[], level: number) {
 }
 
 function tableToPdf(t: ExportTable) {
-  const cell = (nodes: InlineNode[], header: boolean) => ({
+  const aligns = t.align ?? []
+  const cell = (nodes: InlineNode[], header: boolean, colIdx: number) => ({
     text: inlineToSegments(nodes, 10),
     bold: header,
+    alignment: (aligns[colIdx] as 'left' | 'center' | 'right' | undefined) ?? 'left',
     margin: [4, 3, 4, 3] as [number, number, number, number],
   })
   const body: unknown[][] = []
   if (t.header.length) {
-    body.push(t.header.map((c) => cell(c, true)))
+    body.push(t.header.map((c, i) => cell(c, true, i)))
   }
   for (const r of t.rows) {
-    body.push(r.map((c) => cell(c, false)))
+    body.push(r.map((c, i) => cell(c, false, i)))
   }
   return {
     table: {
       headerRows: t.header.length ? 1 : 0,
-      widths: Array(t.header.length || 1).fill('*'),
+      widths: Array(Math.max(1, t.header.length || t.rows[0]?.length || 1)).fill('*'),
       body,
     },
     layout: {
@@ -191,13 +200,23 @@ function blockToPdf(block: ExportBlock): unknown {
     case 'table':
       return tableToPdf(block)
     case 'code':
-      return {
-        text: block.content,
-        fontSize: 9,
-        font: FONT_FAMILY, // 中文注释仍需中文字体；无等宽中文，接受
-        background: '#f5f5f5',
-        margin: [0, 3, 0, 8],
-      }
+      return [
+        ...(block.language
+          ? [{
+              text: languageLabel(block.language),
+              fontSize: 8,
+              color: '#999999',
+              margin: [2, 4, 0, 0] as [number, number, number, number],
+            }]
+          : []),
+        {
+          text: block.content,
+          fontSize: 9,
+          font: FONT_FAMILY, // 中文注释仍需中文字体；无等宽中文，接受
+          background: '#f5f5f5',
+          margin: [0, 1, 0, 8] as [number, number, number, number],
+        },
+      ]
     case 'quote':
       return {
         stack: block.blocks.map((b) => blockToPdf(b)),

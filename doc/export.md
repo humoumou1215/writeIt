@@ -25,6 +25,8 @@
 > 三种格式均会**展开嵌入块**：`![[path]]` / `![[path|ro]]` 的内容递归合并进导出文件（深度 ≤3、循环防护、源文件缺失时保留说明行）。
 > **链接引用导出展示内容**：`[[path#对象]]` 命中模板 suggest 对象 → 导出其 resolve 解析值（如版本号 v0.2.1）；标题引用 → 标题文本；文件引用 → 路径。
 > **Mermaid 代码块渲染为图片**：` ```mermaid ` 块在导出时渲染为 PNG 图片一并导出（md → data URI 图片；PDF/DOCX → 内嵌位图）。
+> **数学公式渲染为图片**：`$...$` / `$$...$$` 用 katex 渲染为 PNG（md 导出保留原文可编辑）。
+> 以上规则在**模板 export.ts 自定义时同样自动适用**（见 §2「公共规则」）。
 
 ## 2. 模板 `export.ts`（可选，与 rules/suggest 同范式）
 
@@ -56,17 +58,35 @@ interface ExportResult {
   format?: 'pdf' | 'docx' | 'md'
   filename?: string   // 不含扩展名
   content?: string    // markdown；缺省 = ctx.content
+  raw?: boolean       // true = content 原样导出，跳过公共规则（仅 md 格式生效）
 }
 ```
+
+### 公共规则（export.ts 无需重复写，自动适用）
+
+export.ts 只需写**差异**（format / filename / content），以下处理自动套用：
+
+- 嵌入块 `![[path]]` 内容展开（含只读嵌入）
+- 引用展示：`[[path#对象]]` → suggest resolve 值
+- Mermaid 代码块 → 图片
+- 数学公式 → katex 图片
+- 普通图片 → 内嵌（可 fetch 的 http(s)/data URI）
+- 表格对齐、代码语言标注、批注高亮、任务列表
+
+若确实需要**原样输出**（跳过全部处理），在 build 返回或模块顶层声明 `raw: true`（仅 md 格式；pdf/docx 必须结构化，忽略此标记）。
 
 ## 3. 默认导出管线（无 export.ts）
 
 ```
 当前文档 markdown
-  → mdast（unified + remark-parse + remark-gfm + 复用 remark-ref / remark-annotation）
+  → mdast（unified + remark-parse + remark-gfm + remark-math + 复用 remark-ref / remark-annotation）
   → 嵌入块递归合并（![[path]] 读源文件内容：深度 ≤3、循环防护、失败降级为路径行）
-  → 中间结构 ExportBlock（heading/paragraph/list/task/table/code/quote/hr）
-  → DOCX（docx 库）  /  PDF（pdfmake + 内置字体）
+  → 引用展示解析（[[path#对象]] → suggest resolve 值 / 标题 / 路径）
+  → mermaid 代码块 → PNG（htmlLabels:false 保证可 canvas 绘制）
+  → katex 公式 → PNG（offscreen DOM + html2canvas，仅 pdf/docx）
+  → 普通图片 fetch → data URI（可嵌入时）
+  → 中间结构 ExportBlock（heading/paragraph/list/task/table/code/quote/hr/image）
+  → DOCX（docx 库）  /  PDF（pdfmake + 内置字体）  /  md（remark-stringify，公式保留原文）
 ```
 
 自定义节点处理：
@@ -77,9 +97,13 @@ interface ExportResult {
 | `[[path#对象]]`（suggest 命中） | 导出 **resolve 解析值**（如版本号）；未命中 → 标题/路径文本 |
 | `[[path]]` / `[[path#标题]]` | 链接（DOCX 外部超链接 / PDF link 注解，可点击） |
 | ` ```mermaid ` 代码块 | 渲染为 **PNG 图片**导出（md → data URI；PDF/DOCX → 内嵌位图）；渲染失败保留代码块 |
+| `$...$` / `$$...$$` 公式 | **katex 渲染为 PNG**（PDF/DOCX）；md 导出保留原文（$..$ / latex 代码块） |
+| `![alt](url)` 普通图片 | 可 fetch 的 http(s)/data URI → 内嵌图片；失败降级文本（md 保留原链接） |
 | `<mark data-note>` 批注 | 黄色高亮文本 |
 | `doctype:` 首行 | 不导出 |
 | 任务列表 `- [x]` | ☑ / ☐ 前缀 |
+| 表格对齐 | `---:` / `:---:` 声明 → PDF/DOCX 单元格对齐 |
+| 代码块 | 语言标注（TS/JSON/SQL…）+ 背景；**不做语法高亮**（已知差距） |
 
 ## 4. 中文字体（PDF）
 
@@ -100,8 +124,8 @@ interface ExportResult {
 
 | 文件 | 职责 |
 |---|---|
-| `types.ts` | ExportContext / ExportResult / ExportModule / ExportOptions / ExportOutcome |
-| `mdast.ts` | md → ExportBlock / 展开后 markdown（嵌入块递归合并 + 引用展示解析 + mermaid 渲染 + fileRef 转链接） |
+| `types.ts` | ExportContext / ExportResult（含 raw）/ ExportModule / ExportOptions / ExportOutcome |
+| `mdast.ts` | md → ExportBlock / 展开后 markdown（嵌入块递归合并 + 引用展示解析 + mermaid/katex 渲染 + 图片 fetch + fileRef 转链接） |
 | `docx.ts` | ExportBlock → DOCX Blob（docx 库；宋体/黑体/Consolas + 编号 + 表格边框 + 高亮） |
 | `pdf.ts` | ExportBlock → PDF Blob（pdfmake；内置字体注册 + 段落/表格/代码/引用排版） |
 | `service.ts` | 编排：内容 → doctype → export.ts → 转换 → 落盘；调试钩子 `__exportDebug` |
@@ -110,6 +134,14 @@ interface ExportResult {
 | `src-tauri/src/lib.rs` | `save_binary` 命令（base64 解码写盘） |
 | `components/ExportModal.vue` | 导出弹窗 UI（图标列 📤 独立入口） |
 
-## 7. 测试
+## 7. 已知差距（与页面渲染的差异，v1 接受）
 
-`tests/e2e/export-e2e.js`（29 断言）：默认 PDF/DOCX/MD 导出（文件头验证）、独立导出弹窗 UI、**嵌入块导出包含内容**、**链接引用展示解析值**、**mermaid 渲染图片导出**、export.ts 自定义、无活动标签容错。全量回归 `npm run test:e2e`。
+| 场景 | 页面 | 导出 | 说明 |
+|---|---|---|---|
+| 代码语法高亮 | CodeMirror 高亮 | 语言标注 + 背景 | 高亮库体积大、文档价值有限；如需可后续加 |
+| HTML 块/内联 | 渲染 HTML | 原样文本 | 文档格式不支持任意 HTML |
+| 网络图片跨域 | 显示 | 降级文本 | CORS/离线限制；本地/同源可嵌入 |
+
+## 8. 测试
+
+`tests/e2e/export-e2e.js`（34 断言）：默认 PDF/DOCX/MD 导出（文件头验证）、独立导出弹窗 UI、**嵌入块导出包含内容**、**链接引用展示解析值**、**mermaid 渲染图片导出**、**katex 公式渲染图片导出**、export.ts 自定义 + 公共规则、无活动标签容错。全量回归 `npm run test:e2e`。

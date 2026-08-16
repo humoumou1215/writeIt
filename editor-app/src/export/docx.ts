@@ -19,6 +19,7 @@ import {
   type TableBorders,
 } from 'docx'
 import type { ExportBlock, ExportImage, ExportTable, InlineNode } from './mdast'
+import { languageLabel } from './mdast'
 
 // 字体名（引用式，打开方提供）：正文宋体、标题黑体、代码 Consolas
 const BODY_FONT = '宋体'
@@ -42,7 +43,7 @@ function headingSize(level: number): number {
 
 // ---------- 行内 ----------
 
-function inlineRun(n: InlineNode, baseSize = 21): TextRun {
+function inlineRun(n: InlineNode, baseSize = 21): TextRun | ImageRun {
   if (n.kind === 'link') {
     const text = flattenText(n.text)
     return new TextRun({
@@ -52,6 +53,11 @@ function inlineRun(n: InlineNode, baseSize = 21): TextRun {
       bold: n.text.some((x) => x.kind === 'text' && x.bold),
       italics: n.text.some((x) => x.kind === 'text' && x.italic),
     })
+  }
+  if (n.kind === 'image') {
+    const b64 = n.dataUri.split(',')[1] ?? ''
+    const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    return new ImageRun({ type: 'png', data, transformation: { width: n.width, height: n.height } })
   }
   return new TextRun({
     text: n.value,
@@ -66,12 +72,12 @@ function inlineRun(n: InlineNode, baseSize = 21): TextRun {
 
 function flattenText(nodes: InlineNode[]): string {
   return nodes
-    .map((n) => (n.kind === 'text' ? n.value : flattenText(n.text)))
+    .map((n) => (n.kind === 'text' ? n.value : n.kind === 'link' ? flattenText(n.text) : ''))
     .join('')
 }
 
-function inlineParagraph(nodes: InlineNode[], opts: { size?: number; font?: string; bold?: boolean } = {}): Paragraph {
-  const runs: TextRun[] = []
+function inlineParagraph(nodes: InlineNode[], opts: { size?: number; font?: string; bold?: boolean; align?: (typeof AlignmentType)[keyof typeof AlignmentType] } = {}): Paragraph {
+  const runs: Array<TextRun | ImageRun> = []
   // 链接：整体作为一个 ExternalHyperlink
   let i = 0
   while (i < nodes.length) {
@@ -83,12 +89,12 @@ function inlineParagraph(nodes: InlineNode[], opts: { size?: number; font?: stri
           children: [new TextRun({ text: flattenText(n.text), style: 'Hyperlink', size: opts.size ?? 21, bold: opts.bold })],
         }) as unknown as TextRun
       )
-    } else if (n.kind === 'text') {
+    } else if (n.kind === 'text' || n.kind === 'image') {
       runs.push(inlineRun(n, opts.size))
     }
     i++
   }
-  return new Paragraph({ children: runs })
+  return new Paragraph({ alignment: opts.align, children: runs })
 }
 
 /** 引用块段落：灰色斜体 + 左缩进 */
@@ -126,18 +132,21 @@ const tableBorders: TableBorders = {
 }
 
 function tableToDocx(t: ExportTable): Table {
-  const cell = (nodes: InlineNode[], header: boolean): TableCell =>
+  const aligns = t.align ?? []
+  const cellAlign = (i: number): (typeof AlignmentType)[keyof typeof AlignmentType] =>
+    aligns[i] === 'center' ? AlignmentType.CENTER : aligns[i] === 'right' ? AlignmentType.RIGHT : AlignmentType.LEFT
+  const cell = (nodes: InlineNode[], header: boolean, i: number): TableCell =>
     new TableCell({
       shading: header ? { type: ShadingType.CLEAR, fill: 'EEEEEE' } : undefined,
       margins: { top: 80, bottom: 80, left: 100, right: 100 },
-      children: [inlineParagraph(nodes, { size: 20, bold: header })],
+      children: [inlineParagraph(nodes, { size: 20, bold: header, align: cellAlign(i) })],
     })
   const rows: TableRow[] = []
   if (t.header.length) {
-    rows.push(new TableRow({ tableHeader: true, children: t.header.map((c) => cell(c, true)) }))
+    rows.push(new TableRow({ tableHeader: true, children: t.header.map((c, i) => cell(c, true, i)) }))
   }
   for (const r of t.rows) {
-    rows.push(new TableRow({ children: r.map((c) => cell(c, false)) }))
+    rows.push(new TableRow({ children: r.map((c, i) => cell(c, false, i)) }))
   }
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -175,12 +184,14 @@ function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): A
                   link: n.href,
                   children: [new TextRun({ text: flattenText(n.text), style: 'Hyperlink', size })],
                 }) as unknown as TextRun)
-              : new TextRun({
-                  text: n.value,
-                  bold: true,
-                  font: { ascii: 'Calibri', eastAsia: HEADING_FONT },
-                  size,
-                })
+              : n.kind === 'image'
+                ? inlineRun(n, size)
+                : new TextRun({
+                    text: n.value,
+                    bold: true,
+                    font: { ascii: 'Calibri', eastAsia: HEADING_FONT },
+                    size,
+                  })
           ),
         }),
       ]
@@ -231,10 +242,19 @@ function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): A
       return [imageToDocx(block)]
     case 'code': {
       const lines = block.content.split('\n')
-      return [
+      const paras: Paragraph[] = []
+      if (block.language) {
+        paras.push(
+          new Paragraph({
+            spacing: { before: 80, after: 0 },
+            children: [new TextRun({ text: languageLabel(block.language), size: 16, color: '999999', font: { ascii: CODE_FONT, eastAsia: BODY_FONT } })],
+          })
+        )
+      }
+      paras.push(
         new Paragraph({
           shading: { type: ShadingType.CLEAR, fill: 'F5F5F5' },
-          spacing: { before: 80, after: 80 },
+          spacing: { before: 40, after: 80 },
           children: [
             new TextRun({
               text: lines.join('\n'),
@@ -242,8 +262,9 @@ function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): A
               size: 18,
             }),
           ],
-        }),
-      ]
+        })
+      )
+      return paras
     }
     case 'quote':
       return block.blocks.flatMap((b) => blockToDocx(b, numberingRef, true))
@@ -260,7 +281,12 @@ function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): A
 }
 
 /** 引用块内的行内 run（灰色斜体） */
-function quotedRun(n: InlineNode): TextRun {
+function quotedRun(n: InlineNode): TextRun | ImageRun {
+  if (n.kind === 'image') {
+    const b64 = n.dataUri.split(',')[1] ?? ''
+    const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    return new ImageRun({ type: 'png', data, transformation: { width: n.width, height: n.height } })
+  }
   if (n.kind === 'link' && n.href) {
     return new ExternalHyperlink({
       link: n.href,
