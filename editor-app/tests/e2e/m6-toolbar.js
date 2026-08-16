@@ -50,12 +50,16 @@ const { chromium } = require('playwright');
     ok('批注节点插入（mark.annotation）', marks > 0);
     const md = await page.evaluate(() => window.__editorGetMarkdown());
     console.log('[debug] md:', JSON.stringify(md.slice(-120)));
-    ok('md 含线程 JSON（人工批注内容）', md.includes('&quot;人工批注内容&quot;'));
+    // v7.1：单引号属性 + JSON 双引号原样（不再 &quot; 转义）
+    ok('md 含线程 JSON（人工批注内容）', /data-note='[^']*"c":"人工批注内容"/.test(md));
     // 批注卡无删除按钮（v4 决策）
     await page.locator('.ProseMirror mark.annotation').first().click();
     await page.waitForTimeout(800);
     const delBtn = await page.locator('.ad-card.active .mini.danger').count();
     ok('批注卡无删除按钮', delBtn === 0);
+    // v6：卡片默认收起，点击头部展开（显示回复输入框）
+    await page.locator('.ad-card.active .ad-card-head').first().click();
+    await page.waitForTimeout(600);
     // Enter 换行不提交 + ESC 清空
     const rta = page.locator('.ad-card.active .ad-reply textarea');
     await rta.fill('第一行');

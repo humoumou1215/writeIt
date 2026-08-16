@@ -72,7 +72,9 @@ const { chromium } = require('playwright');
       });
       console.log('[debug] 源文件内容:', JSON.stringify(source));
       ok('写回：源文件含 <mark data-note', source.includes('<mark data-note='));
-      ok('写回：note 为单次转义（含 &quot;评2&quot;）', source.includes('&quot;评2&quot;'));
+      // v7.1：单引号属性值 + JSON 双引号原样（可读性优化）
+      ok('写回：单引号属性 + JSON 双引号原样（评2）', /data-note='[^']*"c":"评2"/.test(source));
+      ok('写回：无 HTML 实体转义（不含 &quot;）', !source.includes('&quot;'));
       ok('写回：无双重转义（不含 &amp;quot;）', !source.includes('&amp;quot;'));
 
       // 5. 打开源文件 笔记/待办清单.md（打开文件不收纳；若已收纳则先展开）

@@ -7,6 +7,8 @@ import { isEditableFile, type FsEntry } from './fs/types'
 import { isGitAvailable } from './git'
 import GitPanel from './components/GitPanel.vue'
 import TabContextMenu from './components/TabContextMenu.vue'
+import MenuIcon, { type MenuIconSet } from './components/MenuIcon.vue'
+import GradientDefs from './components/GradientDefs.vue'
 import {
   openDirectory,
   refreshTree,
@@ -133,6 +135,8 @@ function onGitIcon() {
     toast('Git 功能仅在桌面应用中可用（当前为浏览器演示模式）', 'info')
     return
   }
+  // 侧边栏收起时点 🔀：先展开（Git 面板在侧边栏内，否则点了看不见）
+  if (state.sidebarCollapsed) state.sidebarCollapsed = false
   state.gitPanel.tab = 'git'
 }
 
@@ -301,6 +305,8 @@ function onTreeRootDrop(e: DragEvent) {
 
 <template>
   <div class="app">
+    <!-- 多彩渐变套的全局渐变定义（一次性） -->
+    <GradientDefs />
     <!-- 主体：侧边栏 + 主区域 -->
     <div class="body">
       <div class="sidebar">
@@ -311,7 +317,7 @@ function onTreeRootDrop(e: DragEvent) {
           :title="`文件目录（${settings.shortcuts.toggleSidebar || 'Ctrl+B'}）`"
           @click="toggleSidebar"
         >
-          📁
+          <MenuIcon name="files" :set="settings.iconSet" />
         </button>
         <button
           class="icon-btn"
@@ -320,28 +326,28 @@ function onTreeRootDrop(e: DragEvent) {
           :style="{ opacity: isGitAvailable() ? undefined : 0.35 }"
           @click="onGitIcon"
         >
-          🔀
+          <MenuIcon name="git" :set="settings.iconSet" />
         </button>
         <button
           class="icon-btn"
           :title="`设置（${settings.shortcuts.settings || 'Ctrl+,'}）`"
           @click="openSettings('general')"
         >
-          ⚙️
+          <MenuIcon name="settings" :set="settings.iconSet" />
         </button>
         <button
           class="icon-btn"
           title="快捷键设置"
           @click="openSettings('shortcuts')"
         >
-          ⌨️
+          <MenuIcon name="shortcuts" :set="settings.iconSet" />
         </button>
         <button
           class="icon-btn"
           title="导出当前文档（PDF / DOCX / Markdown）"
           @click="state.exportOpen = true"
         >
-          📤
+          <MenuIcon name="export" :set="settings.iconSet" />
         </button>
       </div>
 
@@ -360,38 +366,29 @@ function onTreeRootDrop(e: DragEvent) {
             :title="settings.sidebarPinned ? '已固定（点击编辑区不自动收纳）· 点击取消固定' : '固定侧边栏（点击编辑区时不自动收纳）'"
             @click="togglePin"
           >
-            📌
+            <MenuIcon name="pin" :set="settings.iconSet" :size="14" />
           </button>
         </div>
-        <div class="sidebar-actions">
-          <div class="panel-tabs">
-            <button
-              class="panel-tab"
-              :class="{ active: state.gitPanel.tab === 'files' }"
-              @click="state.gitPanel.tab = 'files'"
-            >
-              📁 文件
-            </button>
-            <button
-              class="panel-tab"
-              :class="{ active: state.gitPanel.tab === 'git', disabled: !isGitAvailable() }"
-              @click="onGitIcon"
-            >
-              🔀 Git
-            </button>
-          </div>
-          <template v-if="state.gitPanel.tab === 'files'">
-            <button
-              class="mini wide"
-              title="在文件树中定位当前文件（展开目录 + 高亮）"
-              @click="revealActiveFile"
-            >
-              🎯 定位
-            </button>
-            <button class="mini" title="新建文件" @click="startNewFile('')">＋文件</button>
-            <button class="mini" title="新建文件夹" @click="startNewDir('')">＋目录</button>
-            <button class="mini" title="刷新" @click="refreshTree">⟳</button>
-          </template>
+        <div v-if="state.gitPanel.tab === 'files'" class="sidebar-actions">
+          <button
+            class="mini wide"
+            title="在文件树中定位当前文件（展开目录 + 高亮）"
+            @click="revealActiveFile"
+          >
+            <MenuIcon name="locate" :set="settings.iconSet" :size="14" />
+            <span>定位</span>
+          </button>
+          <button class="mini" title="新建文件" @click="startNewFile('')">
+            <MenuIcon name="fileNew" :set="settings.iconSet" :size="14" />
+            <span>文件</span>
+          </button>
+          <button class="mini" title="新建文件夹" @click="startNewDir('')">
+            <MenuIcon name="dirNew" :set="settings.iconSet" :size="14" />
+            <span>目录</span>
+          </button>
+          <button class="mini" title="刷新" @click="refreshTree">
+            <MenuIcon name="refresh" :set="settings.iconSet" :size="14" />
+          </button>
         </div>
         <div v-show="state.gitPanel.tab === 'files'" class="tree" @dragover="onTreeRootDragOver" @drop="onTreeRootDrop">
           <FileTree
@@ -405,7 +402,9 @@ function onTreeRootDrop(e: DragEvent) {
             v-if="state.editing?.mode === 'new' && state.editing.path === ''"
             class="tree-new-root"
           >
-            <span class="icon">{{ state.editing.kind === 'dir' ? '📁' : '📄' }}</span>
+            <span class="icon">
+              <MenuIcon :name="state.editing.kind === 'dir' ? 'folder' : 'file'" :set="settings.iconSet" :size="14" />
+            </span>
             <NewInput
               :placeholder="state.editing.kind === 'file' ? '新文件.md' : '新文件夹'"
               @commit="commitEditing"
@@ -527,21 +526,21 @@ function onTreeRootDrop(e: DragEvent) {
   height: 34px;
   border: none;
   background: transparent;
-  font-size: 17px;
   border-radius: 8px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.65;
+  color: var(--chrome-on-surface-variant);
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 .icon-btn:hover {
   background: var(--chrome-hover);
-  opacity: 1;
+  color: var(--chrome-primary);
 }
 .icon-btn.active {
   background: var(--chrome-selected);
-  opacity: 1;
+  color: var(--chrome-primary);
 }
 
 /* 内容列 */
@@ -597,6 +596,12 @@ function onTreeRootDrop(e: DragEvent) {
   border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mini .mi {
+  flex-shrink: 0;
 }
 .mini:hover {
   background: var(--chrome-hover);
@@ -631,42 +636,13 @@ function onTreeRootDrop(e: DragEvent) {
   flex-shrink: 0;
   align-items: center;
 }
-/* M11：内容列双面板 tab（文件 / Git） */
-.panel-tabs {
-  display: flex;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.panel-tab {
-  flex: 1;
-  border: none;
-  background: transparent;
-  color: var(--chrome-on-surface-variant);
-  font-size: 11px;
-  padding: 4px 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-}
-.panel-tab.active {
-  background: var(--chrome-selected);
-  color: var(--chrome-primary);
-  font-weight: 600;
-}
-.panel-tab:hover:not(.disabled) {
-  background: var(--chrome-hover);
-}
-.panel-tab.disabled {
-  opacity: 0.4;
-  cursor: default;
-}
 .mini.wide {
   flex: 1;
   text-align: left;
   padding: 4px 8px;
   border: 1px solid var(--chrome-border);
   border-radius: 6px;
+  justify-content: flex-start;
 }
 .mini.wide:hover {
   border-color: var(--chrome-primary);
@@ -689,8 +665,11 @@ function onTreeRootDrop(e: DragEvent) {
 .tree-new-root .icon {
   font-size: 13px;
   width: 18px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  color: var(--chrome-on-surface-variant);
 }
 .empty {
   padding: 16px;

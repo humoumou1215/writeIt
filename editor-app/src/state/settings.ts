@@ -20,6 +20,14 @@ export const THEMES = [
 
 export type ThemeId = (typeof THEMES)[number]['id']
 
+// 菜单栏图标风格（三套，见 components/MenuIcon.vue）
+export type IconSetId = 'line' | 'soft' | 'gradient'
+export const ICON_SETS: { id: IconSetId; label: string; desc: string }[] = [
+  { id: 'line', label: '细线', desc: '1.7px 圆角描边，简洁克制，随主题变色' },
+  { id: 'soft', label: '圆润双色', desc: '主色 + 柔和底色，亲和饱满' },
+  { id: 'gradient', label: '多彩渐变', desc: '每图标独立渐变，活泼有品牌感' },
+]
+
 const SETTINGS_KEY = 'milkdown-note-settings-v1'
 
 // ---------- 快捷键 ----------
@@ -96,6 +104,8 @@ export function comboMatches(e: KeyboardEvent, combo: string): boolean {
 
 export interface AppSettings {
   theme: ThemeId
+  /** 菜单栏图标风格 */
+  iconSet: IconSetId
   autoSave: boolean
   autoSaveDelay: number // ms
   /** 侧边栏内容列宽度（px） */
@@ -114,6 +124,7 @@ export interface AppSettings {
 
 const defaultSettings: AppSettings = {
   theme: 'frame',
+  iconSet: 'gradient',
   autoSave: false,
   autoSaveDelay: 2000,
   sidebarWidth: 250,

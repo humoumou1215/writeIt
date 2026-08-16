@@ -22,7 +22,7 @@ const { chromium } = require('playwright');
   // 1. 无顶栏 + 新侧边栏结构
   check('顶栏已移除', await page.locator('.topbar').count() === 0);
   check('图标列存在', await page.locator('.icon-col').count() === 1);
-  check('图标列含 📁 和 ⚙️', (await page.locator('.icon-col .icon-btn').count()) >= 2);
+  check('图标列 ≥2 个按钮', (await page.locator('.icon-col .icon-btn').count()) >= 2);
   check('内容列默认展开', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
   check('状态栏保留', await page.locator('.statusbar').count() === 1);
 
@@ -136,7 +136,7 @@ const { chromium } = require('playwright');
   await page.screenshot({ path: shots + '/05-固定侧边栏.png' });
 
   // 13. 侧边栏新建文件（原顶栏按钮 → 侧边栏）
-  await page.locator('.sidebar-actions .mini', { hasText: '＋文件' }).click();
+  await page.locator('.sidebar-actions .mini[title="新建文件"]').click();
   await page.waitForTimeout(300);
   await page.locator('.tree .rename-input').fill('新布局文件.md');
   await page.keyboard.press('Enter');

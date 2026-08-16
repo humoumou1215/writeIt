@@ -3,6 +3,7 @@ import { ref, onMounted, nextTick } from 'vue'
 import type { FsEntry } from '../fs/types'
 import { isEditableFile } from '../fs/types'
 import { state, toast } from '../state/store'
+import { settings } from '../state/settings'
 import { openTab } from '../editor/manager'
 import {
   toggleExpand,
@@ -21,6 +22,7 @@ import {
   type DropPosition,
 } from '../state/treeOps'
 import NewInput from './NewInput.vue'
+import MenuIcon from './MenuIcon.vue'
 
 defineOptions({ name: 'TreeNode' })
 
@@ -142,9 +144,20 @@ const dropVisual = () => {
       @dragend="onDragEnd"
     >
       <span class="arrow" :class="{ open: isExpanded(node.path) }">
-        {{ node.kind === 'dir' ? '▸' : '' }}
+        <MenuIcon
+          v-if="node.kind === 'dir'"
+          name="chevron"
+          :set="settings.iconSet"
+          :size="12"
+        />
       </span>
-      <span class="icon">{{ node.kind === 'dir' ? '📁' : '📄' }}</span>
+      <span class="icon">
+        <MenuIcon
+          :name="node.kind === 'dir' ? 'folder' : 'file'"
+          :set="settings.iconSet"
+          :size="15"
+        />
+      </span>
       <input
         v-if="isRenaming()"
         ref="inputEl"
@@ -170,7 +183,8 @@ const dropVisual = () => {
           title="新建文件"
           @click.stop="startNewFile(node.path)"
         >
-          ＋文件
+          <MenuIcon name="fileNew" :set="settings.iconSet" :size="12" />
+          <span>文件</span>
         </button>
         <button
           v-if="node.kind === 'dir'"
@@ -178,9 +192,12 @@ const dropVisual = () => {
           title="新建文件夹"
           @click.stop="startNewDir(node.path)"
         >
-          ＋目录
+          <MenuIcon name="dirNew" :set="settings.iconSet" :size="12" />
+          <span>目录</span>
         </button>
-        <button class="mini" title="重命名" @click.stop="startRename(node.path)">✎</button>
+        <button class="mini" title="重命名" @click.stop="startRename(node.path)">
+          <MenuIcon name="rename" :set="settings.iconSet" :size="12" />
+        </button>
       </span>
     </div>
 
@@ -190,7 +207,13 @@ const dropVisual = () => {
       class="node new-row"
       :style="{ paddingLeft: (depth + 1) * 14 + 6 + 'px' }"
     >
-      <span class="icon">{{ state.editing.kind === 'dir' ? '📁' : '📄' }}</span>
+      <span class="icon">
+        <MenuIcon
+          :name="state.editing.kind === 'dir' ? 'folder' : 'file'"
+          :set="settings.iconSet"
+          :size="15"
+        />
+      </span>
       <NewInput
         :placeholder="state.editing.kind === 'file' ? '新文件.md' : '新文件夹'"
         @commit="commitEditing"
@@ -280,9 +303,14 @@ const dropVisual = () => {
   transform: rotate(90deg);
 }
 .icon {
-  font-size: 13px;
   width: 18px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--chrome-on-surface-variant);
+}
+.icon .mi {
   flex-shrink: 0;
 }
 .name {
@@ -298,6 +326,25 @@ const dropVisual = () => {
   display: none;
   gap: 2px;
   flex-shrink: 0;
+  align-items: center;
+}
+.actions .mini {
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  line-height: 1;
+}
+.actions .mini:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-primary);
 }
 .node:hover .actions {
   display: inline-flex;

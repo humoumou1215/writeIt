@@ -30,12 +30,26 @@ const { chromium } = require('playwright');
   ok('抽屉显示 2 张卡（人工 + 校验）', cards === 2);
   const threadText = await page.locator('.ad-card .ad-comment-content').first().textContent().catch(() => '');
   ok('人工批注评论内容显示', (threadText || '').includes('验收标准'));
+  // body 撑满抽屉宽度（bugfix：flex-basis auto 在短内容时收缩 → 右侧空隙）
+  const bodyGap = await page.evaluate(() => {
+    const drawer = document.querySelector('.annotation-drawer.open');
+    const body = drawer?.querySelector('.annotation-drawer-body');
+    if (!drawer || !body) return 999;
+    const dr = drawer.getBoundingClientRect();
+    const br = body.getBoundingClientRect();
+    return Math.round(dr.right - br.right);
+  });
+  ok('抽屉 body 撑满宽度（无右侧空隙）', bodyGap <= 1);
 
-  // 2. 校验违规只读卡（无回复输入）
+  // 2. 校验违规只读卡（无回复输入）；v6：卡片默认收起，点击头部才展开
   const readonlyCards = await page.locator('.ad-card.read-only').count();
   ok('校验违规只读卡', readonlyCards === 1);
+  const replyBoxes0 = await page.locator('.ad-reply').count();
+  ok('初始批注卡收起（无回复框）', replyBoxes0 === 0);
+  await page.locator('.ad-card:not(.read-only) .ad-card-head').first().click();
+  await page.waitForTimeout(600);
   const replyBoxes = await page.locator('.ad-reply').count();
-  ok('只有人工批注卡有回复框（1 个）', replyBoxes === 1);
+  ok('点击头部展开后回复框 1 个', replyBoxes === 1);
 
   // 3. 回复评论（追加线程）
   await page.locator('.ad-reply textarea').fill('我补充了量化指标：通过率 ≥ 95%');
@@ -47,10 +61,10 @@ const { chromium } = require('playwright');
   // 4. 持久化 round-trip（md 里线程 JSON 两条）
   const md = await page.evaluate(() => window.__editorGetMarkdown());
   const parseOk = await page.evaluate((t) => {
-    // 从 md 提取 data-note 检查 JSON
-    const m = /data-note="([^"]*)"/.exec(t);
+    // 从 md 提取 data-note 检查 JSON（v7.1：单引号属性；值内允许 JSON 双引号）
+    const m = /data-note=(["'])((?:(?!\1).)*)\1/.exec(t);
     if (!m) return false;
-    const arr = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
+    const arr = JSON.parse(m[2].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
     return Array.isArray(arr) && arr.length === 2;
   }, md);
   ok('线程持久化到 md（2 条评论 JSON）', parseOk);
@@ -98,27 +112,48 @@ const { chromium } = require('playwright');
   });
   ok('再点圆 → 重新打开（空圆）', reopenedDot === true);
 
-  // 6. 点击正文锚点 → 激活批注 + 连线出现
+  // 6. 点击正文锚点 → 激活批注 + 连线出现（v6：激活但卡片仍收起）
   await page.locator('.ProseMirror mark.annotation').first().click();
   await page.waitForTimeout(800);
   const activeCard = await page.locator('.ad-card.active').count();
   ok('点击锚点激活对应批注卡', activeCard > 0);
-  // 点击卡片头部 → 折叠：评论列表仍显示、输入框隐藏 → 再点展开
+  const activeCollapsed = await page.locator('.ad-card.active.collapsed').count();
+  ok('激活后卡片默认收起', activeCollapsed > 0);
+  // 点击卡片头部 → 展开：输入框出现
+  await page.locator('.ad-card.active .ad-card-head').first().click();
+  await page.waitForTimeout(600);
+  const expanded = await page.locator('.ad-card.active:not(.collapsed)').count();
+  ok('点击头部展开', expanded > 0);
+  const replyShown = await page.locator('.ad-card.active:not(.collapsed) .ad-reply').count();
+  ok('展开时显示评论输入框', replyShown > 0);
+  // 再点头部 → 收起：评论列表仍显示、输入框隐藏
   await page.locator('.ad-card.active .ad-card-head').first().click();
   await page.waitForTimeout(600);
   const collapsedCard = await page.locator('.ad-card.active.collapsed').count();
-  ok('点击卡片头部折叠', collapsedCard > 0);
+  ok('再点头部收起', collapsedCard > 0);
   const replyHidden = await page.locator('.ad-card.active.collapsed .ad-reply').count();
-  ok('折叠时无评论输入框', replyHidden === 0);
+  ok('收起时无评论输入框', replyHidden === 0);
   const commentsShown = await page.evaluate(() => {
     const card = document.querySelector('.ad-card.active.collapsed');
     return card ? card.querySelectorAll('.ad-comment').length : 0;
   });
-  ok('折叠仍显示评论列表', commentsShown > 0);
-  await page.locator('.ad-card.active .ad-card-head').first().click();
+  ok('收起仍显示评论列表', commentsShown > 0);
+  // 点击其他卡片（只读卡）→ 展开的人工卡收起
+  await page.locator('.ad-card.active .ad-card-head').first().click(); // 先重新展开
   await page.waitForTimeout(600);
-  const expanded = await page.locator('.ad-card.active:not(.collapsed)').count();
-  ok('再点展开（输入框回来）', expanded > 0);
+  await page.waitForSelector('.ad-card.read-only', { timeout: 10000 });
+  await page.locator('.ad-card.read-only').first().click();
+  await page.waitForTimeout(600);
+  const humanCollapsed = await page.evaluate(() => {
+    const human = document.querySelector('.ad-card:not(.read-only)');
+    return human ? human.classList.contains('collapsed') : false;
+  });
+  ok('点击其他卡片 → 人工卡收起', humanCollapsed === true);
+  // 再点击人工卡头部 → 展开（恢复展开态，供连线检查）
+  await page.locator('.ad-card:not(.read-only) .ad-card-head').first().click();
+  await page.waitForTimeout(600);
+  const expandedAgain = await page.locator('.ad-card.active:not(.collapsed)').count();
+  ok('再点人工卡头部展开', expandedAgain > 0);
   const connDisplay = await page.evaluate(() => {
     const svg = document.querySelector('.annotation-connector');
     return svg ? getComputedStyle(svg).display : 'none';

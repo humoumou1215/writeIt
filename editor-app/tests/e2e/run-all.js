@@ -18,6 +18,7 @@ const SUITES = [
   'm6-toolbar',   // M6 Toolbar/Ctrl+R
   'm6c-e2e',      // M6 抽屉/评论线程
   'm6d-e2e',      // M6 嵌入块批注写回 round-trip（双重转义回归）
+  'm6e-e2e',      // M6 代码块整块批注（变体 D：mermaid 内批注自动升级）
   'source-e2e',   // M7 源码查看模式（Ctrl+E 切换）
   'drag-e2e',     // M7 文件树拖拽移动 + 瞄准定位
   'm7-apidoc-e2e',// M7 接口文档：动态对象 objectsFor + findCodeBlocks

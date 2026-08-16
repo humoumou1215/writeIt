@@ -10,6 +10,8 @@ import { git, isGitAvailable } from '../git'
 import type { GitCommit, GitFileStatus } from '../git'
 import { openGitDiff } from '../editor/manager'
 import { baseName } from '../fs/types'
+import { settings } from '../state/settings'
+import MenuIcon from './MenuIcon.vue'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -196,7 +198,10 @@ defineExpose({ loadAll })
   <div class="git-panel">
     <!-- 仓库状态条 -->
     <div class="git-head">
-      <button class="mini" title="刷新" @click="loadAll">⟳</button>
+      <button class="mini" title="返回文件树" @click="state.gitPanel.tab = 'files'">← 文件</button>
+      <button class="mini" title="刷新" @click="loadAll">
+        <MenuIcon name="refresh" :set="settings.iconSet" :size="14" />
+      </button>
       <span v-if="state.gitPanel.repo?.isRepo" class="repo-badge" :title="state.gitPanel.repo.headHash ?? ''">
         ⓘ {{ state.gitPanel.repo.branch ?? '(detached)' }}
       </span>

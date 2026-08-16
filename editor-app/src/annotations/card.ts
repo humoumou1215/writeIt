@@ -4,7 +4,7 @@
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { setActiveAnnotation, addAnnotation } from './service'
+import { setActiveAnnotation, addAnnotation, findCodeBlockInSelection, addBlockAnnotation } from './service'
 import { state, toast } from '../state/store'
 
 let activeTabId = ''
@@ -73,18 +73,27 @@ let inputEl: HTMLDivElement | null = null
 let inputEditor: Editor | null = null
 let inputFrom = -1
 let inputTo = -1
+// v7 变体 D：选区涉及 code_block → 整块批注（锚点=代码块摘要，批注节点放代码块上方段落）
+let inputBlockMode = false
+let inputBlockPos = -1
 
 // Enter 确认提交（Ctrl+R / Toolbar 共用逻辑）
 // 返回新批注节点在 doc 中的位置（其后的光标恢复用；doc 已插入节点，原选区已漂移）
 async function submitAnnotation(
   text: string
-): Promise<{ pos: number; nodeSize: number } | null> {
+): Promise<{ pos: number; nodeSize: number; shift?: number } | null> {
   if (!inputEditor || inputTo <= inputFrom) return null
   const { resolveUserName } = await import('./user-name')
   const name = await resolveUserName()
+  let info: { pos: number; nodeSize: number; shift?: number } | null = null
+  // 变体 D：代码块内选中 → 整块批注（返回的 shift 供光标恢复到代码块内原位）
+  if (inputBlockMode && inputBlockPos >= 0) {
+    info = addBlockAnnotation(inputEditor, inputBlockPos, text, name)
+    if (info) setActiveAnnotation('', `p-${info.pos}`)
+    return info
+  }
   addAnnotation(inputEditor, inputFrom, inputTo, text, name)
   // 激活新批注（抽屉展开定位）
-  let info: { pos: number; nodeSize: number } | null = null
   inputEditor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const doc = view.state.doc
@@ -124,6 +133,17 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
   inputEditor = editor
   inputFrom = from
   inputTo = to
+  // 变体 D：检测选区是否涉及 code_block → 整块批注模式
+  inputBlockMode = false
+  inputBlockPos = -1
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const cb = findCodeBlockInSelection(view.state.doc, from, to)
+    if (cb) {
+      inputBlockMode = true
+      inputBlockPos = cb.pos
+    }
+  })
   if (!inputEl) {
     inputEl = document.createElement('div')
     inputEl.className = 'annotation-input'
@@ -146,7 +166,12 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
           void submitAnnotation(text)
             .then((info) => {
               if (info) {
-                restoreEditorFocusSeq(info.pos + 1, info.pos + info.nodeSize - 1)
+                if (info.shift) {
+                  // 块级批注：光标恢复到代码块内原选区（插入段落使位置整体后移 shift）
+                  restoreEditorFocusSeq(inputFrom + info.shift, inputTo + info.shift)
+                } else {
+                  restoreEditorFocusSeq(info.pos + 1, info.pos + info.nodeSize - 1)
+                }
               } else {
                 restoreEditorFocusSeq(inputFrom, inputTo)
               }
@@ -170,6 +195,10 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
   }
   const ta = inputEl.querySelector('.annotation-input-ta') as HTMLTextAreaElement
   ta.value = ''
+  // 块级批注提示：告知用户将以整个代码块为锚点
+  ta.placeholder = inputBlockMode
+    ? '代码块内批注将以整个代码块为锚点；esc取消，enter确认'
+    : '在此输入评论，esc取消，enter确认，shift+enter换行'
   // 先显示再测量（display:none 时 offsetHeight=0），同步 reflow 拿到真实尺寸后定位
   inputEl.classList.add('annotation-input-visible')
   // 定位：跟随选区（用编辑器 view 的 coords，视口相对）

@@ -97,7 +97,7 @@ const { chromium } = require('playwright');
   await page.waitForTimeout(1200);
   // 确保侧边栏展开（打开文件不收纳；若已收纳则点 📁 展开）
   if (await page.locator('.content-col.collapsed').count()) {
-    await page.locator('.icon-btn', { hasText: '📁' }).click();
+    await page.locator('.icon-btn[title^="文件目录"]').click();
     await page.waitForTimeout(600);
   }
   await page.locator('.tree .name', { hasText: 'README.md' }).click();

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WriteIt · 图标选型（菜单栏 + 文件树）</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --border: #e2e5ea;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --primary: #4f46e5;
+    --selected: #eef0fd;
+    --hover: #eceef2;
+    --shadow: 0 10px 30px rgba(20, 24, 40, .10);
+    --chrome-primary: #4f46e5;
+    --chrome-on-surface-variant: #6b7280;
+    --chrome-selected: #eef0fd;
+    --chrome-hover: #eceef2;
+    --chrome-border: #e2e5ea;
+    --chrome-background: #f4f5f7;
+    --chrome-surface: #ffffff;
+    --chrome-on-background: #1f2430;
+    --chrome-reveal: rgba(77, 70, 229, .14);
+  }
+  html.dark {
+    --bg: #151823;
+    --surface: #1d2130;
+    --border: #2b3044;
+    --text: #e6e8f0;
+    --muted: #8a93a8;
+    --primary: #8b9aff;
+    --selected: #2a3050;
+    --hover: #252a3d;
+    --shadow: 0 10px 30px rgba(0, 0, 0, .45);
+    --chrome-primary: #8b9aff;
+    --chrome-on-surface-variant: #8a93a8;
+    --chrome-selected: #2a3050;
+    --chrome-hover: #252a3d;
+    --chrome-border: #2b3044;
+    --chrome-background: #151823;
+    --chrome-surface: #1d2130;
+    --chrome-on-background: #e6e8f0;
+    --chrome-reveal: rgba(139, 154, 255, .18);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 40px 24px 80px;
+    transition: background .2s ease, color .2s ease;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: .5px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 28px; line-height: 1.7; }
+  .theme-toggle {
+    float: right; margin-top: -6px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    border-radius: 999px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--primary); }
+  .tag { display:inline-block; background:var(--selected); color:var(--primary); border-radius:999px; padding:2px 10px; font-size:12px; margin-right:8px; }
+
+  /* ---------- 方案卡片 ---------- */
+  .set-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 26px 28px 30px;
+    margin-bottom: 26px;
+    box-shadow: var(--shadow);
+  }
+  .set-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .set-badge { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--selected); color: var(--primary); }
+  .set-head h2 { font-size: 19px; margin: 0; }
+  .set-desc { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+  .sec-title { font-size: 13px; font-weight: 700; color: var(--muted); margin: 22px 0 10px; letter-spacing: .3px;}
+
+  .icon-row {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 18px; border-radius: 12px;
+    background: var(--bg);
+    border: 1px dashed var(--border);
+    margin-bottom: 22px;
+  }
+  .cell {
+    flex: 1 1 96px; min-width: 96px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 10px 4px; border-radius: 10px;
+  }
+  .cell .icon {
+    width: 56px; height: 56px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--chrome-on-surface-variant);
+    transition: transform .16s cubic-bezier(.34,1.56,.64,1), background .15s ease, color .15s ease, border-color .15s ease;
+    cursor: default;
+  }
+  .cell:hover .icon { transform: translateY(-2px) scale(1.06); background: var(--chrome-selected); border-color: var(--primary); color: var(--chrome-primary); }
+  .cell:active .icon { transform: scale(.92); }
+  .cell .label { font-size: 12px; color: var(--muted); }
+
+  /* 树图标小行 */
+  .tree-row {
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    padding: 12px 16px; border-radius: 12px;
+    background: var(--bg); border: 1px dashed var(--border); margin-bottom: 20px;
+  }
+  .tree-row .tcell {
+    display: flex; align-items: center; gap: 4px;
+    padding: 5px 9px; border-radius: 8px; color: var(--chrome-on-surface-variant);
+    font-size: 12px; border: 1px solid transparent;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .tree-row .tcell:hover { background: var(--chrome-selected); color: var(--chrome-primary); border-color: var(--primary); }
+  .tree-box {
+    display: flex; gap: 18px; flex-wrap: wrap;
+  }
+  .tree-mock {
+    flex: 1 1 260px; min-width: 240px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 12px; box-shadow: var(--shadow); font-size: 13px;
+  }
+  .tree-mock h4 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .trow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 6px; }
+  .trow:hover { background: var(--chrome-hover); }
+  .trow .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trow.dim .tname { color: var(--muted); }
+  .trow.active { background: var(--chrome-selected); }
+  .trow .tacts { display: none; gap: 2px; margin-left: auto; }
+  .trow:hover .tacts { display: inline-flex; }
+  .tbtn {
+    border: none; background: transparent; border-radius: 5px; cursor: pointer; padding: 1px 3px;
+    color: var(--chrome-on-surface-variant); display: inline-flex; align-items: center;
+  }
+  .tbtn:hover { background: var(--chrome-hover); color: var(--chrome-primary); }
+
+  /* ---------- Mock 菜单栏 ---------- */
+  .mock-wrap { display: flex; gap: 22px; flex-wrap: wrap; }
+  .mock-block { flex: 1 1 320px; }
+  .mock-block h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .mock-bar {
+    width: 46px; padding: 8px 6px; display: flex; flex-direction: column; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  .mock-bar button {
+    width: 34px; height: 34px; border: none; background: transparent; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    color: var(--chrome-on-surface-variant);
+    transition: background .15s ease, color .15s ease, opacity .15s ease;
+    padding: 0;
+  }
+  .mock-bar button:hover { background: var(--chrome-hover); color: var(--chrome-primary); }
+  .mock-bar button.active { background: var(--chrome-selected); color: var(--chrome-primary); }
+  .mock-bar button.disabled { opacity: .35; }
+  .mock-bar .logo {
+    width: 20px; height: 20px; margin: 2px auto 4px; border-radius: 5px;
+    background: linear-gradient(135deg, #ffc454, #ff913c);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 12px; font-weight: 700;
+  }
+
+  .anim-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 18px; margin-top: 20px; padding-top: 18px; border-top: 1px dashed var(--border); }
+  .anim-list div { font-size: 12.5px; color: var(--muted); }
+  .anim-list b { color: var(--text); font-weight: 600; }
+  .anim-list .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+  footer { margin-top: 30px; color: var(--muted); font-size: 13px; line-height: 1.8; }
+  footer code { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; font-size: 12px; }
+
+  /* ================= 图标通用（与组件一致） ================= */
+  .mi { display: block; transition: transform .16s cubic-bezier(.34,1.56,.64,1); will-change: transform; }
+  .cell:hover .mi, .mock-bar button:hover .mi, .trow:hover .mi, .tbtn:hover .mi { transform: translateY(-1px) scale(1.08); }
+  .cell:active .mi, .mock-bar button:active .mi { transform: translateY(0) scale(.86); }
+
+  /* 细线 */
+  .set-line .mi-g, .set-line .mi-flow, .set-line .mi-keys, .set-line .mi-arrow, .set-line .mi-cross { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  /* 圆润双色 */
+  .set-soft .mi-soft { fill: color-mix(in srgb, currentColor 18%, transparent); }
+  .set-soft .mi-soft-dark { fill: color-mix(in srgb, currentColor 34%, transparent); }
+  .set-soft .mi-soft-stroke { stroke: color-mix(in srgb, currentColor 30%, transparent); stroke-width: 2.4; stroke-linecap: round; }
+  .set-soft .mi-pri { fill: var(--chrome-primary); }
+  .set-soft .mi-pri-stroke { stroke: var(--chrome-primary); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------- 微动画：仅悬停触发（闲置完全静止） ---------- */
+  .mi-g { transform-box: fill-box; transform-origin: center; }
+  @keyframes mi-nod { 0% { transform: rotate(0); } 30% { transform: rotate(-6deg); } 55% { transform: rotate(4deg); } 80% { transform: rotate(-2deg); } 100% { transform: rotate(0); } }
+  @keyframes mi-spin { to { transform: rotate(360deg); } }
+  @keyframes mi-pop { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.6px); } }
+  @keyframes mi-flow { to { stroke-dashoffset: -13; } }
+  @keyframes mi-flow-rev-kf { to { stroke-dashoffset: 18; } }
+  @keyframes mi-key { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes mi-refresh-spin { to { transform: rotate(360deg); } }
+  @keyframes mi-cross-blink { 0%, 100% { opacity: .9; } 50% { opacity: .15; } }
+  .mi-flow { stroke-dasharray: 4 9; animation: none; }
+  .mi-flow-rev { stroke-dasharray: 6 12; animation: none; }
+  .mi-keys, .mi-arrow, .mi-cross { animation: none; }
+
+  .cell:hover .mi-files .mi-g, .mock-bar button:hover .mi-files .mi-g { animation: mi-nod 1.3s ease-in-out 2; }
+  .cell:hover .mi-settings .mi-g, .mock-bar button:hover .mi-settings .mi-g { animation: mi-spin 1.8s linear infinite; }
+  .cell:hover .mi-git .mi-flow, .mock-bar button:hover .mi-git .mi-flow { animation: mi-flow 1.2s linear infinite; }
+  .cell:hover .mi-git .mi-flow-rev, .mock-bar button:hover .mi-git .mi-flow-rev { animation: mi-flow-rev-kf 1.8s linear infinite; }
+  .cell:hover .mi-shortcuts .mi-keys, .mock-bar button:hover .mi-shortcuts .mi-keys { animation: mi-key 1.3s ease-in-out infinite; }
+  .cell:hover .mi-export .mi-arrow, .mock-bar button:hover .mi-export .mi-arrow { animation: mi-pop .9s ease-in-out infinite; }
+  .tbtn:hover .mi-refresh .mi-g { animation: mi-refresh-spin .7s ease-out 1; }
+  .tbtn:hover .mi-locate .mi-cross { animation: mi-cross-blink .9s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) { .mi, .mi-g, .mi-flow, .mi-keys, .mi-arrow, .mi-cross { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <button class="theme-toggle" id="themeToggle">🌙 深色预览</button>
+  <h1>WriteIt 图标选型 · 三套方案</h1>
+  <p class="sub">
+    覆盖 <b>菜单栏</b>（文件目录 / Git / 设置 / 快捷键 / 导出）与 <b>文件树</b>（文件夹 / 文件 / 新建 / 刷新 / 定位 / 固定 / 重命名 / 展开箭头）全部图标。<br />
+    均为 <b>SVG 矢量</b>（同一 24 网格、同一交互语言、随主题变色）；<b>闲置时完全静止，鼠标悬停才触发轻动画</b>。
+    把鼠标移到图标上感受 hover / 按下效果。选定后告诉我方案编号即可。
+  </p>
+
+  <!-- ================= 方案 A：细线 ================= -->
+  <section class="set-card set-line" data-set="line">
+    <div class="set-head"><span class="set-badge">方案 A</span><h2>细线 Line</h2></div>
+    <p class="set-desc">1.7px 圆角描边，简洁克制（Lucide / Feather 风）。颜色跟随主题，hover / 激活变主题色。</p>
+
+    <div class="sec-title">菜单栏</div>
+    <div class="icon-row">
+      <div class="cell"><div class="icon" data-name="files"><svg class="mi mi-files" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M3.2 10.6h17.6"/></g></svg></div><span class="label">文件目录</span></div>
+      <div class="cell"><div class="icon" data-name="git"><svg class="mi mi-git" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><circle cx="6.2" cy="5.8" r="2.1"/><circle cx="6.2" cy="18.2" r="2.1"/><circle cx="17.8" cy="7.4" r="2.1"/><path class="mi-flow" d="M6.2 7.9v8.2"/><path class="mi-flow mi-flow-rev" d="M6.2 9.4c0 5.6 4.1 6.3 11.6 4.1"/></g></svg></div><span class="label">Git</span></div>
+      <div class="cell"><div class="icon" data-name="settings"><svg class="mi mi-settings" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill-rule="evenodd" d="M12.00,2.20L15.14,4.42L18.93,5.07L19.58,8.86L21.80,12.00L19.58,15.14L18.93,18.93L15.14,19.58L12.00,21.80L8.86,19.58L5.07,18.93L4.42,15.14L2.20,12.00L4.42,8.86L5.07,5.07L8.86,4.42Z M12,8.5a3.5,3.5 0 1 0 0.001,0Z"/></g></svg></div><span class="label">设置</span></div>
+      <div class="cell"><div class="icon" data-name="shortcuts"><svg class="mi mi-shortcuts" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><rect x="2.6" y="6.2" width="18.8" height="11.6" rx="2.2"/><g class="mi-keys"><path d="M6.4 9.5h.01"/><path d="M10.1 9.5h.01"/><path d="M13.8 9.5h.01"/><path d="M17.5 9.5h.01"/></g><g class="mi-keys" style="animation-delay:.4s"><path d="M6.4 13h.01"/><path d="M10.1 13h.01"/><path d="M13.8 13h.01"/><path d="M17.5 13h.01"/></g><path d="M8.2 16.3h7.6"/></g></svg></div><span class="label">快捷键</span></div>
+      <div class="cell"><div class="icon" data-name="export"><svg class="mi mi-export" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><g class="mi-arrow"><path d="M12 3.8v7.4"/><path d="M8.4 7.4 12 3.8l3.6 3.6"/></g><path d="M4.6 14v3.2a2.2 2.2 0 0 0 2.2 2.2h10.4a2.2 2.2 0 0 0 2.2-2.2V14"/></g></svg></div><span class="label">导出</span></div>
+    </div>
+
+    <div class="sec-title">文件树图标（统一）</div>
+    <div class="tree-row">
+      <span class="tcell"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M9.2 5.4l6.6 6.6-6.6 6.6"/></g></svg>展开</span>
+      <span class="tcell"><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/></g></svg>文件夹</span>
+      <span class="tcell"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M8 12.4h6.4M8 15.4h3.6"/></g></svg>文件</span>
+      <span class="tcell"><svg class="mi mi-fileNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg>新建文件</span>
+      <span class="tcell"><svg class="mi mi-dirNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg>新建目录</span>
+      <span class="tcell"><svg class="mi mi-refresh" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></g></svg>刷新</span>
+      <span class="tcell"><svg class="mi mi-locate" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3"/></g></svg>定位</span>
+      <span class="tcell"><svg class="mi mi-pin" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M9.2 3.6h5.6l-1 5 2.6 2.6v2.3H7.6v-2.3l2.6-2.6Z"/><path d="M12 13.5v6.9"/></g></svg>固定</span>
+      <span class="tcell"><svg class="mi mi-rename" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M4.2 19.8l.9-3.6L16.4 4.9a2.1 2.1 0 0 1 3 3L8.1 19.2l-3.9.6Z"/><path d="M14.6 6.7l2.9 2.9"/></g></svg>重命名</span>
+    </div>
+
+    <div class="sec-title" style="margin-bottom:10px">实际大小 · 文件树</div>
+    <div class="tree-box">
+      <div class="tree-mock"><h4>浅色</h4>
+        <div class="trow active"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" style="transform:rotate(90deg)"><g class="mi-g"><path d="M9.2 5.4l6.6 6.6-6.6 6.6"/></g></svg><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/></g></svg><span class="tname">消金业务合作</span><span class="tacts"><span class="tbtn" title="新建文件"><svg class="mi mi-fileNew" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg></span><span class="tbtn" title="新建目录"><svg class="mi mi-dirNew" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg></span><span class="tbtn" title="重命名"><svg class="mi mi-rename" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M4.2 19.8l.9-3.6L16.4 4.9a2.1 2.1 0 0 1 3 3L8.1 19.2l-3.9.6Z"/><path d="M14.6 6.7l2.9 2.9"/></g></svg></span></span></div>
+        <div class="trow"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M9.2 5.4l6.6 6.6-6.6 6.6"/></g></svg><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/></g></svg><span class="tname">笔记模板</span></div>
+        <div class="trow"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M8 12.4h6.4M8 15.4h3.6"/></g></svg><span class="tname">README.md</span></div>
+        <div class="trow dim"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M8 12.4h6.4M8 15.4h3.6"/></g></svg><span class="tname">需求规格.xlsx</span></div>
+      </div>
+      <div class="tree-mock"><h4>深色</h4>
+        <span style="color:var(--muted);font-size:12px">（右侧切换深色模式查看）</span>
+        <div class="sidebar-mini" style="display:flex;gap:6px;margin-top:10px">
+          <span class="tbtn" style="padding:4px" title="定位"><svg class="mi mi-locate" width="14" height="14" viewBox="0 0 24 24" fill="none"><g class="mi-g"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path class="mi-cross" d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3"/></g></svg></span>
+          <span class="tbtn" style="padding:4px" title="新建文件"><svg class="mi mi-fileNew" width="14" height="14" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg></span>
+          <span class="tbtn" style="padding:4px" title="新建目录"><svg class="mi mi-dirNew" width="14" height="14" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M14.4 14.6h4.2M16.5 12.5v4.2"/></g></svg></span>
+          <span class="tbtn" style="padding:4px" title="刷新"><svg class="mi mi-refresh" width="14" height="14" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></g></svg></span>
+          <span class="tbtn" style="padding:4px" title="固定"><svg class="mi mi-pin" width="14" height="14" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path d="M9.2 3.6h5.6l-1 5 2.6 2.6v2.3H7.6v-2.3l2.6-2.6Z"/><path d="M12 13.5v6.9"/></g></svg></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="anim-list">
+      <div><span class="dot" style="background:#38bdf8"></span><b>闲置</b>：完全静止（无打扰）</div>
+      <div><span class="dot" style="background:#f97316"></span><b>悬停</b>：文件夹点头×2 · Git 分支线流动 · 齿轮慢转 · 按键涟漪 · 导出箭头弹跳</div>
+      <div><span class="dot" style="background:#22c55e"></span><b>交互</b>：hover 上浮放大 1.08 / 按下回缩 0.86；刷新转一圈、定位十字闪烁</div>
+    </div>
+  </section>
+
+  <!-- ================= 方案 B：圆润双色 ================= -->
+  <section class="set-card set-soft" data-set="soft">
+    <div class="set-head"><span class="set-badge">方案 B</span><h2>圆润双色 Duotone</h2></div>
+    <p class="set-desc">实心圆角造型，主色（主题色）+ 柔和底色，亲和饱满（Material Symbols 风）。</p>
+
+    <div class="sec-title">菜单栏</div>
+    <div class="icon-row">
+      <div class="cell"><div class="icon" data-name="files"><svg class="mi mi-files" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path class="mi-pri" d="M8.3 11.9a1 1 0 0 1 1-1h5.4a1 1 0 0 1 1 1v4.3H8.3Z"/></g></svg></div><span class="label">文件目录</span></div>
+      <div class="cell"><div class="icon" data-name="git"><svg class="mi mi-git" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft-stroke mi-flow" d="M6.2 7.9v8.2"/><path class="mi-soft-stroke mi-flow mi-flow-rev" d="M6.4 9.5c0 5.4 3.9 6.1 11.3 4"/><circle class="mi-pri" cx="6.2" cy="5.8" r="2.3"/><circle class="mi-pri" cx="6.2" cy="18.2" r="2.3"/><circle class="mi-pri" cx="17.8" cy="7.4" r="2.3"/></g></svg></div><span class="label">Git</span></div>
+      <div class="cell"><div class="icon" data-name="settings"><svg class="mi mi-settings" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-pri" fill-rule="evenodd" d="M12.00,2.20L15.14,4.42L18.93,5.07L19.58,8.86L21.80,12.00L19.58,15.14L18.93,18.93L15.14,19.58L12.00,21.80L8.86,19.58L5.07,18.93L4.42,15.14L2.20,12.00L4.42,8.86L5.07,5.07L8.86,4.42Z M12,8.5a3.5,3.5 0 1 0 0.001,0Z"/></g></svg></div><span class="label">设置</span></div>
+      <div class="cell"><div class="icon" data-name="shortcuts"><svg class="mi mi-shortcuts" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><rect class="mi-soft" x="2.6" y="6.2" width="18.8" height="11.6" rx="2.4"/><g class="mi-keys"><rect class="mi-pri" x="6.4" y="8.9" width="2" height="2" rx=".6"/><rect class="mi-soft-dark" x="10.1" y="8.9" width="2" height="2" rx=".6"/><rect class="mi-pri" x="13.8" y="8.9" width="2" height="2" rx=".6"/><rect class="mi-soft-dark" x="17.5" y="8.9" width="2" height="2" rx=".6"/></g><g class="mi-keys" style="animation-delay:.4s"><rect class="mi-soft-dark" x="6.4" y="12.4" width="2" height="2" rx=".6"/><rect class="mi-pri" x="10.1" y="12.4" width="2" height="2" rx=".6"/><rect class="mi-soft-dark" x="13.8" y="12.4" width="2" height="2" rx=".6"/><rect class="mi-pri" x="17.5" y="12.4" width="2" height="2" rx=".6"/></g><rect class="mi-pri" x="8.2" y="15.9" width="7.6" height="1.7" rx=".85"/></g></svg></div><span class="label">快捷键</span></div>
+      <div class="cell"><div class="icon" data-name="export"><svg class="mi mi-export" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M4.6 13.8a2.2 2.2 0 0 1 2.2-2.2h10.4a2.2 2.2 0 0 1 2.2 2.2v2.8a2.2 2.2 0 0 1-2.2 2.2H6.8a2.2 2.2 0 0 1-2.2-2.2Z"/><g class="mi-arrow"><path class="mi-pri-stroke" d="M12 4v7.2"/><path class="mi-pri-stroke" d="M8.4 7.6 12 4l3.6 3.6"/></g></g></svg></div><span class="label">导出</span></div>
+    </div>
+
+    <div class="sec-title">文件树图标（统一）</div>
+    <div class="tree-row">
+      <span class="tcell"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft-dark" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M9.4 5.6l6.4 6.4-6.4 6.4"/></g></svg>展开</span>
+      <span class="tcell"><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path class="mi-pri" d="M3.2 9.9h17.6" opacity=".9"/></g></svg>文件夹</span>
+      <span class="tcell"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path class="mi-pri" d="M8 12.2h6.8M8 15.2h3.2"/></g></svg>文件</span>
+      <span class="tcell"><svg class="mi mi-fileNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path class="mi-pri" d="M14.4 14.6h4.2M16.5 12.5v4.2" stroke-width="1.9" stroke-linecap="round"/><path class="mi-pri" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z" fill="none" stroke-width="1.7"/></g></svg>新建文件</span>
+      <span class="tcell"><svg class="mi mi-dirNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path class="mi-pri" d="M14.4 14.6h4.2M16.5 12.5v4.2" stroke-width="1.9" stroke-linecap="round"/><path class="mi-pri" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z" fill="none" stroke-width="1.7"/></g></svg>新建目录</span>
+      <span class="tcell"><svg class="mi mi-refresh" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-soft-stroke" d="M20 12a8 8 0 1 1-2.34-5.66"/><path class="mi-soft-stroke" d="M20 4v4h-4"/><circle class="mi-pri" cx="12" cy="12" r="1.6"/></g></svg>刷新</span>
+      <span class="tcell"><svg class="mi mi-locate" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><circle class="mi-soft" cx="12" cy="12" r="7.4"/><circle class="mi-pri" cx="12" cy="12" r="2.5"/><g class="mi-cross"><path class="mi-pri-stroke" d="M12 2.8v2.2M12 19v2.2M2.8 12H5M19 12h2.2"/></g></g></svg>定位</span>
+      <span class="tcell"><svg class="mi mi-pin" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-pri" d="M9.2 3.6h5.6l-1 5 2.6 2.6v2.3H7.6v-2.3l2.6-2.6Z"/><path class="mi-soft-dark" d="M12 13.5v6.9" stroke-width="2.1"/></g></svg>固定</span>
+      <span class="tcell"><svg class="mi mi-rename" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-pri" d="M4.2 19.8l.9-3.6L16.4 4.9a2.1 2.1 0 0 1 3 3L8.1 19.2l-3.9.6Z"/><path class="mi-soft-dark" d="M14.6 6.7l2.9 2.9"/></g></svg>重命名</span>
+    </div>
+    <div class="anim-list">
+      <div><span class="dot" style="background:#38bdf8"></span><b>闲置</b>：完全静止（无打扰）</div>
+      <div><span class="dot" style="background:#f97316"></span><b>悬停</b>：文件夹点头×2 · Git 分支线流动 · 齿轮慢转 · 按键涟漪 · 导出箭头弹跳</div>
+      <div><span class="dot" style="background:#22c55e"></span><b>交互</b>：hover 上浮放大 1.08 / 按下回缩 0.86；刷新转一圈、定位十字闪烁</div>
+    </div>
+  </section>
+
+  <!-- ================= 方案 C：多彩渐变（当前默认） ================= -->
+  <section class="set-card set-gradient" data-set="gradient">
+    <div class="set-head"><span class="set-badge">方案 C · 当前默认</span><h2>多彩渐变 Gradient</h2></div>
+    <p class="set-desc">每个功能一个专属渐变（设置=暖橙呼应 Logo、文件=蓝、Git=紫粉、快捷键=青绿、导出=紫），白色高光细节，活泼有品牌感。</p>
+    <svg width="0" height="0" style="position:absolute">
+      <defs>
+        <linearGradient id="wi-g-files" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient>
+        <linearGradient id="wi-g-file" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#60a5fa"/></linearGradient>
+        <linearGradient id="wi-g-git" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset="1" stop-color="#ec4899"/></linearGradient>
+        <linearGradient id="wi-g-settings" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+        <linearGradient id="wi-g-shortcuts" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#22c55e"/></linearGradient>
+        <linearGradient id="wi-g-export" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+        <linearGradient id="wi-g-accent" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#94a3b8"/><stop offset="1" stop-color="#64748b"/></linearGradient>
+      </defs>
+    </svg>
+
+    <div class="sec-title">菜单栏</div>
+    <div class="icon-row">
+      <div class="cell"><div class="icon" data-name="files"><svg class="mi mi-files" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M3.2 10.6h17.6" stroke="rgba(255,255,255,.5)" stroke-width="1.2"/></g></svg></div><span class="label">文件目录</span></div>
+      <div class="cell"><div class="icon" data-name="git"><svg class="mi mi-git" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path class="mi-flow" stroke="url(#wi-g-git)" stroke-width="2.6" stroke-linecap="round" d="M6.2 7.9v8.2"/><path class="mi-flow mi-flow-rev" stroke="url(#wi-g-git)" stroke-width="2.6" stroke-linecap="round" d="M6.4 9.5c0 5.4 3.9 6.1 11.3 4"/><circle fill="url(#wi-g-git)" cx="6.2" cy="5.8" r="2.3"/><circle fill="url(#wi-g-git)" cx="6.2" cy="18.2" r="2.3"/><circle fill="url(#wi-g-git)" cx="17.8" cy="7.4" r="2.3"/></g></svg></div><span class="label">Git</span></div>
+      <div class="cell"><div class="icon" data-name="settings"><svg class="mi mi-settings" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill-rule="evenodd" fill="url(#wi-g-settings)" d="M12.00,2.20L15.14,4.42L18.93,5.07L19.58,8.86L21.80,12.00L19.58,15.14L18.93,18.93L15.14,19.58L12.00,21.80L8.86,19.58L5.07,18.93L4.42,15.14L2.20,12.00L4.42,8.86L5.07,5.07L8.86,4.42Z M12,8.5a3.5,3.5 0 1 0 0.001,0Z"/></g></svg></div><span class="label">设置</span></div>
+      <div class="cell"><div class="icon" data-name="shortcuts"><svg class="mi mi-shortcuts" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><rect fill="url(#wi-g-shortcuts)" x="2.6" y="6.2" width="18.8" height="11.6" rx="2.4"/><g class="mi-keys" fill="rgba(255,255,255,.6)"><rect x="6.4" y="8.9" width="2" height="2" rx=".6"/><rect x="10.1" y="8.9" width="2" height="2" rx=".6"/><rect x="13.8" y="8.9" width="2" height="2" rx=".6"/><rect x="17.5" y="8.9" width="2" height="2" rx=".6"/><rect x="6.4" y="12.4" width="2" height="2" rx=".6"/><rect x="10.1" y="12.4" width="2" height="2" rx=".6"/><rect x="13.8" y="12.4" width="2" height="2" rx=".6"/><rect x="17.5" y="12.4" width="2" height="2" rx=".6"/></g><rect fill="rgba(255,255,255,.75)" x="8.2" y="15.9" width="7.6" height="1.7" rx=".85"/></g></svg></div><span class="label">快捷键</span></div>
+      <div class="cell"><div class="icon" data-name="export"><svg class="mi mi-export" width="32" height="32" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-export)" d="M4.6 13.8a2.2 2.2 0 0 1 2.2-2.2h10.4a2.2 2.2 0 0 1 2.2 2.2v2.8a2.2 2.2 0 0 1-2.2 2.2H6.8a2.2 2.2 0 0 1-2.2-2.2Z"/><g class="mi-arrow" stroke="url(#wi-g-export)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v7.2"/><path d="M8.4 7.6 12 4l3.6 3.6"/></g></g></svg></div><span class="label">导出</span></div>
+    </div>
+
+    <div class="sec-title">文件树图标（统一）</div>
+    <div class="tree-row">
+      <span class="tcell"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path stroke="url(#wi-g-accent)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="M9.4 5.6l6.4 6.4-6.4 6.4"/></g></svg>展开</span>
+      <span class="tcell"><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M3.2 10.6h17.6" stroke="rgba(255,255,255,.5)" stroke-width="1.2"/></g></svg>文件夹</span>
+      <span class="tcell"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-file)" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/><path d="M8 12.2h5.8M8 15.2h3" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/></g></svg>文件</span>
+      <span class="tcell"><svg class="mi mi-fileNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-file)" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path fill="url(#wi-g-accent)" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z"/><path d="M15.9 13.9h4.2M18 11.8v4.2" stroke="rgba(255,255,255,.85)" stroke-width="1.5" stroke-linecap="round" transform="translate(0,1.1)"/></g></svg>新建文件</span>
+      <span class="tcell"><svg class="mi mi-dirNew" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path fill="url(#wi-g-accent)" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z"/><path d="M15.9 13.9h4.2M18 11.8v4.2" stroke="rgba(255,255,255,.85)" stroke-width="1.5" stroke-linecap="round" transform="translate(0,1.1)"/></g></svg>新建目录</span>
+      <span class="tcell"><svg class="mi mi-refresh" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path stroke="url(#wi-g-shortcuts)" stroke-width="2.4" stroke-linecap="round" d="M20 12a8 8 0 1 1-2.34-5.66"/><path stroke="url(#wi-g-shortcuts)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M20 4v4h-4"/><circle fill="url(#wi-g-shortcuts)" cx="12" cy="12" r="1.6"/></g></svg>刷新</span>
+      <span class="tcell"><svg class="mi mi-locate" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><circle fill="url(#wi-g-export)" cx="12" cy="12" r="7.2" opacity=".92"/><circle cx="12" cy="12" r="2.5" fill="rgba(255,255,255,.92)"/><g class="mi-cross"><path stroke="url(#wi-g-export)" stroke-width="2" stroke-linecap="round" d="M12 2.8v2.2M12 19v2.2M2.8 12H5M19 12h2.2"/></g></g></svg>定位</span>
+      <span class="tcell"><svg class="mi mi-pin" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-settings)" d="M9.2 3.6h5.6l-1 5 2.6 2.6v2.3H7.6v-2.3l2.6-2.6Z"/><path d="M12 13.5v6.9" stroke="url(#wi-g-settings)" stroke-width="2.1" stroke-linecap="round"/></g></svg>固定</span>
+      <span class="tcell"><svg class="mi mi-rename" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-git)" d="M4.2 19.8l.9-3.6L16.4 4.9a2.1 2.1 0 0 1 3 3L8.1 19.2l-3.9.6Z"/><path d="M14.6 6.7l2.9 2.9" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></g></svg>重命名</span>
+    </div>
+
+    <div class="tree-box">
+      <div class="tree-mock"><h4>浅色 · 文件树（实际大小）</h4>
+        <div class="trow active"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" style="transform:rotate(90deg)"><g class="mi-g"><path stroke="url(#wi-g-accent)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="M9.4 5.6l6.4 6.4-6.4 6.4"/></g></svg><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M3.2 10.6h17.6" stroke="rgba(255,255,255,.5)" stroke-width="1.2"/></g></svg><span class="tname">消金业务合作</span><span class="tacts"><span class="tbtn" title="新建文件"><svg class="mi mi-fileNew" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-file)" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path fill="url(#wi-g-accent)" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z"/><path d="M15.9 13.9h4.2M18 11.8v4.2" stroke="rgba(255,255,255,.85)" stroke-width="1.5" stroke-linecap="round" transform="translate(0,1.1)"/></g></svg></span><span class="tbtn" title="新建目录"><svg class="mi mi-dirNew" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path fill="url(#wi-g-accent)" d="M14.4 12.8a2.4 2.4 0 0 1 2.4-2.4h.1a2.4 2.4 0 0 1 2.4 2.4v2.1a2.4 2.4 0 0 1-2.4 2.4h-.1a2.4 2.4 0 0 1-2.4-2.4Z"/><path d="M15.9 13.9h4.2M18 11.8v4.2" stroke="rgba(255,255,255,.85)" stroke-width="1.5" stroke-linecap="round" transform="translate(0,1.1)"/></g></svg></span><span class="tbtn" title="重命名"><svg class="mi mi-rename" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-git)" d="M4.2 19.8l.9-3.6L16.4 4.9a2.1 2.1 0 0 1 3 3L8.1 19.2l-3.9.6Z"/><path d="M14.6 6.7l2.9 2.9" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/></g></svg></span></span></div>
+        <div class="trow"><svg class="mi mi-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path stroke="url(#wi-g-accent)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" d="M9.4 5.6l6.4 6.4-6.4 6.4"/></g></svg><svg class="mi mi-folder" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-files)" d="M3.2 7.2a2 2 0 0 1 2-2h3.9l1.9 2.3h7.8a2 2 0 0 1 2 2v7.6a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2Z"/><path d="M3.2 10.6h17.6" stroke="rgba(255,255,255,.5)" stroke-width="1.2"/></g></svg><span class="tname">笔记模板</span></div>
+        <div class="trow"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-file)" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/><path d="M8 12.2h5.8M8 15.2h3" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/></g></svg><span class="tname">README.md</span></div>
+        <div class="trow dim"><svg class="mi mi-file" width="15" height="15" viewBox="0 0 24 24" fill="none"><g class="mi-g"><path fill="url(#wi-g-file)" d="M6.5 3.5a2.5 2.5 0 0 0-2.5 2.5v12a2.5 2.5 0 0 0 2.5 2.5h9.2a2.5 2.5 0 0 0 2.5-2.5V9.2L14.4 3.5Z"/><path d="M14.4 3.5v4.6h4.6" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/><path d="M8 12.2h5.8M8 15.2h3" stroke="rgba(255,255,255,.55)" stroke-width="1.2"/></g></svg><span class="tname">需求规格.xlsx</span></div>
+      </div>
+    </div>
+
+    <div class="anim-list">
+      <div><span class="dot" style="background:#38bdf8"></span><b>闲置</b>：完全静止（无打扰）</div>
+      <div><span class="dot" style="background:#f97316"></span><b>悬停</b>：文件夹点头×2 · Git 分支线流动 · 齿轮慢转 · 按键涟漪 · 导出箭头弹跳</div>
+      <div><span class="dot" style="background:#22c55e"></span><b>交互</b>：hover 上浮放大 1.08 / 按下回缩 0.86；刷新转一圈、定位十字闪烁</div>
+    </div>
+  </section>
+
+  <footer>
+    <b>如何选择与切换：</b>告诉我「方案 A / B / C」即可。应用内可随时切换 —— 设置（⚙️ 或 Ctrl+,）→ 常规 →「菜单栏图标」下拉，实时预览、无需重启；文件树图标跟随同一风格。<br />
+    说明：图标为矢量 SVG，适配全部 6 套主题（浅/深）；Git 图标在浏览器演示模式（无 git）自动半透明禁用；系统开启「减弱动态效果」时自动关闭全部动画。
+  </footer>
+</div>
+<script>
+  var t = document.getElementById('themeToggle')
+  t.addEventListener('click', function () {
+    var dark = document.documentElement.classList.toggle('dark')
+    t.textContent = dark ? '☀️ 浅色预览' : '🌙 深色预览'
+  })
+</script>
+</body>
+</html>

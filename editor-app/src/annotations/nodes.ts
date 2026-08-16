@@ -1,4 +1,6 @@
-// 批注节点 schema：`<mark data-note="评论">锚定文本</mark>`
+// 批注节点 schema：`<mark data-note='评论'>锚定文本</mark>`
+// v7.1：属性值用单引号包裹 → note 里的 JSON 双引号原样保留（md 可读性大幅提升），
+// 仅转义会破坏标签的字符（' → &#39;、& → &amp;、< → &lt;）；旧格式（双引号 + &quot;）解析兼容。
 // inline 容器节点（content: 'text*'），渲染为高亮 mark（不显示 note 属性）。
 // 持久化：toMarkdown 输出 html 开标签 + 子内容 + 闭标签（remark-stringify 对 html 节点原样输出）。
 import { $nodeSchema } from '@milkdown/kit/utils'
@@ -46,7 +48,8 @@ export const annotationSchema = $nodeSchema('annotation', (_ctx) => {
       match: (node) => node.type.name === 'annotation',
       runner: (state: SerializerState, node) => {
         // 开标签 html 节点（remark-stringify 原样输出 value）
-        state.addNode('html', undefined, `<mark data-note="${escapeAttr(node.attrs.note)}">`)
+        // v7.1：单引号属性值 → JSON 双引号原样保留，md 可读
+        state.addNode('html', undefined, `<mark data-note='${escapeAttr(node.attrs.note)}'>`)
         // 子内容（锚定文本）正常序列化
         state.next(node.content)
         state.addNode('html', undefined, '</mark>')
@@ -55,8 +58,16 @@ export const annotationSchema = $nodeSchema('annotation', (_ctx) => {
   }
 })
 
+/**
+ * 单引号 HTML 属性值转义（v7.1）：
+ * 双引号原样保留（JSON 键/分隔符，可读性优先）；
+ * 仅转义会破坏标签/属性的字符：' → &#39;（防属性提前闭合）、& → &amp;（防实体歧义）、< → &lt;（防标签注入）。
+ */
 function escapeAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
 }
 
 /** escapeAttr 的逆操作：HTML 属性值 → 原始值（&amp; 最后替换，兼容 &amp;quot; 等组合） */

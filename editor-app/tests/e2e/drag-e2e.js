@@ -144,7 +144,7 @@ const { chromium } = require('playwright');
   // ===== 8. 冲突拒绝：目标已存在 =====
   // 8a 新建 新文件.md 到根
   await ensureSidebar();
-  await page.locator('.sidebar-actions .mini', { hasText: '＋文件' }).click();
+  await page.locator('.sidebar-actions .mini[title="新建文件"]').click();
   await page.waitForTimeout(300);
   await page.locator('.tree .rename-input').fill('新文件.md');
   await page.keyboard.press('Enter');
@@ -154,7 +154,7 @@ const { chromium } = require('playwright');
   check('冲突前置：新文件.md 移入笔记', await has('笔记/新文件.md'));
   // 8c 根再建同名
   await ensureSidebar();
-  await page.locator('.sidebar-actions .mini', { hasText: '＋文件' }).click();
+  await page.locator('.sidebar-actions .mini[title="新建文件"]').click();
   await page.waitForTimeout(300);
   await page.locator('.tree .rename-input').fill('新文件.md');
   await page.keyboard.press('Enter');

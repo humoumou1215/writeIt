@@ -5,12 +5,17 @@ import {
   applyTheme,
   saveSettings,
   THEMES,
+  ICON_SETS,
   SHORTCUT_DEFS,
   formatCombo,
 } from '../state/settings'
 import { fs } from '../fs'
 import { refreshTree, openDirectory } from '../editor/manager'
 import { state, toast } from '../state/store'
+import MenuIcon from './MenuIcon.vue'
+
+// 图标列 5 个功能（与 App.vue 菜单栏顺序一致）
+const iconNames = ['files', 'git', 'settings', 'shortcuts', 'export'] as const
 
 const props = defineProps<{ initialTab?: 'general' | 'shortcuts' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -36,6 +41,14 @@ function onSettingChange() {
 }
 async function openLocalDir() {
   await openDirectory()
+}
+
+/** mock 模式：从最新示例数据强制刷新本地缓存（恢复被删示例、更新内容） */
+async function onRefreshMock() {
+  const { refreshMockSamples } = await import('../fs/mock')
+  const r = refreshMockSamples()
+  await refreshTree()
+  toast(`已刷新 Mock 示例数据（${r.files} 文件 / ${r.dirs} 目录，${r.updated} 个内容更新）`, 'success')
 }
 
 // ---------- 快捷键页 ----------
@@ -119,6 +132,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
           </label>
 
           <label class="row">
+            <span>菜单栏图标</span>
+            <select v-model="settings.iconSet" @change="onSettingChange">
+              <option v-for="s in ICON_SETS" :key="s.id" :value="s.id">{{ s.label }}</option>
+            </select>
+          </label>
+          <div class="row icon-preview-row">
+            <span></span>
+            <span class="icon-preview" :title="ICON_SETS.find((s) => s.id === settings.iconSet)?.desc">
+              <MenuIcon v-for="n in iconNames" :key="n" :name="n" :set="settings.iconSet" :size="22" />
+            </span>
+          </div>
+
+          <label class="row">
             <span>自动保存</span>
             <input type="checkbox" v-model="settings.autoSave" @change="onSettingChange" />
           </label>
@@ -156,16 +182,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span class="badge">{{ fs.kind }}</span>
           </div>
 
-          <button class="btn full" @click="openLocalDir">📂 打开本地目录…</button>
-          <p class="hint">
-            {{
-              fs.kind === 'tauri'
-                ? 'Tauri 原生文件访问（独立应用模式）。'
-                : fs.kind === 'web'
-                  ? '浏览器 File System Access API（Chrome/Edge），可打开真实目录。'
-                  : '浏览器模拟文件系统（Demo），修改保存在 localStorage。'
-            }}
-          </p>
+          <template v-if="fs.kind === 'mock'">
+            <button class="btn full" @click="onRefreshMock">🔄 刷新 Mock 示例数据</button>
+            <p class="hint">
+              浏览器模拟文件系统（Demo），修改保存在 localStorage。点击按钮可从最新 demo 示例重新同步本地缓存：示例文件内容更新、被删除的示例文件恢复；你自己新建的文件保留。
+            </p>
+          </template>
+          <template v-else>
+            <button class="btn full" @click="openLocalDir">📂 打开本地目录…</button>
+            <p class="hint">
+              {{
+                fs.kind === 'tauri'
+                  ? 'Tauri 原生文件访问（独立应用模式）。'
+                  : '浏览器 File System Access API（Chrome/Edge），可打开真实目录。'
+              }}
+            </p>
+          </template>
         </div>
 
         <!-- ===== 快捷键 ===== -->
@@ -293,6 +325,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
 .row > span:first-child {
   min-width: 96px;
   color: var(--chrome-on-surface);
+}
+.icon-preview-row {
+  align-items: flex-start;
+}
+.icon-preview-row > span:first-child {
+  padding-top: 4px;
+}
+.icon-preview {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  background: var(--chrome-surface-low, var(--chrome-background));
+  color: var(--chrome-on-surface-variant);
+}
+.icon-preview .mi {
+  flex-shrink: 0;
 }
 .hint-inline {
   font-style: normal;
