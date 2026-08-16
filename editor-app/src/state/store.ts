@@ -124,7 +124,7 @@ export const state = reactive({
   settingsOpen: false,
   /** 导出弹窗（图标列 📤 独立入口） */
   exportOpen: false,
-  /** 侧边栏内容列是否收纳（打开文件时若未固定则自动收纳） */
+  /** 侧边栏内容列是否收纳（点击编辑区时若未固定则自动收纳；打开文件不收纳） */
   sidebarCollapsed: false,
   /** 基于模板新建：等待选择模板的目标目录 */
   templatePick: null as null | string,

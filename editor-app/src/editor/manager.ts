@@ -479,6 +479,16 @@ export function getActiveTabMarkdown(): string | null {
   return inst.crepe.getMarkdown()
 }
 
+/** 按路径取已打开标签的 markdown（批量导出用；未打开返回 null） */
+export function getTabMarkdownByPath(path: string): string | null {
+  const tab = state.tabs.find((t) => t.path === path)
+  if (!tab) return null
+  const inst = instances.get(tab.id)
+  if (!inst) return null
+  if (tab.viewMode === 'source' && inst.srcTa) return inst.srcTa.value
+  return inst.crepe.getMarkdown()
+}
+
 // 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
 ;(window as unknown as { __editorDebug?: unknown }).__editorDebug = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
@@ -902,9 +912,7 @@ export async function openTab(path: string, contentOverride?: string): Promise<v
   state.tabs.push(tab)
   state.activeTabId = tab.id
   // 容器由 EditorPane.vue 在 mount 时创建并调用 mountEditor
-
-  // 自动收纳：打开文件后，若侧边栏未固定则收起内容列
-  if (!settings.sidebarPinned) state.sidebarCollapsed = true
+  // 打开文件不自动收纳侧边栏（便于在文件树连续打开多个文件）
 }
 
 export function activateTab(id: string) {

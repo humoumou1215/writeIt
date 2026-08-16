@@ -136,7 +136,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
           <label class="row">
             <span>固定侧边栏</span>
             <input type="checkbox" v-model="settings.sidebarPinned" @change="saveSettings" />
-            <em class="hint-inline">固定后打开文件不自动收纳</em>
+            <em class="hint-inline">固定后点击编辑区不自动收纳</em>
           </label>
 
           <label class="row">

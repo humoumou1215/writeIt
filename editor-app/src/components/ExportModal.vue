@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // 导出弹窗（M10）：图标列 📤 独立入口
-// 当前文件 + doctype（含 export.ts 徽标）→ 格式选择 → 导出
+// 多文件选择：文件树（checkbox 多选 + 筛选输入框），默认选中当前打开的文件
+// 格式选择 → 批量导出（tauri 选目录 / 浏览器逐个下载）
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { state } from '../state/store'
 import { getActiveTabMarkdown } from '../editor/manager'
 import { extractDoctype, templateService } from '../template/service'
-import { exportActiveTab } from '../export/service'
+import { exportFiles } from '../export/service'
 import type { ExportFormat } from '../export/types'
+import type { FsEntry } from '../fs/types'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
@@ -23,6 +25,7 @@ const exportHasTs = computed(() => {
   if (!dt) return false
   return Boolean(templateService.get(dt)?.exportFile)
 })
+
 const exportFormat = ref<ExportFormat | 'auto'>('auto')
 const exporting = ref(false)
 
@@ -33,11 +36,90 @@ const fmtOptions: Array<{ value: ExportFormat | 'auto'; label: string; hint: str
   { value: 'md', label: 'Markdown', hint: '导出 .md（嵌入块内容已展开）' },
 ]
 
+// ---------- 多文件选择 ----------
+const selected = ref<string[]>([])
+const filterQuery = ref('')
+const expanded = ref(new Set<string>())
+
+// 默认选中当前打开的文件
+onMounted(() => {
+  if (activeTab.value?.path) selected.value = [activeTab.value.path]
+})
+
+function toggleDir(path: string) {
+  const s = new Set(expanded.value)
+  if (s.has(path)) s.delete(path)
+  else s.add(path)
+  expanded.value = s
+}
+
+/** 拍平可见条目（按展开状态） */
+function flatVisible(list: FsEntry[], depth: number, out: Array<{ e: FsEntry; depth: number }>) {
+  for (const e of list) {
+    out.push({ e, depth })
+    if (e.kind === 'dir' && expanded.value.has(e.path)) flatVisible(e.children ?? [], depth + 1, out)
+  }
+}
+
+/** 筛选后的可见条目：匹配文件 + 其祖先目录链（筛选时强制显示） */
+const visibleEntries = computed<Array<{ e: FsEntry; depth: number }>>(() => {
+  const q = filterQuery.value.trim().toLowerCase()
+  const out: Array<{ e: FsEntry; depth: number }> = []
+  if (!q) {
+    flatVisible(state.tree, 0, out)
+    return out
+  }
+  const matchFiles = new Set<string>()
+  const matchDirs = new Set<string>()
+  const collect = (list: FsEntry[], ancestors: string[]) => {
+    for (const e of list) {
+      if (e.kind === 'file') {
+        if (e.name.toLowerCase().includes(q) || e.path.toLowerCase().includes(q)) {
+          matchFiles.add(e.path)
+          ancestors.forEach((d) => matchDirs.add(d))
+        }
+      } else {
+        collect(e.children ?? [], [...ancestors, e.path])
+      }
+    }
+  }
+  collect(state.tree, [])
+  const walk = (list: FsEntry[], depth: number) => {
+    for (const e of list) {
+      if (e.kind === 'dir') {
+        if (matchDirs.has(e.path)) {
+          out.push({ e, depth })
+          walk(e.children ?? [], depth + 1)
+        }
+      } else if (matchFiles.has(e.path)) {
+        out.push({ e, depth })
+      }
+    }
+  }
+  walk(state.tree, 0)
+  return out
+})
+
+function selectAll() {
+  const files: string[] = []
+  const collect = (list: FsEntry[]) => {
+    for (const e of list) {
+      if (e.kind === 'file') files.push(e.path)
+      else collect(e.children ?? [])
+    }
+  }
+  collect(state.tree)
+  selected.value = files
+}
+function clearAll() {
+  selected.value = []
+}
+
 async function doExport() {
-  if (exporting.value) return
+  if (exporting.value || !selected.value.length) return
   exporting.value = true
   try {
-    await exportActiveTab({ format: exportFormat.value })
+    await exportFiles([...selected.value], { format: exportFormat.value })
   } finally {
     exporting.value = false
   }
@@ -74,6 +156,36 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             </div>
           </div>
 
+          <!-- 多文件选择：文件树 + 筛选 -->
+          <div class="export-tree">
+            <div class="tree-toolbar">
+              <input v-model="filterQuery" class="tree-filter" placeholder="🔍 筛选文件名…" spellcheck="false" />
+              <button class="mini" @click="selectAll">全选</button>
+              <button class="mini" @click="clearAll">清空</button>
+            </div>
+            <div class="tree-list">
+              <div
+                v-for="it in visibleEntries"
+                :key="it.e.path"
+                class="trow"
+                :style="{ paddingLeft: 8 + it.depth * 16 + 'px' }"
+              >
+                <template v-if="it.e.kind === 'dir'">
+                  <button class="caret" @click="toggleDir(it.e.path)">
+                    {{ expanded.has(it.e.path) ? '▾' : '▸' }}
+                  </button>
+                  <span class="tname">📁 {{ it.e.name }}</span>
+                </template>
+                <label v-else class="tfile">
+                  <input type="checkbox" :value="it.e.path" v-model="selected" />
+                  <span class="tname">📄 {{ it.e.name }}</span>
+                </label>
+              </div>
+              <p v-if="!visibleEntries.length" class="empty-hint">无匹配文件</p>
+            </div>
+            <p class="hint">已选 {{ selected.length }} 个文件（默认勾选当前打开的文件）</p>
+          </div>
+
           <div class="export-formats">
             <label v-for="f in fmtOptions" :key="f.value" class="fmt">
               <input type="radio" :value="f.value" v-model="exportFormat" />
@@ -82,13 +194,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             </label>
           </div>
           <p class="hint">
-            模板目录下存在 <code>&lt;名称&gt;.export.ts</code> 时，「自动」/导出将按其定义执行
-            （format / filename / build 自定义内容）；无 export.ts 时默认把 Markdown 导出为
-            PDF 或 DOCX。嵌入块（<code>![[path]]</code>）的内容会一并包含在导出文件中。
+            模板目录下存在 <code>&lt;名称&gt;.export.ts</code> 时，按模板定义导出（格式/内容自定义）；
+            无 export.ts 时导出为 PDF 或 DOCX。嵌入块 / 引用展示 / Mermaid / 公式自动处理。
+            批量导出文件名沿用原文件名（模板自定义文件名仅单个导出时生效）。
           </p>
 
-          <button class="btn full primary" :disabled="!activeTab || exporting" @click="doExport">
-            {{ exporting ? '导出中…' : '📤 导出' }}
+          <button
+            class="btn full primary"
+            :disabled="!selected.length || exporting"
+            @click="doExport"
+          >
+            {{ exporting ? '导出中…' : `📤 导出（${selected.length} 个）` }}
           </button>
         </div>
       </div>
@@ -111,8 +227,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-surface);
   border: 1px solid var(--chrome-border);
   border-radius: 12px;
-  width: min(480px, 92vw);
-  max-height: 82vh;
+  width: min(560px, 94vw);
+  max-height: 86vh;
   display: flex;
   flex-direction: column;
   box-shadow: var(--chrome-shadow-2, 0 16px 48px rgba(0, 0, 0, 0.22));
@@ -191,6 +307,97 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   background: var(--chrome-selected);
   color: var(--chrome-primary);
   font-family: var(--chrome-font-code, monospace);
+}
+.export-tree {
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  background: var(--chrome-background);
+  overflow: hidden;
+}
+.tree-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--chrome-border);
+  align-items: center;
+}
+.tree-filter {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--chrome-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--chrome-on-surface);
+  background: var(--chrome-background);
+}
+.mini {
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-surface-variant);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.mini:hover {
+  border-color: var(--chrome-primary);
+  color: var(--chrome-on-background);
+}
+.tree-list {
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.trow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.trow:hover {
+  background: var(--chrome-hover);
+}
+.caret {
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  font-size: 10px;
+  width: 14px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tfile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+}
+.tfile input[type='checkbox'] {
+  accent-color: var(--chrome-primary);
+  margin: 0;
+  flex-shrink: 0;
+}
+.tname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--chrome-on-surface);
+}
+.empty-hint {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant);
 }
 .export-formats {
   display: flex;

@@ -31,17 +31,26 @@ const { chromium } = require('playwright');
   check('树含 笔记 目录', await page.locator('.tree .name', { hasText: '笔记' }).count() > 0);
   await page.screenshot({ path: shots + '/01-新布局初始.png' });
 
-  // 3. 打开文件 → 自动收纳
+  // 3. 打开文件 → 不自动收纳（保留侧边栏，便于连续多开）
   await page.locator('.tree .node', { hasText: '笔记' }).first().click();
   await page.waitForTimeout(400);
   await page.locator('.tree .name', { hasText: '会议记录.md' }).click();
   await page.waitForTimeout(2500);
   check('编辑器渲染', await page.locator('.milkdown h1', { hasText: '会议记录' }).count() > 0);
-  check('打开文件后自动收纳', await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed')));
+  check('打开文件后不收纳', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
   check('标签出现', (await page.locator('.tab').count()) === 1);
-  await page.screenshot({ path: shots + '/02-打开文件自动收纳.png' });
 
-  // 4. 图标列重新展开
+  // 3.5 连续打开第二个文件 → 侧边栏保持展开
+  await page.locator('.tree .name', { hasText: 'README.md' }).first().click();
+  await page.waitForTimeout(2000);
+  check('连续打开第二个文件', (await page.locator('.tab').count()) === 2);
+  check('连续打开时侧边栏仍展开', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
+  await page.screenshot({ path: shots + '/02-打开文件不收纳-连续多开.png' });
+
+  // 4. 点击编辑区 → 收纳；点图标重新展开
+  await page.locator('.workspace').click({ position: { x: 320, y: 200 } });
+  await page.waitForTimeout(400);
+  check('点击编辑区收纳', await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed')));
   await page.locator('.icon-col .icon-btn').first().click();
   await page.waitForTimeout(400);
   check('点击图标重新展开', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
@@ -105,17 +114,22 @@ const { chromium } = require('playwright');
   // 11. Alt+ArrowDown 下一个文件（按树顺序导航，原「下一个文件」按钮 → 快捷键）
   await page.keyboard.press('Alt+ArrowDown');
   await page.waitForTimeout(2000);
-  check('Alt+↓ 打开第二个标签', (await page.locator('.tab').count()) === 2);
+  check('Alt+↓ 打开新标签', (await page.locator('.tab').count()) === 3);
 
-  // 12. 固定侧边栏：打开文件不自动收纳
+  // 12. 固定侧边栏：点击编辑区不收纳（未固定则收纳）
   await page.locator('.icon-col .icon-btn').first().click(); // 展开（如果已收纳）
   await page.waitForTimeout(300);
-  await page.locator('.sidebar-head .pin').click();
+  await page.locator('.sidebar-head .pin').click(); // 固定
   await page.waitForTimeout(300);
-  await page.locator('.tree .name', { hasText: 'README.md' }).click();
-  await page.waitForTimeout(2000);
-  check('固定后打开文件不收纳', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
+  await page.locator('.workspace').click({ position: { x: 320, y: 200 } });
+  await page.waitForTimeout(400);
+  check('固定后点击编辑区不收纳', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
   await page.locator('.sidebar-head .pin').click(); // 取消固定
+  await page.waitForTimeout(300);
+  await page.locator('.workspace').click({ position: { x: 320, y: 200 } });
+  await page.waitForTimeout(400);
+  check('未固定点击编辑区收纳', await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed')));
+  await page.locator('.icon-col .icon-btn').first().click(); // 展开，为后续新建文件做准备
   await page.waitForTimeout(300);
   await page.screenshot({ path: shots + '/05-固定侧边栏.png' });
 

@@ -357,7 +357,7 @@ function onTreeRootDrop(e: DragEvent) {
             class="mini pin"
             :class="{ active: settings.sidebarPinned }"
             :aria-pressed="settings.sidebarPinned"
-            :title="settings.sidebarPinned ? '已固定（打开文件不自动收纳）· 点击取消固定' : '固定侧边栏（打开文件时不自动收纳）'"
+            :title="settings.sidebarPinned ? '已固定（点击编辑区不自动收纳）· 点击取消固定' : '固定侧边栏（点击编辑区时不自动收纳）'"
             @click="togglePin"
           >
             📌

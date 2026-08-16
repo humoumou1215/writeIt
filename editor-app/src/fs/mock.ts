@@ -303,9 +303,10 @@ interface MockData {
   fileHash?: Record<string, string>
 }
 
-const SEED_VERSION = 7
+const SEED_VERSION = 8
 
 /**
+ * 版本 8：接口文档模板 export.ts 改为「对外版本」过滤（去掉内部评估信息/字段数据来源/变更记录）。
  * 版本 7：接口文档模板新增 export.ts（M10 导出自定义示例）。
  * 版本 6：新增「xxljob」模板（一文件一任务）+ 4 合规样例 + 1 违规样例。
  * 版本 4：新增「接口文档」模板（接口文档.md / rules.ts / suggest.ts）+ 助贷样例（合规/违规）

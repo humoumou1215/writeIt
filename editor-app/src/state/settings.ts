@@ -100,7 +100,7 @@ export interface AppSettings {
   autoSaveDelay: number // ms
   /** 侧边栏内容列宽度（px） */
   sidebarWidth: number
-  /** 侧边栏是否固定（固定后打开文件不自动收纳） */
+  /** 侧边栏是否固定（固定后点击编辑区不自动收纳；打开文件本就永不收纳） */
   sidebarPinned: boolean
   /** 全局模板目录（真实文件系统：外部目录；mock：忽略，用内置示例） */
   templateDir: string
