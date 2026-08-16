@@ -30,6 +30,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-vue": "^6.0.8",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^6.2.108",
     "playwright": "^1.62.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.6"

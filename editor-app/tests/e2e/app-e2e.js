@@ -117,8 +117,10 @@ const { chromium } = require('playwright');
   check('Alt+↓ 打开新标签', (await page.locator('.tab').count()) === 3);
 
   // 12. 固定侧边栏：点击编辑区不收纳（未固定则收纳）
-  await page.locator('.icon-col .icon-btn').first().click(); // 展开（如果已收纳）
-  await page.waitForTimeout(300);
+  if (await page.locator('.content-col.collapsed').count()) {
+    await page.locator('.icon-col .icon-btn').first().click(); // 展开（如果已收纳）
+    await page.waitForTimeout(300);
+  }
   await page.locator('.sidebar-head .pin').click(); // 固定
   await page.waitForTimeout(300);
   await page.locator('.workspace').click({ position: { x: 320, y: 200 } });

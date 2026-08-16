@@ -555,7 +555,6 @@ async function renderKatexImage(
 
 // ---------- 导出前准备（引用展示 + mermaid 图片 + 公式 + 普通图片，递归） ----------
 
-/** 普通图片转 data URI（http(s)/data: 可 fetch；跨域/失败 → null 降级）。带缓存。 */
 const imageFetchCache = new Map<string, string | null>()
 
 async function fetchImageDataUri(url: string): Promise<string | null> {
@@ -586,8 +585,12 @@ async function fetchImageDataUri(url: string): Promise<string | null> {
 }
 
 /** 导出前准备（引用展示 + mermaid 图片 + 公式 + 普通图片，递归）。
- *  renderMath：true = 公式渲染为图片（pdf/docx）；false = 保留原文（md 导出）。 */
-async function prepareForExport(nodes: MdastNode[], renderMath: boolean): Promise<MdastNode[]> {
+ *  renderMath：true = 公式渲染为图片（pdf/docx）；false = 保留原文（md 导出）。
+ *  代码块保持文本（PDF 用 preserveLeadingSpaces 保留缩进、DOCX 用 break 换行，均可复制）。 */
+async function prepareForExport(
+  nodes: MdastNode[],
+  renderMath: boolean
+): Promise<MdastNode[]> {
   const out: MdastNode[] = []
   for (const n of nodes) {
     if (n.type === 'fileRef') {
@@ -689,6 +692,7 @@ export function clearEmbedCache(): void {
   refTextCache.clear()
   refDisplayCache.clear()
   mermaidImageCache.clear()
+  katexImageCache.clear()
   imageFetchCache.clear()
 }
 

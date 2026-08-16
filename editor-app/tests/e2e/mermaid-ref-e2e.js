@@ -54,9 +54,11 @@ const { chromium } = require('playwright');
   ok('B1: 点击引用打开目标文档（loan_apply.md）', (activeTab || '').includes('loan_apply'));
 
   // ---- C: 代码块内 @ 联想（回到引用测试文档） ----
-  // B1 打开周报后侧边栏自动收纳 → 点 📁 图标按钮展开
-  await page.locator('.icon-btn').first().click();
-  await page.waitForTimeout(600);
+  // B1 打开目标文档后侧边栏保持展开；若已收纳则点 📁 展开
+  if (await page.locator('.content-col.collapsed').count()) {
+    await page.locator('.icon-btn').first().click();
+    await page.waitForTimeout(600);
+  }
   await page.locator('.tree .name', { hasText: 'Mermaid引用测试.md' }).scrollIntoViewIfNeeded();
   await page.locator('.tree .name', { hasText: 'Mermaid引用测试.md' }).click({ force: true });
   await page.waitForTimeout(3000);

@@ -9,7 +9,7 @@
 import { state, toast } from '../state/store'
 import { templateService } from '../template/service'
 import { extractDoctype } from '../template/service'
-import type { ExportContext, ExportModule, ExportOptions, ExportOutcome, ExportFormat } from './types'
+import type { ExportContext, ExportModule, ExportOptions, ExportOutcome, ExportFormat, ExportChoice } from './types'
 import { mdToExportBlocks, mdToExportMarkdown, clearEmbedCache } from './mdast'
 import { getActiveTabMarkdown, getTabMarkdownByPath } from '../editor/manager'
 import { fs } from '../fs'
@@ -174,29 +174,34 @@ export interface BatchExportOutcome {
 }
 
 /**
- * 批量导出多个文件（ExportModal 多选）。
+ * 批量导出多个文件（ExportModal 多选，每文件独立格式选择）。
  * 内容：已打开标签用编辑器最新内容，否则读磁盘。
  * 文件名：用原文件名（export.ts 的自定义 filename 仅单文件导出生效，避免批量重名覆盖）。
+ * 格式：'export' = 按模板 export.ts 定义（无模板回落 pdf）；否则用户指定格式优先。
  * 落盘：tauri → 选目录全部写入；浏览器 → 逐个下载。
  */
-export async function exportFiles(paths: string[], options: ExportOptions): Promise<BatchExportOutcome> {
+export async function exportFiles(
+  items: Array<{ path: string; format: ExportChoice }>
+): Promise<BatchExportOutcome> {
   const result: BatchExportOutcome = { ok: 0, fail: 0, errors: [] }
-  const items: Array<{ blob: Blob; filename: string; format: ExportFormat }> = []
+  const built: Array<{ blob: Blob; filename: string; format: ExportFormat }> = []
 
-  for (const p of paths) {
+  for (const it of items) {
     try {
-      const content = getTabMarkdownByPath(p) ?? (await fs.readFile(p))
-      const name = safeFilename(p.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? 'export')
-      // 批量：忽略 export.ts 自定义 filename（防重名），格式仍按模板定义（auto 时）
-      const item = await buildExportItem(content, p, name, options, false)
-      items.push(item)
+      const content = getTabMarkdownByPath(it.path) ?? (await fs.readFile(it.path))
+      const name = safeFilename(it.path.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? 'export')
+      // 每文件格式：'export' → 模板定义（auto 回落）；否则用户指定
+      const opts: ExportOptions = { format: it.format === 'export' ? 'auto' : it.format }
+      // 批量：忽略 export.ts 自定义 filename（防重名），格式仍按模板/用户定义
+      const item = await buildExportItem(content, it.path, name, opts, false)
+      built.push(item)
     } catch (e) {
       result.fail++
-      result.errors.push(`${p}: ${(e as Error).message ?? '未知错误'}`)
+      result.errors.push(`${it.path}: ${(e as Error).message ?? '未知错误'}`)
     }
   }
 
-  if (!items.length) {
+  if (!built.length) {
     toast('没有可导出的文件', 'error')
     return result
   }
@@ -210,7 +215,7 @@ export async function exportFiles(paths: string[], options: ExportOptions): Prom
         result.cancelled = true
         return result
       }
-      for (const it of items) {
+      for (const it of built) {
         try {
           await tauriWriteBinary(`${dir}/${it.filename}`, it.blob)
           result.ok++
@@ -220,11 +225,11 @@ export async function exportFiles(paths: string[], options: ExportOptions): Prom
         }
       }
     } else {
-      for (const it of items) downloadBlob(it.blob, it.filename)
-      result.ok = items.length
+      for (const it of built) downloadBlob(it.blob, it.filename)
+      result.ok = built.length
     }
   } catch (e) {
-    result.fail = items.length
+    result.fail = built.length
     result.errors.push((e as Error).message)
   }
 
@@ -273,9 +278,12 @@ export async function exportDebug(path?: string, format: ExportFormat | 'auto' =
   return res
 }
 
-/** 调试钩子：批量导出（e2e 用） */
-export async function exportDebugMany(paths: string[], format: ExportFormat | 'auto' = 'auto') {
-  const res = await exportFiles(paths, { format })
+/** 调试钩子：批量导出（e2e 用；统一格式或每文件独立） */
+export async function exportDebugMany(
+  paths: string[],
+  format: ExportFormat | 'export' = 'pdf'
+) {
+  const res = await exportFiles(paths.map((p) => ({ path: p, format })))
   clearEmbedCache()
   return res
 }

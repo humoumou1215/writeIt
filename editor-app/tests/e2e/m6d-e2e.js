@@ -75,7 +75,7 @@ const { chromium } = require('playwright');
       ok('写回：note 为单次转义（含 &quot;评2&quot;）', source.includes('&quot;评2&quot;'));
       ok('写回：无双重转义（不含 &amp;quot;）', !source.includes('&amp;quot;'));
 
-      // 5. 打开源文件 笔记/待办清单.md（打开文件后侧边栏可能已自动收纳 → 先展开）
+      // 5. 打开源文件 笔记/待办清单.md（打开文件不收纳；若已收纳则先展开）
       if ((await page.locator('.content-col.collapsed').count()) > 0) {
         await page.locator('.icon-col .icon-btn').first().click();
         await page.waitForTimeout(400);

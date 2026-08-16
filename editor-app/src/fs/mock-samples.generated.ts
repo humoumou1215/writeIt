@@ -280,6 +280,11 @@ const KEEP_BASIC = ['方法', '路径', '版本号', '该接口涉及的业务�
 /** 字段说明表对外保留的列 */
 const KEEP_FIELD_COLS = ['字段', '类型', '长度', '说明']
 
+// 编辑器序列化的表格为对齐填充格式（\`| 项   | 值   |\`），用正则匹配表头
+const BASIC_HEAD = /^\\|\\s*项\\s*\\|\\s*值\\s*\\|\\s*备注/
+const FIELD_HEAD = /^\\|\\s*字段\\s*\\|\\s*类型\\s*\\|\\s*长度/
+const SEP_RE = /^\\|[\\s:\\-]+\\|/
+
 /** 可选：自定义导出内容（对外版本过滤） */
 export const build = (ctx: ExportContext): ExportResult | null => {
   const lines = ctx.content.split('\\n')
@@ -300,13 +305,13 @@ export const build = (ctx: ExportContext): ExportResult | null => {
     if (inChangeLog) continue
 
     // ---- 基本信息表：仅保留对外行，且只留「项 | 值」两列（去掉备注） ----
-    if (t.startsWith('| 项 | 值 | 备注')) {
+    if (BASIC_HEAD.test(t)) {
       inBasic = true
       out.push('| 项 | 值 |')
       continue
     }
     if (inBasic) {
-      if (t.startsWith('| ---')) {
+      if (SEP_RE.test(t)) {
         out.push('| --- | --- |')
         continue
       }
@@ -321,7 +326,7 @@ export const build = (ctx: ExportContext): ExportResult | null => {
     }
 
     // ---- 字段说明表：仅保留列（字段/类型/长度/说明） ----
-    if (t.startsWith('| 字段 | 类型 | 长度')) {
+    if (FIELD_HEAD.test(t)) {
       inFieldTable = true
       const header = t.split('|').slice(1, -1).map((c) => c.trim())
       keepIdx = header
@@ -331,7 +336,7 @@ export const build = (ctx: ExportContext): ExportResult | null => {
       continue
     }
     if (inFieldTable) {
-      if (t.startsWith('| ---')) {
+      if (SEP_RE.test(t)) {
         const sep = t.split('|').slice(1, -1)
         out.push(\`| \${keepIdx.map((i) => sep[i] ?? '---').join(' | ')} |\`)
         continue
@@ -2155,4 +2160,4 @@ export const DEMO_DIRS: string[] = [
 ]
 
 /** 全部 demo 文件内容的聚合 hash（校验同步状态用） */
-export const DEMO_HASH = '13an457'
+export const DEMO_HASH = '12d3ump'

@@ -81,26 +81,64 @@ const { chromium } = require('playwright');
     ok('MD 导出内容含标题', text.includes('# 周报'));
   }
 
-  // ---------- 4：图标列 📤 独立导出弹窗 UI ----------
+  // ---------- 4：图标列 📤 独立导出弹窗 UI（左树 + 右列表 + 每文件格式） ----------
   {
     await page.locator('.icon-btn', { hasText: '📤' }).click();
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(600);
     const modalVisible = await page.locator('.export-modal').isVisible();
     ok('导出弹窗打开（图标列 📤 独立按钮）', modalVisible);
-    const pathText = await page.locator('.export-modal .export-path').textContent();
-    ok('导出弹窗显示当前文件路径', pathText.includes('笔记/周报.md'));
-    const badgeText = await page.locator('.export-modal .export-target .badge').first().textContent();
-    ok('导出弹窗显示 doctype', badgeText.includes('demo'));
-    // 选 PDF + 点导出
-    await page.locator('.export-modal .fmt input[type=radio][value="pdf"]').check();
-    await page.waitForTimeout(200);
+    // 布局：文件树在左、已选列表在右
+    const treeLeft = await page.evaluate(() => {
+      const tree = document.querySelector('.export-tree');
+      const right = document.querySelector('.export-right');
+      return tree && right && tree.getBoundingClientRect().left < right.getBoundingClientRect().left;
+    });
+    ok('文件树在左侧、已选列表在右侧', treeLeft === true);
+    // 默认勾选当前文件（笔记/周报.md，祖先目录自动展开）
+    const checkedInit = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.export-tree .tfile input:checked')).map((i) => i.value)
+    );
+    ok('默认勾选当前打开的文件', checkedInit.includes('笔记/周报.md'));
+    ok('祖先目录自动展开（周报.md 可见）', await page.locator('.export-tree .tfile .tname', { hasText: '周报.md' }).count() > 0);
+    // 无 export.ts 的文件默认 PDF
+    await page.waitForTimeout(800);
+    const selFmt = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.sel-row')).map((r) => ({
+        name: r.querySelector('.sel-name')?.textContent?.trim(),
+        fmt: r.querySelector('.sel-fmt')?.value,
+      }))
+    );
+    ok('无 export.ts 文件默认格式 PDF', selFmt.some((s) => s.name?.includes('周报') && s.fmt === 'pdf'));
+    // 筛选输入框
+    await page.locator('.export-tree .tree-filter').fill('会议记录');
+    await page.waitForTimeout(300);
+    const filtered = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.export-tree .tfile .tname')).map((n) => n.textContent)
+    );
+    ok('筛选输入框过滤文件（会议记录）', filtered.some((t) => t.includes('会议记录')) && filtered.length <= 2);
+    await page.locator('.export-tree .tree-filter').fill('');
+    await page.waitForTimeout(300);
+    // 导出（默认勾选 周报.md，格式 pdf）
     const [download] = await Promise.all([
       page.waitForEvent('download', { timeout: 60000 }),
-      page.locator('.export-modal .btn.primary').click(),
+      page.locator('.modal-foot .btn.primary').click(),
     ]);
     ok('导出弹窗导出触发下载 .pdf', (download.suggestedFilename() || '').endsWith('.pdf'));
     await page.keyboard.press('Escape');
     await page.waitForTimeout(400);
+  }
+
+  // ---------- 4.5：批量导出（__exportDebugMany 多文件） ----------
+  {
+    const [dl1, o] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.evaluate(() =>
+        window.__exportDebugMany(['笔记/会议记录.md', '接口文档/助贷/助贷接口.md'], 'md')
+      ),
+    ]);
+    ok('批量导出 ok（2 文件）', o.ok === 2 && o.fail === 0);
+    ok('批量文件名沿用原文件名', (dl1.suggestedFilename() || '').includes('会议记录.md'));
+    await page.waitForTimeout(1500);
   }
 
   // ---------- 4.5：嵌入块导出包含内容（引用演示.md 含 ![[ 嵌入） ----------
@@ -242,6 +280,117 @@ export const build = (ctx) => ({ content: '# 自定义标题\\n\\n来自 export.
       page.evaluate(() => window.__exportDebug('公式测试.md', 'docx')),
     ]);
     ok('含公式 DOCX 导出成功（>10KB 含公式图片）', oDocx.ok && (oDocx.size || 0) > 10000);
+  }
+
+  // ---------- 8：接口文档 export.ts 对外版本过滤（提供给其他系统人员） ----------
+  {
+    const [dl, outcome] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('接口文档/助贷/助贷接口.md', 'md')),
+    ]);
+    ok('接口文档对外导出 ok（usedExportTs=true）', outcome.ok && outcome.usedExportTs === true);
+    const stream = await dl.createReadStream();
+    const text = await new Promise((resolve, reject) => {
+      const chunks = [];
+      stream.on('data', (c) => chunks.push(c));
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('error', reject);
+    });
+    // 保留对外信息
+    ok('保留对外信息（方法/路径/版本号）', text.includes('方法') && text.includes('/api/loan/apply') && text.includes('v1.0.0'));
+    ok('保留字段表列（类型/长度/说明）', text.includes('类型') && text.includes('长度') && text.includes('说明'));
+    ok('保留请求/响应示例', text.includes('请求示例') && text.includes('响应示例'));
+    // 过滤内部信息
+    ok('过滤「是否关键接口」', !text.includes('是否关键接口'));
+    ok('过滤「数据来源」列', !text.includes('数据来源'));
+    ok('过滤「变更记录」章节', !text.includes('变更记录'));
+    ok('过滤内部引用（[[数据库/ 与 [[后端接口/）', !text.includes('[[数据库/') && !text.includes('[[后端接口/'));
+  }
+
+  // ---------- 9：每文件独立导出模式（有 export.ts → 默认模板；导出走模板定义） ----------
+  {
+    // 打开 接口文档/助贷/助贷接口.md（有 export.ts）
+    await page.locator('.tree .node', { hasText: '接口文档' }).first().click();
+    await page.waitForTimeout(400);
+    await page.locator('.tree .node', { hasText: '助贷' }).first().click();
+    await page.waitForTimeout(400);
+    await page.locator('.tree .name', { hasText: '助贷接口.md' }).first().click();
+    await page.waitForTimeout(3000);
+    await page.locator('.icon-btn', { hasText: '📤' }).click();
+    await page.waitForTimeout(800);
+    const selFmt = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.sel-row .sel-fmt')).map((s) => s.value)
+    );
+    ok('有 export.ts 文件默认「模板(export.ts)」模式', selFmt.length === 1 && selFmt[0] === 'export');
+    // 模板模式导出 = 对外版本 PDF
+    const [dl, outcome] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.locator('.modal-foot .btn.primary').click(),
+    ]);
+    ok('模板模式导出为 PDF（对外版本，非「接口文档-对外」批量名）', (dl.suggestedFilename() || '').endsWith('.pdf'));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+  }
+
+  // ---------- 10：JSON 代码块对齐与可复制（PDF preserve 缩进文本 / DOCX break 换行） ----------
+  {
+    await page.evaluate(() => {
+      const f = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');
+      f.files['JSON对齐测试.md'] =
+        '# JSON 对齐测试\n\n请求示例：\n\n```json\n{\n  \"applyNo\": \"APL20260806001\",\n  \"data\": {\n    \"status\": \"PROCESSING\"\n  }\n}\n```\n';
+      localStorage.setItem('milkdown-note-mock-fs-v2', JSON.stringify(f));
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2500);
+
+    // md：代码块保留文本（缩进原样）
+    const [dl, o] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.evaluate(() => window.__exportDebug('JSON对齐测试.md', 'md')),
+    ]);
+    const stream = await dl.createReadStream();
+    const text = await new Promise((resolve, reject) => {
+      const chunks = [];
+      stream.on('data', (c) => chunks.push(c));
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('error', reject);
+    });
+    ok('md 导出保留 json 代码块文本（含缩进）', text.includes('"applyNo"') && text.includes('  "applyNo"'));
+
+    // PDF：文本层含 json（可复制，非图片）；preserveLeadingSpaces 保留缩进
+    const [dlPdf, oPdf] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('JSON对齐测试.md', 'pdf')),
+    ]);
+    const pdfPath = '/tmp/export-e2e-json.pdf';
+    await dlPdf.saveAs(pdfPath);
+    ok('含 json 代码块 PDF 导出成功', oPdf.ok);
+    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdfData = new Uint8Array(require('node:fs').readFileSync(pdfPath));
+    const pdfDoc = await getDocument({ data: pdfData }).promise;
+    let pdfText = '';
+    for (let i = 1; i <= pdfDoc.numPages; i++) {
+      const p = await pdfDoc.getPage(i);
+      const c = await p.getTextContent();
+      pdfText += c.items.map((it) => it.str).join('');
+    }
+    ok('PDF 文本层含 json 内容（可复制，非图片）', pdfText.includes('applyNo'));
+    ok('PDF 文本层含标题', pdfText.includes('JSON 对齐测试'));
+
+    // DOCX：文本含 json + 换行（w:br）
+    const [dlDocx, oDocx] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      page.evaluate(() => window.__exportDebug('JSON对齐测试.md', 'docx')),
+    ]);
+    const docxPath = '/tmp/export-e2e-json.docx';
+    await dlDocx.saveAs(docxPath);
+    ok('含 json 代码块 DOCX 导出成功', oDocx.ok);
+    const JSZip = require('jszip');
+    const zip = await JSZip.loadAsync(require('node:fs').readFileSync(docxPath));
+    const xml = await zip.file('word/document.xml').async('string');
+    ok('DOCX 文本含 json 内容（可复制）', xml.includes('applyNo'));
+    const brCount = (xml.match(/<w:br\/>/g) || []).length;
+    ok('DOCX json 换行保留（w:br）', brCount >= 5);
   }
 
   console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);

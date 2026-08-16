@@ -169,7 +169,6 @@ function imageToDocx(img: ExportImage): Paragraph {
     ],
   })
 }
-
 function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): Array<Paragraph | Table> {
   switch (block.kind) {
     case 'heading': {
@@ -251,17 +250,20 @@ function blockToDocx(block: ExportBlock, numberingRef: string, quote = false): A
           })
         )
       }
+      // 多行代码：每行一个 TextRun，后续行用 break:1（docx 的 text 内 \n 不换行）
+      const runs = lines.map((line, i) =>
+        new TextRun({
+          text: line,
+          break: i > 0 ? 1 : undefined,
+          font: { ascii: CODE_FONT, eastAsia: BODY_FONT },
+          size: 18,
+        })
+      )
       paras.push(
         new Paragraph({
           shading: { type: ShadingType.CLEAR, fill: 'F5F5F5' },
           spacing: { before: 40, after: 80 },
-          children: [
-            new TextRun({
-              text: lines.join('\n'),
-              font: { ascii: CODE_FONT, eastAsia: BODY_FONT },
-              size: 18,
-            }),
-          ],
+          children: runs,
         })
       )
       return paras

@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // 导出弹窗（M10）：图标列 📤 独立入口
-// 多文件选择：文件树（checkbox 多选 + 筛选输入框），默认选中当前打开的文件
-// 格式选择 → 批量导出（tauri 选目录 / 浏览器逐个下载）
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+// 布局：左侧文件树（多选 + 筛选）· 右侧已选文件列表（每文件独立导出模式）
+// 每文件格式：有模板 export.ts → 默认「模板(export.ts)」；无 → 默认 PDF
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { state } from '../state/store'
-import { getActiveTabMarkdown } from '../editor/manager'
+import { getActiveTabMarkdown, getTabMarkdownByPath } from '../editor/manager'
 import { extractDoctype, templateService } from '../template/service'
 import { exportFiles } from '../export/service'
-import type { ExportFormat } from '../export/types'
+import type { ExportChoice, ExportFormat } from '../export/types'
 import type { FsEntry } from '../fs/types'
+import { fs } from '../fs'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
@@ -19,32 +20,92 @@ const exportDoctype = computed(() => {
   const md = getActiveTabMarkdown() ?? t.savedContent
   return extractDoctype(md)
 })
-/** 模板是否声明了 export.ts（注册表同步查询；未扫描完成时为 false） */
 const exportHasTs = computed(() => {
   const dt = exportDoctype.value
   if (!dt) return false
   return Boolean(templateService.get(dt)?.exportFile)
 })
 
-const exportFormat = ref<ExportFormat | 'auto'>('auto')
 const exporting = ref(false)
-
-const fmtOptions: Array<{ value: ExportFormat | 'auto'; label: string; hint: string }> = [
-  { value: 'auto', label: '自动', hint: '跟随模板 export.ts；无则默认 PDF' },
-  { value: 'pdf', label: 'PDF', hint: '内置中文字体，离线生成' },
-  { value: 'docx', label: 'DOCX', hint: 'Word 文档（引用系统中文字体）' },
-  { value: 'md', label: 'Markdown', hint: '导出 .md（嵌入块内容已展开）' },
-]
 
 // ---------- 多文件选择 ----------
 const selected = ref<string[]>([])
+/** 每文件导出模式：path → ExportChoice */
+const formats = ref<Record<string, ExportChoice>>({})
 const filterQuery = ref('')
 const expanded = ref(new Set<string>())
 
-// 默认选中当前打开的文件
+// 默认选中当前打开的文件 + 展开其祖先目录（让勾选可见）
 onMounted(() => {
-  if (activeTab.value?.path) selected.value = [activeTab.value.path]
+  const p = activeTab.value?.path
+  if (p) {
+    selected.value = [p]
+    const dirs = p.split('/').slice(0, -1)
+    let acc = ''
+    for (const d of dirs) {
+      acc = acc ? `${acc}/${d}` : d
+      expanded.value.add(acc)
+    }
+    expanded.value = new Set(expanded.value)
+  }
 })
+
+/** 文件是否有模板 export.ts（读内容 → doctype → 模板注册表） */
+async function fileHasExportTs(path: string): Promise<boolean> {
+  try {
+    const content = getTabMarkdownByPath(path) ?? (await fs.readFile(path))
+    const dt = extractDoctype(content)
+    return dt ? Boolean(templateService.get(dt)?.exportFile) : false
+  } catch {
+    return false
+  }
+}
+
+/** 勾选变化：新增文件初始化默认格式（有 export.ts → 模板；否则 PDF） */
+watch(selected, async (paths) => {
+  const pending: Promise<void>[] = []
+  for (const p of paths) {
+    if (p in formats.value) continue
+    pending.push(
+      (async () => {
+        const hasTs = await fileHasExportTs(p)
+        formats.value = { ...formats.value, [p]: hasTs ? 'export' : 'pdf' }
+      })()
+    )
+  }
+  for (const k of Object.keys(formats.value)) {
+    if (!paths.includes(k)) {
+      const next = { ...formats.value }
+      delete next[k]
+      formats.value = next
+    }
+  }
+  await Promise.all(pending)
+})
+
+/** 格式选项：有 export.ts 的文件多一个「模板」选项 */
+function formatOptions(path: string): Array<{ value: ExportChoice; label: string }> {
+  const hasTs = formats.value[path] === 'export' || hasTsSync(path)
+  const opts: Array<{ value: ExportChoice; label: string }> = []
+  if (hasTs) opts.push({ value: 'export', label: '模板(export.ts)' })
+  opts.push({ value: 'pdf', label: 'PDF' }, { value: 'docx', label: 'DOCX' }, { value: 'md', label: 'Markdown' })
+  return opts
+}
+/** 同步判断（格式已初始化为 export 或读内容失败时兜底） */
+function hasTsSync(path: string): boolean {
+  try {
+    const content = getTabMarkdownByPath(path)
+    if (content === null) return false
+    const dt = extractDoctype(content)
+    return dt ? Boolean(templateService.get(dt)?.exportFile) : false
+  } catch {
+    return false
+  }
+}
+
+function setFormat(path: string, f: ExportChoice) {
+  formats.value = { ...formats.value, [path]: f }
+}
 
 function toggleDir(path: string) {
   const s = new Set(expanded.value)
@@ -115,11 +176,29 @@ function clearAll() {
   selected.value = []
 }
 
+/** 已选文件列表（按树中顺序展示；不在树里的文件追加在后） */
+const selectedList = computed(() => {
+  const order: string[] = []
+  const walk = (list: FsEntry[]) => {
+    for (const e of list) {
+      if (e.kind === 'file' && selected.value.includes(e.path)) order.push(e.path)
+      else if (e.kind === 'dir') walk(e.children ?? [])
+    }
+  }
+  walk(state.tree)
+  for (const p of selected.value) if (!order.includes(p)) order.push(p)
+  return order
+})
+
 async function doExport() {
   if (exporting.value || !selected.value.length) return
   exporting.value = true
   try {
-    await exportFiles([...selected.value], { format: exportFormat.value })
+    const items = selected.value.map((p) => ({
+      path: p,
+      format: (formats.value[p] ?? 'pdf') as ExportChoice,
+    }))
+    await exportFiles(items)
   } finally {
     exporting.value = false
   }
@@ -138,25 +217,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
       <div class="export-modal" role="dialog" aria-modal="true">
         <div class="modal-head">
           <h3>导出</h3>
+          <div class="head-info">
+            <span v-if="activeTab" class="head-path">{{ activeTab.path }}</span>
+            <span v-if="activeTab" class="badge">{{ exportDoctype ?? '（无 doctype）' }}</span>
+            <span v-if="exportHasTs" class="badge ts" title="当前文件模板定义了 export.ts">export.ts</span>
+          </div>
           <button class="close" @click="emit('close')" title="关闭 (Esc)">×</button>
         </div>
 
         <div class="modal-body">
-          <div class="export-target">
-            <div class="row">
-              <span>当前文件</span>
-              <span class="export-path">{{ activeTab?.path ?? '（未打开文件）' }}</span>
-            </div>
-            <div class="row" v-if="activeTab">
-              <span>模板类型</span>
-              <span class="badge">{{ exportDoctype ?? '（无 doctype）' }}</span>
-              <span v-if="exportHasTs" class="badge ts" title="该模板定义了 export.ts，将按模板规则导出">
-                export.ts
-              </span>
-            </div>
-          </div>
-
-          <!-- 多文件选择：文件树 + 筛选 -->
+          <!-- 左：文件树（宽） -->
           <div class="export-tree">
             <div class="tree-toolbar">
               <input v-model="filterQuery" class="tree-filter" placeholder="🔍 筛选文件名…" spellcheck="false" />
@@ -183,22 +253,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
               </div>
               <p v-if="!visibleEntries.length" class="empty-hint">无匹配文件</p>
             </div>
-            <p class="hint">已选 {{ selected.length }} 个文件（默认勾选当前打开的文件）</p>
           </div>
 
-          <div class="export-formats">
-            <label v-for="f in fmtOptions" :key="f.value" class="fmt">
-              <input type="radio" :value="f.value" v-model="exportFormat" />
-              <span class="fmt-main">{{ f.label }}</span>
-              <span class="fmt-hint">{{ f.hint }}</span>
-            </label>
+          <!-- 右：已选文件列表 + 每文件格式 -->
+          <div class="export-right">
+            <div class="right-head">已选文件（{{ selected.length }}）— 每文件独立选择导出模式</div>
+            <div class="sel-list">
+              <div v-for="p in selectedList" :key="p" class="sel-row">
+                <span class="sel-name" :title="p">📄 {{ p.split('/').pop() }}</span>
+                <select
+                  class="sel-fmt"
+                  :value="formats[p] ?? 'pdf'"
+                  @change="setFormat(p, ($event.target as HTMLSelectElement).value as ExportChoice)"
+                >
+                  <option v-for="o in formatOptions(p)" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+              </div>
+              <p v-if="!selected.length" class="empty-hint">从左侧勾选文件</p>
+            </div>
+            <p class="hint">
+              无 export.ts 的文件默认 PDF；有 export.ts 的文件默认「模板」模式（按模板定义导出）。
+              批量导出文件名沿用原文件名。
+            </p>
           </div>
-          <p class="hint">
-            模板目录下存在 <code>&lt;名称&gt;.export.ts</code> 时，按模板定义导出（格式/内容自定义）；
-            无 export.ts 时导出为 PDF 或 DOCX。嵌入块 / 引用展示 / Mermaid / 公式自动处理。
-            批量导出文件名沿用原文件名（模板自定义文件名仅单个导出时生效）。
-          </p>
+        </div>
 
+        <div class="modal-foot">
           <button
             class="btn full primary"
             :disabled="!selected.length || exporting"
@@ -227,8 +307,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-surface);
   border: 1px solid var(--chrome-border);
   border-radius: 12px;
-  width: min(560px, 94vw);
-  max-height: 86vh;
+  width: min(920px, 96vw);
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
   box-shadow: var(--chrome-shadow-2, 0 16px 48px rgba(0, 0, 0, 0.22));
@@ -237,13 +317,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
 .modal-head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 14px 18px 0;
 }
 .modal-head h3 {
   margin: 0;
   font-size: 15px;
   color: var(--chrome-on-surface);
+  flex-shrink: 0;
+}
+.head-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.head-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant);
+  font-family: var(--chrome-font-code, monospace);
 }
 .close {
   margin-left: auto;
@@ -255,46 +351,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .close:hover {
   background: var(--chrome-hover);
   color: var(--chrome-on-background);
 }
 .modal-body {
-  padding: 16px 18px 18px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-}
-.row > span:first-child {
-  min-width: 96px;
-  color: var(--chrome-on-surface);
-}
-.export-target {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border: 1px solid var(--chrome-border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--chrome-background);
-}
-.export-path {
   flex: 1;
-  min-width: 0;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  padding: 14px 18px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--chrome-font-code, monospace);
-  font-size: 12px;
-  color: var(--chrome-on-surface);
 }
 .badge {
   font-size: 11px;
@@ -302,13 +371,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-surface);
   padding: 2px 8px;
   border-radius: 999px;
+  flex-shrink: 0;
 }
 .badge.ts {
   background: var(--chrome-selected);
   color: var(--chrome-primary);
   font-family: var(--chrome-font-code, monospace);
 }
+/* 左：文件树 */
 .export-tree {
+  flex: 1.25;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--chrome-border);
   border-radius: 8px;
   background: var(--chrome-background);
@@ -348,7 +423,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-background);
 }
 .tree-list {
-  max-height: 220px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 4px 0;
 }
@@ -399,36 +475,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   font-size: 12px;
   color: var(--chrome-on-surface-variant);
 }
-.export-formats {
+/* 右：已选列表 */
+.export-right {
+  flex: 1;
+  min-width: 260px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
-.fmt {
+.right-head {
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant);
+  padding: 2px 2px 0;
+}
+.sel-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  background: var(--chrome-background);
+  padding: 4px 0;
+}
+.sel-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--chrome-border);
-  border-radius: 8px;
-  cursor: pointer;
-  background: var(--chrome-background);
+  padding: 4px 10px;
+  font-size: 12px;
 }
-.fmt:hover {
-  border-color: var(--chrome-primary);
+.sel-row:hover {
+  background: var(--chrome-hover);
 }
-.fmt input[type='radio'] {
-  accent-color: var(--chrome-primary);
-  margin: 0;
-}
-.fmt-main {
-  font-size: 13px;
+.sel-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--chrome-on-surface);
-  min-width: 64px;
 }
-.fmt-hint {
-  font-size: 11px;
-  color: var(--chrome-on-surface-variant);
+.sel-fmt {
+  flex-shrink: 0;
+  border: 1px solid var(--chrome-border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--chrome-on-surface);
+  background: var(--chrome-background);
 }
 .hint {
   margin: 0;
@@ -436,12 +531,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
   color: var(--chrome-on-surface-variant);
   line-height: 1.6;
 }
-.hint code {
-  font-family: var(--chrome-font-code, monospace);
-  font-size: 10px;
-  background: var(--chrome-hover);
-  padding: 1px 4px;
-  border-radius: 4px;
+.modal-foot {
+  padding: 0 18px 16px;
 }
 .btn {
   border: 1px solid var(--chrome-border);

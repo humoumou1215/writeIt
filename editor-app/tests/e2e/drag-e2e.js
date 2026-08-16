@@ -159,7 +159,7 @@ const { chromium } = require('playwright');
   await page.locator('.tree .rename-input').fill('新文件.md');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(1200);
-  // 新建后自动打开标签 → 侧边栏自动收纳 → 恢复展开再拖拽
+  // 新建后自动打开标签（侧边栏不收纳）→ 恢复展开再拖拽
   await ensureSidebar();
   // 8d 拖 笔记/新文件.md 到根空白 → newPath=新文件.md 已存在 → 拒绝
   await dragDropRoot('笔记/新文件.md');
@@ -214,7 +214,7 @@ const { chromium } = require('playwright');
   await clickNode('笔记/引用演示.md');
   await page.waitForTimeout(2500);
   check('引用演示标签已打开', (await page.locator('.tab', { hasText: '引用演示' }).count()) > 0);
-  // 打开文件后侧边栏可能自动收纳 → 恢复后再打开会议记录
+  // 打开文件不收纳侧边栏；若已收纳（如点击编辑区）则先展开，再打开会议记录
   await ensureSidebar();
   await ensureExpanded('笔记');
   await clickNode('笔记/会议记录.md');
@@ -244,7 +244,7 @@ const { chromium } = require('playwright');
   // 激活会议记录标签（当前 activeTab 是引用演示）
   await page.locator('.tab', { hasText: '会议记录' }).click();
   await page.waitForTimeout(800);
-  // 确保侧边栏展开（打开文件后可能自动收纳）
+  // 确保侧边栏展开（打开文件不收纳；若已收纳则展开）
   await ensureSidebar();
   await page.locator('.sidebar-actions .mini', { hasText: '定位' }).click();
   await page.waitForTimeout(700);

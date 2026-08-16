@@ -5,13 +5,22 @@
 
 ## 1. 使用说明（用户视角）
 
-1. 打开一个文件 → 左侧图标列点「📤 导出」→ 独立导出弹窗。
-2. 查看「当前文件」与「模板类型」（doctype；有 `export.ts` 时显示徽标）。
-3. 选择格式：自动 / PDF / DOCX / Markdown。
-4. 点「📤 导出」：
-   - **Tauri**：弹出保存对话框 → 选择位置 → 写入文件。
-   - **浏览器（web/mock）**：直接下载到浏览器下载目录。
-5. 结果 toast 提示（成功/取消/失败）。
+1. 打开一个文件 → 左侧图标列点「📤 导出」→ 独立导出弹窗（**左右两栏布局**）。
+2. **左侧文件树**（较宽）：checkbox 多选 + 🔍 筛选输入框 + 全选/清空；目录可展开/收起；
+   **默认勾选当前打开的文件**（并自动展开其所在目录）。
+3. **右侧已选列表**：每个文件**独立选择导出模式**——
+   - 有模板 `export.ts` 的文件：默认「模板(export.ts)」（按模板定义导出）；可选 PDF/DOCX/Markdown；
+   - 无 `export.ts` 的文件：默认 **PDF**；可选 DOCX/Markdown。
+4. 点「📤 导出（N 个）」：
+   - **Tauri**：批量 → 选择保存目录全部写入；单文件 → 保存对话框。
+   - **浏览器（web/mock）**：逐个下载到浏览器下载目录。
+5. 结果 toast 提示（成功/失败计数）。
+
+### 批量导出的文件名
+
+- 批量导出文件名**沿用原文件名**（模板 `export.ts` 的自定义 filename 仅单文件导出生效），
+  避免多个文件重名互相覆盖；模板定义的格式/内容转换仍生效（格式选「模板」时）。
+- 内容：已打开的标签用编辑器最新内容（含未保存），未打开的文件读磁盘。
 
 ### 格式说明
 
@@ -36,15 +45,27 @@
 import type { ExportContext, ExportResult } from '@milkdown-note/export'
 
 export const format: 'pdf' | 'docx' | 'md' = 'docx'   // 默认格式（「自动」模式）
-export const filename: string = '助贷接口文档'          // 可选：默认文件名（不含扩展名）
+export const filename: string = '助贷接口文档'          // 可选：默认文件名（不含扩展名；仅单文件导出）
 
 // 可选：完全自定义（返回 null = 走默认）
 export const build = (ctx: ExportContext): ExportResult | null => ({
   format: 'pdf',
   filename: '接口-助贷',
-  content: '# 标题\n' + ctx.content,   // 返回 markdown
+  content: '# 标题\n' + ctx.content,   // 返回 markdown（自动套用公共规则）
 })
 ```
+
+### 示例：接口文档「对外版本」过滤（demo 已内置）
+
+`接口文档.export.ts` 把文档转换为**提供给其他系统人员**的对外版本：
+
+- 基本信息表仅保留对外行（方法/路径/版本号/业务范围/会调用该系统），删除内部评估行
+  （是否关键接口/并发量/幂等规则/防重复机制/交易状态判断/外部接口引用）；
+- 字段说明表仅保留列（字段/类型/长度/说明），删除内部列（是否高风险字段/高风险字段类型/数据来源）；
+- 删除「变更记录」章节；请求示例/响应示例保留。
+
+> 注意：编辑器序列化的表格是**对齐填充格式**（`| 项   | 值   |`），模板内用正则匹配表头，勿用 `startsWith`。
+> **JSON/代码块对齐且可复制**：PDF 用 `preserveLeadingSpaces` + 等宽中文字体（WqyMono）保留行首缩进，DOCX 用 `break` 换行——均为**文本**（可选中复制），非图片。
 
 ```ts
 interface ExportContext {
@@ -97,6 +118,7 @@ export.ts 只需写**差异**（format / filename / content），以下处理自
 | `[[path#对象]]`（suggest 命中） | 导出 **resolve 解析值**（如版本号）；未命中 → 标题/路径文本 |
 | `[[path]]` / `[[path#标题]]` | 链接（DOCX 外部超链接 / PDF link 注解，可点击） |
 | ` ```mermaid ` 代码块 | 渲染为 **PNG 图片**导出（md → data URI；PDF/DOCX → 内嵌位图）；渲染失败保留代码块 |
+| ` ```json ` 等代码块 | **文本导出（可复制）**：PDF `preserveLeadingSpaces` 保留缩进 + 等宽字体；DOCX `break` 换行；md 保留原样 |
 | `$...$` / `$$...$$` 公式 | **katex 渲染为 PNG**（PDF/DOCX）；md 导出保留原文（$..$ / latex 代码块） |
 | `![alt](url)` 普通图片 | 可 fetch 的 http(s)/data URI → 内嵌图片；失败降级文本（md 保留原链接） |
 | `<mark data-note>` 批注 | 黄色高亮文本 |
@@ -124,11 +146,11 @@ export.ts 只需写**差异**（format / filename / content），以下处理自
 
 | 文件 | 职责 |
 |---|---|
-| `types.ts` | ExportContext / ExportResult（含 raw）/ ExportModule / ExportOptions / ExportOutcome |
+| `types.ts` | ExportContext / ExportResult（含 raw）/ ExportModule / ExportOptions / ExportOutcome / BatchExportOutcome |
 | `mdast.ts` | md → ExportBlock / 展开后 markdown（嵌入块递归合并 + 引用展示解析 + mermaid/katex 渲染 + 图片 fetch + fileRef 转链接） |
-| `docx.ts` | ExportBlock → DOCX Blob（docx 库；宋体/黑体/Consolas + 编号 + 表格边框 + 高亮） |
-| `pdf.ts` | ExportBlock → PDF Blob（pdfmake；内置字体注册 + 段落/表格/代码/引用排版） |
-| `service.ts` | 编排：内容 → doctype → export.ts → 转换 → 落盘；调试钩子 `__exportDebug` |
+| `docx.ts` | ExportBlock → DOCX Blob（docx 库；宋体/黑体/Consolas + 编号 + 表格边框 + 高亮 + 对齐 + 语言标注 + 行内图片） |
+| `pdf.ts` | ExportBlock → PDF Blob（pdfmake；内置字体注册 + 段落/表格/代码/引用/对齐/语言标注/行内图片排版） |
+| `service.ts` | 编排：单文件 exportActiveTab / 批量 exportFiles（tauri 选目录 / 浏览器逐个下载）；调试钩子 `__exportDebug` / `__exportDebugMany` |
 | `pdfmake.d.ts` | pdfmake 最小类型声明 |
 | `template/service.ts` | 模板扫描扩展（`exportFile` 字段 + `ensureExport` 惰性加载） |
 | `src-tauri/src/lib.rs` | `save_binary` 命令（base64 解码写盘） |
@@ -144,4 +166,4 @@ export.ts 只需写**差异**（format / filename / content），以下处理自
 
 ## 8. 测试
 
-`tests/e2e/export-e2e.js`（34 断言）：默认 PDF/DOCX/MD 导出（文件头验证）、独立导出弹窗 UI、**嵌入块导出包含内容**、**链接引用展示解析值**、**mermaid 渲染图片导出**、**katex 公式渲染图片导出**、export.ts 自定义 + 公共规则、无活动标签容错。全量回归 `npm run test:e2e`。
+`tests/e2e/export-e2e.js`（56 断言）：默认 PDF/DOCX/MD 导出（文件头验证）、导出弹窗左右布局 + 文件树多选/筛选/默认勾选、**每文件独立导出模式**、批量导出、嵌入块导出包含内容、链接引用展示解析值、mermaid 渲染图片导出、katex 公式渲染图片导出、**JSON 代码块文本可复制（PDF 文本层含内容 + DOCX w:br 换行）**、接口文档对外版本过滤、export.ts 自定义 + 公共规则、无活动标签容错。全量回归 `npm run test:e2e`。

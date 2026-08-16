@@ -5,10 +5,13 @@ import type { ExportBlock, ExportImage, ExportTable, InlineNode } from './mdast'
 import { languageLabel } from './mdast'
 import regularFontUrl from './assets/NotoSansCJKsc-Regular.sub.otf?url'
 import boldFontUrl from './assets/NotoSansCJKsc-Bold.sub.otf?url'
+import monoFontUrl from './assets/WqyMono.sub.ttf?url'
 
 const REGULAR_FONT = 'NotoSansCJKsc-Regular.otf'
 const BOLD_FONT = 'NotoSansCJKsc-Bold.otf'
+const MONO_FONT = 'WqyMono.ttf'
 const FONT_FAMILY = 'NotoSans'
+const MONO_FAMILY = 'WqyMono'
 
 // ---------- pdfmake 懒初始化（字体 vfs + 字体表，幂等） ----------
 
@@ -44,12 +47,17 @@ function ensurePdfMake(): Promise<PdfMakeModule> {
         }
         return btoa(bin)
       }
-      const [reg, bold] = await Promise.all([toBase64(regularFontUrl), toBase64(boldFontUrl)])
+      const [reg, bold, mono] = await Promise.all([
+        toBase64(regularFontUrl),
+        toBase64(boldFontUrl),
+        toBase64(monoFontUrl),
+      ])
       // pdfmake 浏览器版通过 addFontContainer 把 vfs 写入内部虚拟文件系统
       ;(mod as unknown as { addFontContainer: (c: unknown) => void }).addFontContainer({
         vfs: {
           [REGULAR_FONT]: reg,
           [BOLD_FONT]: bold,
+          [MONO_FONT]: mono,
         },
         fonts: {
           [FONT_FAMILY]: {
@@ -57,6 +65,12 @@ function ensurePdfMake(): Promise<PdfMakeModule> {
             bold: BOLD_FONT,
             italics: REGULAR_FONT,
             bolditalics: BOLD_FONT,
+          },
+          [MONO_FAMILY]: {
+            normal: MONO_FONT,
+            bold: MONO_FONT,
+            italics: MONO_FONT,
+            bolditalics: MONO_FONT,
           },
         },
       })
@@ -212,8 +226,11 @@ function blockToPdf(block: ExportBlock): unknown {
         {
           text: block.content,
           fontSize: 9,
-          font: FONT_FAMILY, // 中文注释仍需中文字体；无等宽中文，接受
+          font: MONO_FAMILY, // 等宽中文字体（JSON 缩进/代码对齐）
           background: '#f5f5f5',
+          // 保留行首/行尾空格（JSON 缩进），否则 pdfmake 默认丢弃 → 对齐错乱
+          preserveLeadingSpaces: true,
+          preserveTrailingSpaces: true,
           margin: [0, 1, 0, 8] as [number, number, number, number],
         },
       ]

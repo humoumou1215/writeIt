@@ -105,7 +105,7 @@ function check(name, ok) { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   await page.waitForTimeout(3000);
   md = await page.evaluate(() => window.__editorGetMarkdown());
   check('新建文件含模板内容', md.includes('doctype:demo') && md.includes('{{title}}'));
-  // 打开文件自动收纳侧边栏 → 重新展开再检查文件树
+  // 打开文件不收纳侧边栏 → 确保展开再检查文件树
   const collapsed2 = await page.evaluate(() => document.querySelector('.content-col')?.classList.contains('collapsed'));
   if (collapsed2) {
     await page.locator('.icon-col .icon-btn').first().click();

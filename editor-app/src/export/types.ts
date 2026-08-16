@@ -5,6 +5,9 @@
 /** 导出目标格式 */
 export type ExportFormat = 'pdf' | 'docx' | 'md'
 
+/** 每文件导出模式选择：'export' = 按模板 export.ts 定义；否则指定格式 */
+export type ExportChoice = ExportFormat | 'export'
+
 /** export.ts 提供给导出函数的上下文 */
 export interface ExportContext {
   /** 文件相对路径（可能不含扩展名） */

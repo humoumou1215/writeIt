@@ -95,9 +95,11 @@ const { chromium } = require('playwright');
   // 6. 切标签模式保持
   await page.keyboard.press('Control+e'); // 第一个标签切回 WYSIWYG
   await page.waitForTimeout(1200);
-  // 展开侧边栏（打开文件时自动收纳了）—— 点图标列 📁 按钮
-  await page.locator('.icon-btn', { hasText: '📁' }).click();
-  await page.waitForTimeout(600);
+  // 确保侧边栏展开（打开文件不收纳；若已收纳则点 📁 展开）
+  if (await page.locator('.content-col.collapsed').count()) {
+    await page.locator('.icon-btn', { hasText: '📁' }).click();
+    await page.waitForTimeout(600);
+  }
   await page.locator('.tree .name', { hasText: 'README.md' }).click();
   await page.waitForTimeout(5000);
   await page.keyboard.press('Control+e'); // 第二个标签进源码
