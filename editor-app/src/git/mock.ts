@@ -14,7 +14,7 @@ import type {
 // ---------- 示例仓库内容 ----------
 
 // 嵌入 ![[ 必须独立成段（remark-ref：fileBlock = 整段匹配）
-const README_HEAD = `# 演示笔记（HEAD 版本）
+const README_HEAD = `# 演示笔记
 
 > 旧版本说明：这段提醒只存在于 HEAD，工作区版本中已删除（展示纯删除块的红底划线效果）。
 
@@ -48,14 +48,12 @@ graph TD
 ## 相关引用
 
 - 参见 [[笔记/会议记录.md#议题]]
-- 参见 [[README#需求清单]]
-`
-
-const README_WORKTREE = `# 演示笔记（工作区版本）
+- 参见 [[README#需求清单]]`
+const README_WORKTREE = `# 演示笔记
 
 本仓库演示 Git 工作台的全部效果：
 
-- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）
+- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比 + 批注连线）
 - 切「文本」模式查看分栏与**词级**高亮
 - 历史区点提交查看 commit diff；Shift+点击两提交做范围对比
 - 工具栏「还原…」可还原整文件或单段改动
@@ -72,10 +70,9 @@ const README_WORKTREE = `# 演示笔记（工作区版本）
 \`\`\`mermaid
 graph TD
   A[开始] --> B{是否有余额}
-  B -- 是 --> C[支付成功]
+  B -- 是 --> C[授信成功]
   B -- 否 --> D[余额不足]
   D --> E[引导充值]
-  E --> A
 \`\`\`
 
 ## 嵌入笔记
@@ -85,9 +82,7 @@ graph TD
 ## 相关引用
 
 - 参见 [[笔记/会议记录.md#议题]]
-- 参见 [[README#需求清单]]
-`
-
+- 参见 [[README#需求清单]]`
 const MEETING_HEAD = `# 会议记录
 
 ## 议题
@@ -177,50 +172,53 @@ let state: MockState = makeState()
 const README_HUNKS: GitDiffResult['hunks'] = [
   {
     oldStart: 1,
-    oldLines: 14,
+    oldLines: 17,
     newStart: 1,
-    newLines: 12,
+    newLines: 17,
     lines: [
-      { kind: 'ctx', text: '# 演示笔记（HEAD 版本）' },
+      { kind: 'ctx', text: '# 演示笔记' },
       { kind: 'ctx', text: '' },
       { kind: 'del', text: '> 旧版本说明：这段提醒只存在于 HEAD，工作区版本中已删除（展示纯删除块的红底划线效果）。' },
       { kind: 'ctx', text: '' },
       { kind: 'ctx', text: '本仓库演示 Git 工作台的全部效果：' },
       { kind: 'ctx', text: '' },
-      { kind: 'del', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）', words: [{ kind: 'ctx', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）' }] },
-      { kind: 'add', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）', words: [{ kind: 'ctx', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）' }] },
+      { kind: 'del', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比）', words: [{ kind: 'ctx', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比' }, { kind: 'del', text: '）' }] },
+      { kind: 'add', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比 + 批注连线）', words: [{ kind: 'ctx', text: '- 打开工作区文件查看未提交改动（默认渲染模式：mermaid 图/嵌入卡片真实对比' }, { kind: 'add', text: ' + 批注连线）' }] },
       { kind: 'del', text: '- 切「文本」模式查看分栏与词级高亮', words: [{ kind: 'ctx', text: '- 切「文本」模式查看分栏与' }, { kind: 'del', text: '词级' }, { kind: 'ctx', text: '高亮' }] },
       { kind: 'add', text: '- 切「文本」模式查看分栏与**词级**高亮', words: [{ kind: 'ctx', text: '- 切「文本」模式查看分栏与' }, { kind: 'add', text: '**词级**' }, { kind: 'ctx', text: '高亮' }] },
       { kind: 'ctx', text: '- 历史区点提交查看 commit diff；Shift+点击两提交做范围对比' },
       { kind: 'ctx', text: '- 工具栏「还原…」可还原整文件或单段改动' },
       { kind: 'ctx', text: '' },
       { kind: 'ctx', text: '## 需求清单' },
+      { kind: 'ctx', text: '' },
+      { kind: 'del', text: '- 需求一：登录模块' },
+      { kind: 'add', text: '- 需求一：登录与权限模块' },
+      { kind: 'del', text: '- 需求二：支付模块' },
+      { kind: 'add', text: '- 需求二：支付与退款模块' },
+      { kind: 'del', text: '- 需求三：报表模块' },
+      { kind: 'add', text: '- 需求三：报表与统计模块' },
+      { kind: 'add', text: '- 需求四：消息通知模块' },
     ],
   },
   {
-    oldStart: 13,
-    oldLines: 8,
-    newStart: 13,
-    newLines: 10,
+    oldStart: 18,
+    oldLines: 9,
+    newStart: 18,
+    newLines: 9,
     lines: [
-      { kind: 'del', text: '- 需求一：登录模块', words: [{ kind: 'ctx', text: '- 需求一：' }, { kind: 'del', text: '登录模块' }] },
-      { kind: 'add', text: '- 需求一：登录与权限模块', words: [{ kind: 'ctx', text: '- 需求一：' }, { kind: 'add', text: '登录与权限模块' }] },
-      { kind: 'del', text: '- 需求二：支付模块', words: [{ kind: 'ctx', text: '- 需求二：' }, { kind: 'del', text: '支付模块' }] },
-      { kind: 'add', text: '- 需求二：支付与退款模块', words: [{ kind: 'ctx', text: '- 需求二：' }, { kind: 'add', text: '支付与退款模块' }] },
-      { kind: 'del', text: '- 需求三：报表模块', words: [{ kind: 'ctx', text: '- 需求三：' }, { kind: 'del', text: '报表模块' }] },
-      { kind: 'add', text: '- 需求三：报表与统计模块', words: [{ kind: 'ctx', text: '- 需求三：' }, { kind: 'add', text: '报表与统计模块' }] },
-      { kind: 'add', text: '- 需求四：消息通知模块' },
-      { kind: 'ctx', text: '' },
       { kind: 'ctx', text: '## 流程图' },
       { kind: 'ctx', text: '' },
       { kind: 'ctx', text: '```mermaid' },
-      { kind: 'del', text: '  E --> [引导充值]' },
-      { kind: 'add', text: '  E --> A' },
+      { kind: 'ctx', text: 'graph TD' },
+      { kind: 'ctx', text: '  A[开始] --> B{是否有余额}' },
+      { kind: 'del', text: '  B -- 是 --> C[支付成功]' },
+      { kind: 'add', text: '  B -- 是 --> C[授信成功]' },
+      { kind: 'ctx', text: '  B -- 否 --> D[余额不足]' },
+      { kind: 'ctx', text: '  D --> E[引导充值]' },
       { kind: 'ctx', text: '```' },
     ],
   },
 ]
-
 const MEETING_HUNKS: GitDiffResult['hunks'] = [
   {
     oldStart: 5,

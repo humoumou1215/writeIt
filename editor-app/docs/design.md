@@ -542,7 +542,7 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - **联动**：`moveNode` 复用 `onFileRenamed`（标签跟随）+ `updateRefsAfterRename`（引用路径更新）+ `refreshBrokenAll` + `refreshTree`（与重命名同一套，确保 [[path]] 引用跟随迁移）
 - **FS 适配**：mock `rename` 加冲突检测（不覆盖）；tauri `rename` 加 `to.exists() && from != to` 拦截（Windows `fs::rename` 目标存在会失败，前端+后端双防）；web `rename` 补目录递归移动（`copyDir` 递归复制 + removeEntry，原仅支持文件）
 - **瞄准定位（🎯）**：`revealInTree(path)` 展开祖先链（拆 path 累加 `state.expanded`）+ `state.revealPath` 高亮 + 2.4s 自动清除；`App.vue` watch revealPath → `querySelector([data-path])` + `.closest('.tree')` 手动算 scrollTop（复用 scrollToPos 的 0.2 视口偏移模式）；侧边栏按钮「📂 打开目录」移除（设置弹窗已有），替换为「🎯 定位」
-- **坑**：① 递归组件 dragover 冒泡 → 每节点 `e.stopPropagation()`；② dragleave 因子元素（span/actions）触发 → `relatedTarget.contains` 判定真离开；③ mock `buildTree` 按名称排序 → 同级重排无持久顺序，测试验证路径语义而非顺序；④ 点击树节点名被遮挡超时 → 测试改用 `evaluate` dispatch click（绕过 actionability）；⑤ 打开文件自动收纳侧边栏 → 拖拽/定位前 `ensureSidebar()`
+- **坑**：① 递归组件 dragover 冒泡 → 每节点 `e.stopPropagation()`；② dragleave 因子元素（span/actions）触发 → `relatedTarget.contains` 判定真离开；③ mock `buildTree` 按名称排序 → 同级重排无持久顺序，测试验证路径语义而非顺序；④ 点击树节点名被遮挡超时 → 测试改用 `evaluate` dispatch click（绕过 actionability）；⑤ 打开文件不收纳侧边栏（点击编辑区才收纳）→ 拖拽/定位前 `ensureSidebar()`
 - 测试：drag-e2e 31/31（文件入目录/插入线 before·after/目录递归/拖到根/循环拒绝/空操作/冲突拒绝/悬停自动展开/真实 dragAndDrop 冒烟/标签+引用联动/瞄准定位展开+高亮+自动清除）
 
 ### Mermaid 预览放大查看（悬停放大镜 + Lightbox）

@@ -1,27 +1,28 @@
 <script setup lang="ts">
-// M11c：渲染模式视图 —— 单栏融合 diff（双 Crepe 渲染 + 块级对齐）
-// 首次进入：loadRenderData 懒加载两版本内容 → renderDiffToContainer 组装
-// 降级：Crepe 失败/块数不匹配 → renderSplitFallback 双栏全文对比
+// M13：渲染模式视图——单 Crepe 渲染组合 md（diff 标注内嵌）
+// 流程：loadRenderData 取新旧内容 → renderDiffToContainer（组合 + 渲染）→ notes 显示右侧批注卡
+// 降级：渲染失败 → renderSplitFallback 双栏全文
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
 import { state } from '../state/store'
 import { loadRenderData } from '../editor/manager'
-import type { RenderDiffHandle } from '../editor/render-diff'
+import type { RenderDiffHandle, RenderDiffResult } from '../editor/render-diff'
+import type { DiffNote } from '../editor/diff-compose'
+import DiffNotePanel from './DiffNotePanel.vue'
 
 const props = defineProps<{ tabId: string }>()
-
-
 
 const tab = computed(() => state.tabs.find((t) => t.id === props.tabId))
 const diff = computed(() => tab.value?.diff ?? null)
 
 const hostEl = ref<HTMLDivElement | null>(null)
 const status = ref<string | null>(null)
+const notes = ref<DiffNote[]>([])
 let handle: RenderDiffHandle | null = null
 let renderSeq = 0
 
 async function render() {
   const d = diff.value
-  if (!d || !d.renderData) return
+  if (!d || !d.renderData || !d.hunks.length) return
   const seq = ++renderSeq
   handle?.destroy()
   handle = null
@@ -32,28 +33,31 @@ async function render() {
     const opts = {
       oldMd: d.renderData.oldMd,
       newMd: d.renderData.newMd,
+      hunks: d.hunks,
+      path: d.path,
       refCfg: buildRenderRefCfg(),
       onFallback: (reason: string) => {
         if (seq !== renderSeq) return
         status.value = reason
       },
     }
-    // 渲染到独立 scratch 容器（不依赖组件生命周期，避免异步渲染期间被卸载）
-    const scratch = document.createElement('div')
-    scratch.className = 'rd-scratch'
-    handle = await renderDiffToContainer(scratch, opts)
-    if (!handle && seq === renderSeq) {
-      // 主路径失败 → 降级双栏全文
-      handle = await renderSplitFallback(scratch, opts)
-      if (handle && seq === renderSeq) status.value = status.value ?? '已降级为双栏全文对比'
+    const host = hostEl.value
+    if (!host) return
+    let result: RenderDiffResult | null = null
+    try {
+      result = await renderDiffToContainer(host, opts)
+    } catch {
+      result = null
     }
-    // 迁移到当前 host（组件仍挂载时）
-    if (seq === renderSeq) {
-      const cur = hostEl.value
-      if (cur) {
-        while (scratch.firstChild) cur.appendChild(scratch.firstChild)
-        scratch.remove()
-      }
+    if (!result && seq === renderSeq) {
+      // 主路径失败 → 降级双栏全文
+      handle = await renderSplitFallback(host, opts)
+      if (handle && seq === renderSeq) status.value = status.value ?? '已降级为双栏全文对比'
+      return
+    }
+    if (result && seq === renderSeq) {
+      handle = result.handle
+      notes.value = result.notes
     }
   } catch (e) {
     console.error('[RenderDiff] render 异常:', e)
@@ -65,21 +69,27 @@ watch(
   () => diff.value?.mode,
   (m) => {
     if (m !== 'render') return
-    // 懒加载两版本内容（失败显示 error 状态）
     void loadRenderData(props.tabId)
   },
   { immediate: true }
 )
 
-watch(
-  () => [diff.value?.mode, diff.value?.renderData, diff.value?.renderLoading],
-  async () => {
+// 竞态控制：debounce + 串行（多次触发只渲染最后一次，避免 mount 竞态清空 notes）
+let renderTimer: ReturnType<typeof setTimeout> | null = null
+let renderQueue: Promise<void> = Promise.resolve()
+function scheduleRender() {
+  if (renderTimer) clearTimeout(renderTimer)
+  renderTimer = setTimeout(() => {
     const d = diff.value
-    if (d?.mode !== 'render' || !d.renderData) return
-    // flush: post 保证模板已更新（hostEl 是最新 DOM 元素，非 detached）；immediate 保证重挂载即渲染
-    await new Promise((r) => setTimeout(r, 50))
-    void render()
-  },
+    if (d?.mode !== 'render' || !d.renderData || d.renderLoading) return
+    renderQueue = renderQueue
+      .then(() => render())
+      .catch((e) => console.error('[RenderDiff] render 异常:', e))
+  }, 200)
+}
+watch(
+  () => [diff.value?.mode, diff.value?.renderData, diff.value?.renderLoading, diff.value?.hunks],
+  scheduleRender,
   { flush: 'post', immediate: true }
 )
 
@@ -92,14 +102,16 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="render-diff">
-    <!-- host 常驻：不随 loading 切换卸载（避免 watch 拿到 detached 元素） -->
-    <div ref="hostEl" class="render-host" :class="{ dim: diff?.renderLoading && !diff.renderData }"></div>
-    <div v-if="diff?.renderLoading && !diff.renderData" class="render-status overlay">加载渲染数据…</div>
-    <div v-else-if="diff?.renderError && !diff.renderData" class="render-status overlay error">
-      渲染数据加载失败：{{ diff.renderError }}
-      <button class="mini" @click="loadRenderData(tabId)">重试</button>
+    <div class="render-main">
+      <div ref="hostEl" class="render-host"></div>
+      <div v-if="diff?.renderLoading && !diff.renderData" class="render-status overlay">加载渲染数据…</div>
+      <div v-else-if="diff?.renderError && !diff.renderData" class="render-status overlay error">
+        渲染数据加载失败：{{ diff.renderError }}
+        <button class="mini" @click="loadRenderData(tabId)">重试</button>
+      </div>
+      <div v-if="status" class="render-status fallback">{{ status }}</div>
     </div>
-    <div v-if="status && diff?.renderData" class="render-status fallback">{{ status }}</div>
+    <DiffNotePanel v-if="notes.length" :notes="notes" :host="hostEl" />
   </div>
 </template>
 
@@ -107,14 +119,16 @@ onBeforeUnmount(() => {
 .render-diff {
   flex: 1;
   min-height: 0;
+  display: flex;
+}
+.render-main {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
   padding: 8px 12px 24px;
 }
 .render-host {
   min-height: 100%;
-}
-.render-host.dim {
-  opacity: 0.4;
 }
 .render-status {
   padding: 24px 16px;
@@ -147,42 +161,18 @@ onBeforeUnmount(() => {
 .mini:hover {
   background: var(--chrome-hover);
 }
-/* 融合块着色（clone 的 DOM 在 host 内，需 deep） */
-:deep(.rd-block) {
-  position: relative;
-  border-radius: 6px;
-  margin: 2px 0;
+/* 锚点高亮闪烁 */
+:deep(.diff-note-flash) {
+  animation: note-flash 1s ease-out;
 }
-:deep(.rd-add) {
-  background: color-mix(in srgb, #2e7d32, transparent 88%);
-  box-shadow: inset 3px 0 0 #2e7d32;
-}
-:deep(.rd-del) {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
-  box-shadow: inset 3px 0 0 var(--chrome-error, #ba1a1a);
-}
-:deep(.rd-mod) {
-  background: transparent;
-  border: 1px dashed var(--chrome-border);
-  padding: 2px;
-}
-:deep(.rd-side) {
-  border-radius: 6px;
-  margin: 2px 0;
-}
-:deep(.rd-old) {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
-  box-shadow: inset 3px 0 0 var(--chrome-error, #ba1a1a);
-}
-:deep(.rd-new) {
-  background: color-mix(in srgb, #2e7d32, transparent 88%);
-  box-shadow: inset 3px 0 0 #2e7d32;
-}
-:deep(.rd-del),
-:deep(.rd-old) {
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 40%);
-  opacity: 0.92;
+@keyframes note-flash {
+  0%,
+  50% {
+    box-shadow: 0 0 0 3px var(--chrome-primary);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 /* 降级双栏 */
 :deep(.rd-split-fallback) {
@@ -200,8 +190,28 @@ onBeforeUnmount(() => {
 :deep(.rd-col .ProseMirror) {
   outline: none;
 }
-/* 渲染内容跟随主题（Crepe 样式在 clone 后丢失 milkdown 类上下文） */
 :deep(.render-host .milkdown) {
   color: var(--chrome-on-background);
+}
+/* fenced code 块标注（diff-add / diff-del 语言） */
+:deep(.diff-code-add) {
+  background: color-mix(in srgb, #2e7d32, transparent 90%);
+  box-shadow: inset 3px 0 0 #2e7d32;
+  border-radius: 8px;
+}
+:deep(.diff-code-del) {
+  background: color-mix(in srgb, #c62828, transparent 90%);
+  box-shadow: inset 3px 0 0 #c62828;
+  border-radius: 8px;
+  opacity: 0.92;
+}
+/* sequence 消息标注 */
+:deep(.diff-seq-add) {
+  fill: #2e7d32 !important;
+  font-weight: 600;
+}
+:deep(.diff-seq-mod) {
+  fill: #b58900 !important;
+  font-weight: 600;
 }
 </style>

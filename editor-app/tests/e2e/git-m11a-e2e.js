@@ -52,7 +52,7 @@ const REPO = {
   // diff hunks（camelCase，与 Rust serde 一致）
   worktreeHunks: [
     {
-      oldStart: 1, oldLines: 10, newStart: 1, newLines: 12,
+      oldStart: 1, oldLines: 12, newStart: 1, newLines: 14,
       lines: [
         { kind: 'ctx', text: '# 需求文档' },
         { kind: 'ctx', text: '' },
@@ -63,6 +63,8 @@ const REPO = {
         { kind: 'del', text: 'graph TD; A-->B', words: [ { kind: 'ctx', text: 'graph TD; A-->' }, { kind: 'del', text: 'B' } ] },
         { kind: 'add', text: 'graph TD; A-->C', words: [ { kind: 'ctx', text: 'graph TD; A-->' }, { kind: 'add', text: 'C' } ] },
         { kind: 'ctx', text: '```' },
+        { kind: 'ctx', text: '' },
+        { kind: 'ctx', text: '![[notes/new.md]]' },
       ],
     },
     {
@@ -160,7 +162,7 @@ async function installMock(repoJson) {
   let pass = 0, fail = 0;
   const check = (n, c) => { c ? pass++ : (fail++, console.log('❌', n)); };
 
-  // 打开文件会自动收纳侧边栏——点击侧边栏内容前先展开
+  // 打开文件不收纳侧边栏——确保展开后点击侧边栏内容
   async function ensureSidebar() {
     const collapsed = await page
       .locator('.content-col')
@@ -230,27 +232,34 @@ async function installMock(repoJson) {
   check('M11b 切回分栏', await page.locator('.diff-row.split').count() > 0);
   await page.screenshot({ path: '/tmp/m11a-diff-worktree.png' });
 
-  // ---- M11c：渲染模式（单栏融合 + mermaid + 嵌入） ----
+  // ---- M13：渲染模式（单 Crepe + 组合 md） ----
   await page.locator('.diff-toolbar .mini', { hasText: '渲染' }).click();
-  // 渲染是异步的（双 Crepe + mermaid）→ 轮询等待融合块出现（无头环境较慢，20s 上限）
+  // 单 Crepe 渲染组合 md（异步）→ 轮询等待 diff 标注出现（20s 上限）
   try {
-    await page.waitForSelector('.render-host .rd-block', { timeout: 20000 });
+    await page.waitForSelector('.render-host .diff-ins', { timeout: 20000 });
   } catch {
     console.log('[warn] 渲染未在 20s 内完成，继续断言');
   }
 
-  check('M11c 渲染模式：单栏融合块渲染', await page.locator('.rd-block').count() >= 2);
-  check('M11c 未变块（标题/嵌入段落）', await page.locator('.rd-same').count() >= 2);
-  check('M11c 修改对（列表 + mermaid）', await page.locator('.rd-mod').count() >= 2);
-  check('M11c 修改对含旧侧（红）', await page.locator('.rd-old', { hasText: '旧版本列表' }).count() >= 1);
-  check('M11c 修改对含新侧（绿）', await page.locator('.rd-new', { hasText: '新版本列表' }).count() >= 1);
-  const mermaidSvg = await page.locator('.rd-mod svg, .rd-block svg, .rd-mod .mermaid, .rd-block .mermaid').count();
-
-  check('M11c mermaid 渲染图（svg/mermaid）', mermaidSvg > 0);
+  check('M13 渲染模式：组合 md 渲染（diff 标注）', await page.locator('.render-host .diff-del, .render-host .diff-ins').count() > 0);
+  check('M13 行内修改（删除字划线/新增字绿底）', await page.locator('.render-host .diff-del', { hasText: '旧' }).count() >= 1 && await page.locator('.render-host .diff-ins', { hasText: '新' }).count() >= 1);
+  // annotate / notes / 嵌入物化是异步的 → 等待就绪
+  try { await page.waitForSelector('.render-host .diff-code-add, .render-host .diff-code-del', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.diff-note-panel', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.render-host .ref-file-block', { timeout: 8000 }); } catch {}
+  check('M13 块级标注（diff-add/del 代码块）', await page.locator('.render-host .diff-code-add, .render-host .diff-code-del').count() >= 1);
+  check('M13 批注卡面板', await page.locator('.diff-note-panel').count() === 1);
+  check('M13 批注卡（修改"旧"为"新"）', (await page.locator('.dnp-card').first().textContent() || '').includes('修改'));
+  check('M13 mermaid 渲染图（svg）', await page.locator('.render-host svg, .render-host .mermaid').count() > 0);
   const embedCards = await page.locator('.render-host .ref-file-block').count();
 
-  check('M11c 嵌入引用卡片渲染', embedCards > 0);
-  await page.screenshot({ path: '/tmp/m11c-render-mode.png' });
+  check('M13 嵌入引用卡片渲染', embedCards > 0);
+  await page.locator('.dnp-card').first().click();
+  await page.waitForTimeout(400);
+  check('M13 批注卡激活', await page.locator('.dnp-card.active').count() === 1);
+  await page.screenshot({ path: '/tmp/m13-render-mode.png' });
+  // annotate 延迟（CodeMirror 语言按钮晚渲染）→ 等待标注完成
+  await page.waitForTimeout(1800);
 
   // 4. 导航：F7 / Shift+F7
   await page.keyboard.press('F7');

@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); else if (m.text().includes('render-diff')) console.log('PLOG:', m.text()); });
 
   await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
@@ -43,12 +43,13 @@ const { chromium } = require('playwright');
   } catch {
     console.log('[warn] 渲染未在 20s 内完成');
   }
-  const rdSame = await page.locator('.rd-same').count();
-  const rdMod = await page.locator('.rd-mod').count();
-  const rdDel = await page.locator('.rd-del').count();
-  check('渲染模式：未变块', rdSame >= 2);
-  check('渲染模式：修改对（需求清单/流程图）', rdMod >= 2);
-  check('渲染模式：删除块', rdDel >= 1);
+  // 异步标注/物化 → 等待就绪
+  try { await page.waitForSelector('.render-host .diff-ins', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.render-host .diff-code-del, .render-host .diff-code-add', { timeout: 8000 }); } catch {}
+  try { await page.waitForSelector('.render-host .ref-file-block', { timeout: 8000 }); } catch {}
+  check('渲染模式：行内标注（diff-ins）', await page.locator('.render-host .diff-ins').count() >= 1);
+  check('渲染模式：删除块标注（diff-code-del）', await page.locator('.render-host .diff-code-del').count() >= 1);
+  check('渲染模式：新增块标注（diff-code-add）', await page.locator('.render-host .diff-code-add').count() >= 1);
   check('渲染模式：mermaid 图渲染', await page.locator('.render-host svg, .render-host .mermaid').count() > 0);
   check('渲染模式：嵌入卡片', await page.locator('.render-host .ref-file-block').count() > 0);
   await page.screenshot({ path: '/tmp/m12-render-diff.png' });
