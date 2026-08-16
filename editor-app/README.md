@@ -1,5 +1,7 @@
 # Milkdown Note
 
+> 📖 仓库级完整文档在 [`../doc/`](../doc/README.md)（架构 / 各功能板块实现与使用），里程碑设计见 [`docs/design.md`](docs/design.md)。本文件为快速上手。
+
 基于 **Tauri 2 + Vue 3 + Vite + @milkdown/crepe** 的 Markdown 编辑器。
 打开本地目录 → 文件树（完整 CRUD）→ 多标签页编辑 → Ctrl+S / 自动保存。
 

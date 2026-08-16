@@ -10,11 +10,13 @@ import {
 } from '../state/settings'
 import { fs } from '../fs'
 import { refreshTree, openDirectory } from '../editor/manager'
-import { toast } from '../state/store'
+import { state, toast } from '../state/store'
 
+const props = defineProps<{ initialTab?: 'general' | 'shortcuts' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-const tab = ref<'general' | 'shortcuts'>('general')
+// 打开时的初始页签（图标列「快捷键」入口传入 'shortcuts'）
+const tab = ref<'general' | 'shortcuts'>(props.initialTab ?? 'general')
 const recording = ref<string | null>(null)
 const recordEl = ref<HTMLInputElement | null>(null)
 
@@ -132,11 +134,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
           </label>
 
           <label class="row">
-            <span>显示所有文件</span>
-            <input type="checkbox" v-model="settings.showAllFiles" @change="onSettingChange" />
-          </label>
-
-          <label class="row">
             <span>固定侧边栏</span>
             <input type="checkbox" v-model="settings.sidebarPinned" @change="saveSettings" />
             <em class="hint-inline">固定后打开文件不自动收纳</em>
@@ -172,7 +169,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
         </div>
 
         <!-- ===== 快捷键 ===== -->
-        <div v-else class="modal-body">
+        <div v-else-if="tab === 'shortcuts'" class="modal-body">
           <p class="hint" style="margin-top: 0">
             点击按键后按下新组合键；Backspace 清除；Esc 取消。
           </p>

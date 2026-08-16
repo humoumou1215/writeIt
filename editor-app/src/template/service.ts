@@ -6,8 +6,8 @@ import { fs } from '../fs'
 import type { FsEntry } from '../fs/types'
 import { joinPath } from '../fs/types'
 import { toast } from '../state/store'
-import type { Template, TemplateDomain, SuggestModule, RulesModule, SuggestObject } from './types'
-import { RULES_FILE_SUFFIX, SUGGEST_FILE_SUFFIX } from './types'
+import type { Template, TemplateDomain, SuggestModule, RulesModule, SuggestObject, ExportModule } from './types'
+import { RULES_FILE_SUFFIX, SUGGEST_FILE_SUFFIX, EXPORT_FILE_SUFFIX } from './types'
 import { loadTsModule } from './ts-loader'
 import type { Node } from '@milkdown/kit/prose/model'
 import { createSuggestContext } from './suggest-context'
@@ -137,6 +137,7 @@ class TemplateService {
       dir: dirEntry.path,
       suggestFile: fileOf(SUGGEST_FILE_SUFFIX),
       rulesFile: fileOf(RULES_FILE_SUFFIX),
+      exportFile: fileOf(EXPORT_FILE_SUFFIX),
       suggestObjects: null,
       suggestFactory: null,
       suggestLoaded: false,
@@ -183,6 +184,15 @@ class TemplateService {
       this.readerFor(tpl)
     )
     return tpl.rules
+  }
+
+  /** 惰性加载 export 模块（导出机制：无 export.ts 返回 null） */
+  async ensureExport(tpl: Template): Promise<ExportModule | null> {
+    if (!tpl.exportFile) return null
+    return await loadTsModule<ExportModule>(
+      tpl.exportFile,
+      this.readerFor(tpl)
+    )
   }
 
   /**

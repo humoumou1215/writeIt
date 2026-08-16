@@ -303,9 +303,10 @@ interface MockData {
   fileHash?: Record<string, string>
 }
 
-const SEED_VERSION = 6
+const SEED_VERSION = 7
 
 /**
+ * 版本 7：接口文档模板新增 export.ts（M10 导出自定义示例）。
  * 版本 6：新增「xxljob」模板（一文件一任务）+ 4 合规样例 + 1 违规样例。
  * 版本 4：新增「接口文档」模板（接口文档.md / rules.ts / suggest.ts）+ 助贷样例（合规/违规）
  * + 接口字段引用演示页，验证 M7 动态对象 objectsFor + findCodeBlocks 能力。
@@ -320,6 +321,7 @@ const FORCE_UPDATE_PATHS = [
   '.template/接口文档/接口文档.md',
   '.template/接口文档/接口文档.rules.ts',
   '.template/接口文档/接口文档.suggest.ts',
+  '.template/接口文档/接口文档.export.ts',
   '接口文档/助贷/助贷接口.md',
   '接口文档/助贷/助贷接口-违规.md',
   '接口字段引用.md',

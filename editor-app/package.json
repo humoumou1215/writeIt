@@ -1,5 +1,5 @@
 {
-  "name": "milkdown-note",
+  "name": "writeit",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -20,8 +20,10 @@
     "@milkdown/kit": "7.22.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
+    "docx": "^9.7.1",
     "esbuild-wasm": "^0.28.2",
     "mermaid": "^11.16.1",
+    "pdfmake": "^0.3.11",
     "vue": "^3.5.41"
   },
   "devDependencies": {

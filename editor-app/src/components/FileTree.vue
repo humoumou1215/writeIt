@@ -2,7 +2,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import type { FsEntry } from '../fs/types'
 import { isEditableFile } from '../fs/types'
-import { state } from '../state/store'
+import { state, toast } from '../state/store'
 import { openTab } from '../editor/manager'
 import {
   toggleExpand,
@@ -42,6 +42,7 @@ onMounted(async () => {
 function open() {
   if (props.node.kind === 'dir') toggleExpand(props.node.path)
   else if (isEditableFile(props.node.name)) openTab(props.node.path)
+  else toast(`「${props.node.name}」仅展示，暂不支持打开编辑`, 'info')
 }
 
 function onContextMenu(e: MouseEvent) {

@@ -1,11 +1,11 @@
 [package]
-name = "milkdown-note"
+name = "writeit"
 version = "0.1.0"
-description = "Milkdown Note - Markdown 编辑器（Tauri + Vue + Crepe）"
+description = "WriteIt - Markdown 编辑器（Tauri + Vue + Crepe）"
 edition = "2021"
 
 [lib]
-name = "milkdown_note_lib"
+name = "writeit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -16,3 +16,4 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"

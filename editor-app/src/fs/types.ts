@@ -35,13 +35,11 @@ export function isEditableFile(name: string): boolean {
 }
 
 /**
- * 文件树过滤：showAll 时全显示；否则仅可编辑文件 + 模板域配套 TS（rules/suggest，可信区）
+ * 文件树展示：全部文件类型都展示（非可编辑文件仅展示，不支持打开/编辑）。
+ * 参数保留仅为兼容既有调用（mock/web 的 readTree 签名）。
  */
-export function shouldShowInTree(path: string, name: string, showAll: boolean): boolean {
-  if (showAll) return true
-  if (isEditableFile(name)) return true
-  // .template 模板域目录本身及其内容始终显示（隐藏目录仅联想层排除，见 core.loadTree）
-  return path === '.template' || path.startsWith('.template/')
+export function shouldShowInTree(_path: string, _name: string, _showAll: boolean): boolean {
+  return true
 }
 
 export function joinPath(dir: string, name: string): string {

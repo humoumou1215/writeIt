@@ -214,8 +214,8 @@ export async function commitEditing(name: string): Promise<void> {
   try {
     if (ed.mode === 'new') {
       let full = ed.path ? joinPath(ed.path, target) : target
-      if (ed.kind === 'file' && ed.template && !full.toLowerCase().match(/\.(md|markdown|txt)$/)) {
-        // 模板文件必然是 markdown：未带扩展名时自动补 .md
+      // 未输入文件后缀（文件名最后一段不含扩展名）→ 默认保存为 .md
+      if (ed.kind === 'file' && !baseName(full).match(/\.\w+$/)) {
         full = full + '.md'
       }
       if (ed.kind === 'file') {

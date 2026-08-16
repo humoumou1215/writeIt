@@ -7,6 +7,8 @@ const PORT = 5173
 export default defineConfig({
   plugins: [vue()],
   clearScreen: false,
+  // 导出 PDF 的内置中文字体（.otf，Vite 默认 asset 列表不含 otf）
+  assetsInclude: ['**/*.otf'],
   server: {
     // 允许局域网设备访问（tauri 的 devUrl 用 localhost 不受影响）
     host: true,

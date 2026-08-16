@@ -153,6 +153,8 @@ export interface Template {
   suggestFile: string | null
   /** 配套 rules.ts 路径（无则 null） */
   rulesFile: string | null
+  /** 配套 export.ts 路径（无则 null；导出机制，见 src/export/types.ts） */
+  exportFile: string | null
   /** 惰性加载的 suggest 对象（M4；静态） */
   suggestObjects: SuggestObject[] | null
   /** 惰性加载的动态对象生成器（M7；objectsFor） */
@@ -163,6 +165,7 @@ export interface Template {
   rules: RulesModule | null
 }
 
-// 模板 TS 配套文件的相对路径模式：<dir>/<name>.rules.ts / <dir>/<name>.suggest.ts
+// 模板 TS 配套文件的相对路径模式：<dir>/<name>.rules.ts / <dir>/<name>.suggest.ts / <dir>/<name>.export.ts
 export const RULES_FILE_SUFFIX = '.rules.ts'
 export const SUGGEST_FILE_SUFFIX = '.suggest.ts'
+export const EXPORT_FILE_SUFFIX = '.export.ts'
