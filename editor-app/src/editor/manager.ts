@@ -56,6 +56,22 @@ interface Instance {
 
 const instances = new Map<string, Instance>()
 
+// M14：编辑器挂载完成通知（批注抽屉在标签切换后等实例就绪再刷新）
+const mountListeners = new Set<(tabId: string) => void>()
+export function onEditorMounted(fn: (tabId: string) => void): () => void {
+  mountListeners.add(fn)
+  return () => mountListeners.delete(fn)
+}
+function notifyEditorMounted(tabId: string) {
+  mountListeners.forEach((fn) => {
+    try {
+      fn(tabId)
+    } catch {
+      /* ignore */
+    }
+  })
+}
+
 // M14：diff 渲染模式 Crepe 实例注册（批注抽屉在 diff 模式下用它做定位/连线）
 const renderInstances = new Map<string, Crepe>()
 export function registerRenderInstance(tabId: string, crepe: Crepe | null): void {
@@ -64,6 +80,11 @@ export function registerRenderInstance(tabId: string, crepe: Crepe | null): void
 }
 export function getRenderInstance(tabId: string): Crepe | null {
   return renderInstances.get(tabId) ?? null
+}
+
+/** M6：源码模式 textarea 访问（批注抽屉在源码视图下做连线定位/点击滚动） */
+export function getSourceTextarea(tabId: string): HTMLTextAreaElement | null {
+  return instances.get(tabId)?.srcTa ?? null
 }
 
 // ---------- M7：源码查看模式（Ctrl+E 切换） ----------
@@ -318,6 +339,39 @@ export async function openActiveGitDiff(): Promise<void> {
 /** Git 面板刷新钩子（还原/切换分支后调用） */
 export function refreshGitPanel() {
   state.gitPanel.version++
+}
+
+/** M15：全局替换落盘后同步已打开的标签。
+ * 仅刷新「无自身编辑」的标签（savedContent 与磁盘一致时）；
+ * 有未保存编辑的标签跳过（保留用户内容，磁盘已被替换），返回跳过的路径。
+ * diff 视图标签也跳过（内容由 git 数据渲染，避免状态错乱）。 */
+export async function syncTabsAfterReplace(updated: Map<string, string>): Promise<string[]> {
+  const skipped: string[] = []
+  for (const [path, content] of updated) {
+    const tab = state.tabs.find((t) => t.path === path)
+    if (!tab || tab.viewMode === 'diff') continue
+    const inst = instances.get(tab.id)
+    if (!inst) continue
+    // 有自身编辑 → 不覆盖
+    if (tab.dirty) {
+      skipped.push(path)
+      continue
+    }
+    // 源码模式先退出（否则 textarea 残留旧内容）
+    if (tab.viewMode === 'source') await setViewMode(tab.id, 'wysiwyg')
+    inst.suppressing = true
+    try {
+      inst.crepe.editor.action(replaceAll(content))
+      await resolveRefs(inst.crepe.editor)
+      tab.savedContent = inst.crepe.getMarkdown()
+      tab.dirty = false
+      tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+      tab.lastModified = Date.now()
+    } finally {
+      setTimeout(() => (inst.suppressing = false), 0)
+    }
+  }
+  return skipped
 }
 
 /** 从磁盘重载标签内容（还原后同步编辑器；不写盘） */
@@ -888,6 +942,62 @@ async function scrollToHeading(fragment: string) {
   })
 }
 
+// M15：搜索结果点击 → 打开文件并滚动到匹配处
+// 参数为文件路径（与搜索结果一致）；内部确保标签打开/激活后再定位。
+// 定位策略：先在 ProseMirror doc 的文本节点中找「匹配行文本」，找不到再退化找关键词本身。
+// （原始文件偏移与渲染后 doc 偏移不一致，行文本/关键词定位最稳）
+export async function scrollToSearchMatch(
+  path: string,
+  lineText: string,
+  needle: string
+): Promise<void> {
+  // 未打开则打开（已打开则激活）
+  if (!state.tabs.find((t) => t.path === path)) await openTab(path)
+  const tab = state.tabs.find((t) => t.path === path)
+  if (!tab || tab.viewMode === 'diff') return
+  // 源码模式下先切回所见即所得（用户要看到渲染位置）
+  if (tab.viewMode === 'source') await setViewMode(tab.id, 'wysiwyg')
+  if (state.activeTabId !== tab.id) {
+    activateTab(tab.id)
+  }
+  // 首次打开：编辑器实例异步挂载（crepe.create 耗时），等待就绪（最多 ~3s）
+  let inst = instances.get(tab.id)
+  if (!inst) {
+    for (let i = 0; i < 30 && !inst; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      inst = instances.get(tab.id)
+    }
+  }
+  if (!inst) return
+  try {
+    const pos = await inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      let found = -1
+      const lineNorm = lineText.trim()
+      const needleNorm = needle.trim().toLowerCase()
+      view.state.doc.descendants((node, pos) => {
+        if (found >= 0 || !node.isText) return true
+        const text = node.text ?? ''
+        // ① 整行文本包含 → 最精确
+        let idx = lineNorm && text.includes(lineNorm) ? text.indexOf(lineNorm) : -1
+        // ② 退化：行内关键词（忽略大小写）
+        if (idx < 0 && needleNorm) {
+          idx = text.toLowerCase().indexOf(needleNorm)
+        }
+        if (idx >= 0) {
+          found = pos + idx
+          return false
+        }
+        return true
+      })
+      return found
+    })
+    if (pos >= 0) await scrollToPos(tab.id, pos)
+  } catch {
+    /* 编辑器已销毁 */
+  }
+}
+
 // ---------- 打开 / 激活 ----------
 
 export async function openTab(path: string, contentOverride?: string): Promise<void> {
@@ -1044,6 +1154,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 
   const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null }
   instances.set(tabId, inst)
+  // M14：编辑器挂载完成 → 通知批注抽屉刷新（切标签后避免残留上一个标签的批注）
+  notifyEditorMounted(tabId)
   // §6.7：真实用户输入（键盘/粘贴/IME）→ 记录时间戳。
   // 用 DOM input 事件而非 markdownUpdated（校验空事务/物化等程序化 dispatch 不触发 input）
   const onInput = () => {

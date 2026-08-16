@@ -24,7 +24,8 @@ const { chromium } = require('playwright');
       .evaluate((el) => el.classList.contains('collapsed'))
       .catch(() => false);
     if (collapsed) {
-      await page.locator('.icon-col .icon-btn').first().click();
+      // M15：第一个图标=文件树切 tab；点 Git 图标展开侧边栏并保持 git 面板
+      await page.locator('.icon-col .icon-btn:nth-child(2)').first().click();
       await page.waitForTimeout(300);
     }
   }

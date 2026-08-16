@@ -274,6 +274,12 @@ M11d  ✅ 还原（整文件 + 单 hunk，仅工作区 diff，危险确认 + 标
 
 **遗留**：diff 内容含 `**加粗**` 跨节点合并已处理（flattenText 还原源码）；mermaid 合并源码的删除节点保留原边；批注卡位置在渲染 doc（coordsAtPos）非严格字符级。
 
+### M14 修复记录（用户反馈两问题，2026-08-16）
+
+1. **批注卡点击不滚动**：`locateDiff` 滚动 `.render-main`，但该容器自身几乎不溢出（maxScroll≈8）——实际滚动容器是 `.diff-body.render`（maxScroll≈1193）。修复：`findDiffScrollContainer` 从 `.render-host` 向上遍历取**溢出量最大的滚动祖先**（与存量 `scrollToPos` 同公式：`scrollTop + (coords.top - rect.top) - clientHeight*0.2`）。
+2. **切换文件后抽屉残留上一文件批注**：`refresh()` 里 `getActiveInstance()` 在新标签编辑器异步挂载期间返回 null → 静默 return 且无重试 → 抽屉保持旧内容；挂载完成后无事件触发刷新。修复：① null 时 200ms 去重轮询重试；② manager 新增 `onEditorMounted`（`mountEditor` 完成后通知），AnnotationDrawer 订阅并刷新。
+3. **测试适配**：M15 并行改动把图标列第一个按钮改为「文件树切 tab」（`onFilesIcon`）——git 测试的 `ensureSidebar` 点第一个图标会把 git 面板切到 files 而隐藏；改点第 2 个图标（Git）展开并保持 git 面板。
+
 **背景**：Git 功能此前仅 tauri 可用，vite dev（浏览器）无法预览 diff 效果。M12 让浏览器 mock 模式完整可用——内置「演示笔记」示例仓库，直接查看 git diff 预期效果。
 
 - **git 层 proxy 重构**（src/git/）：类型提取至 `types.ts`；`index.ts` 变 proxy（`GitBackend` 接口 + 后端选择：tauri → invoke；mock → 内置仓库；web 真实目录 → 禁用）；`mock.ts` 新增（示例仓库：README.md 含 mermaid 新旧对比/`![[` 嵌入/引用/需求清单词级变化/**纯删除块**/多提交/双分支；内存态，discard/checkout 可改，刷新重置）

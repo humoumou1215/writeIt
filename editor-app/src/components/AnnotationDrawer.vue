@@ -14,6 +14,7 @@ import {
   getAllAnnotations,
   addComment,
   setCommentResolved,
+  parseThread,
   type Annotation,
   type Comment,
 } from '../annotations/service'
@@ -28,8 +29,13 @@ const draft = ref<Record<string, string>>({}) // 卡 id → 回复草稿
 // v6：当前展开的人工批注卡 id——默认全部收起，只有点击卡片时才展开（点击其他卡/外部收起）
 const expandedId = ref<string | null>(null)
 let unsub: (() => void) | null = null
+let unsubMount: (() => void) | null = null
 
 const activeTabId = computed(() => state.activeTabId)
+
+// M14：编辑器挂载是异步的（openTab → mountEditor 几百 ms）——
+// 切标签时 getActiveInstance 可能为 null → 200ms 轮询重试（去重），直到实例就绪
+let refreshRetry: ReturnType<typeof setTimeout> | null = null
 
 async function refresh() {
   const tabId = state.activeTabId
@@ -47,7 +53,16 @@ async function refresh() {
   }
   const { getActiveInstance } = await import('../editor/manager')
   const inst = getActiveInstance()
-  if (!inst) return
+  if (!inst) {
+    // 新标签编辑器还在挂载 → 稍后重刷（避免抽屉残留上一个标签的批注）
+    if (!refreshRetry) {
+      refreshRetry = setTimeout(() => {
+        refreshRetry = null
+        void refresh()
+      }, 200)
+    }
+    return
+  }
   const { editorViewCtx } = await import('@milkdown/kit/core')
   inst.crepe.editor.action((ctx) => {
     const doc = ctx.get(editorViewCtx).state.doc
@@ -61,9 +76,15 @@ onMounted(() => {
   refresh()
   window.addEventListener('resize', refresh)
   document.addEventListener('click', onDocClick, true)
+  // M14：标签切换后新标签编辑器挂载完成 → 立即刷新（不残留上一标签批注）
+  void import('../editor/manager').then((m) => {
+    unsubMount = m.onEditorMounted(() => void refresh())
+  })
 })
 onBeforeUnmount(() => {
   unsub?.()
+  unsubMount?.()
+  if (refreshRetry) clearTimeout(refreshRetry)
   window.removeEventListener('resize', refresh)
   document.removeEventListener('click', onDocClick, true)
 })
@@ -75,10 +96,26 @@ watch(activeTabId, () => {
 // v6：只有被点击的卡片才展开——点击卡片外部（或切换到其他卡片）时收起当前展开的人工批注卡
 function onDocClick(e: MouseEvent) {
   const t = e.target as HTMLElement | null
+  // M6：源码模式——点击 textarea 内 <mark data-note 文本 = 点击锚点（激活 + 滚动居中 + 选中）
+  const ta = t?.closest?.('textarea[data-source-ta]') as HTMLTextAreaElement | null
+  if (ta && state.activeTabId) activateSourceMark(ta)
   const card = t?.closest?.('.ad-card') as HTMLElement | null
   // 点击当前展开卡内部（评论/输入框/头部）→ 保持展开；头部展开/收起由 locate 处理
   if (card && expandedId.value === card.dataset.id) return
   expandedId.value = null
+}
+
+/** 源码模式：点击位置落在某个 <mark data-note 内 → 激活对应批注 + 滚动居中 + 选中高亮 */
+function activateSourceMark(ta: HTMLTextAreaElement) {
+  const offset = ta.selectionStart ?? 0
+  const hit = findSourceMarks(ta).find((mk) => offset >= mk.tagStart && offset <= mk.tagEnd)
+  if (!hit) return
+  const ann = anns.value.find(
+    (a) => a.level === 'comment' && a.persist && JSON.stringify(a.thread) === JSON.stringify(hit.thread)
+  )
+  if (!ann) return
+  if (state.activeTabId) setActiveAnnotation(state.activeTabId, ann.id)
+  scrollSourceToMark(ta, hit.contentStart, hit.contentEnd)
 }
 
 const errorCount = computed(() => anns.value.filter((a) => a.level === 'error').length)
@@ -136,8 +173,16 @@ async function locate(ann: Annotation) {
   } else if (ann.from >= 0) {
     if (tabId) {
       setActiveAnnotation(tabId, ann.id)
-      const { scrollToPos } = await import('../editor/manager')
-      await scrollToPos(tabId, ann.from)
+      if (tab?.viewMode === 'source') {
+        // M6：源码模式 → 直接滚动 textarea 到 <mark data-note（不切出源码视图）
+        const { getSourceTextarea } = await import('../editor/manager')
+        const ta = getSourceTextarea(tabId)
+        const r = ta ? findSourceMarkRange(ta, ann.thread) : null
+        if (r) scrollSourceToMark(ta!, r.start, r.end)
+      } else {
+        const { scrollToPos } = await import('../editor/manager')
+        await scrollToPos(tabId, ann.from)
+      }
     }
   } else {
     // 无锚点（如缺需求表整体违规）：仅激活 + 展开
@@ -149,7 +194,29 @@ async function locate(ann: Annotation) {
   }
 }
 
-/** M14：diff 模式定位——渲染 Crepe coordsAtPos → 滚动 .render-main 到锚点 */
+/** M14：找到 diff 视图实际可滚动的容器——取溢出量最大的滚动祖先
+ * （.render-main 自身 overflow:auto 但内容未溢出时，.diff-body 才是真正的滚动容器） */
+function findDiffScrollContainer(): HTMLElement | null {
+  const host = document.querySelector('.git-diff-view .render-host')
+  if (!host) return null
+  let best: HTMLElement | null = null
+  let bestDiff = 0
+  let cur = host.parentElement
+  while (cur) {
+    const cs = getComputedStyle(cur)
+    if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') {
+      const diff = cur.scrollHeight - cur.clientHeight
+      if (diff > bestDiff) {
+        bestDiff = diff
+        best = cur
+      }
+    }
+    cur = cur.parentElement
+  }
+  return best
+}
+
+/** M14：diff 模式定位——渲染 Crepe coordsAtPos → 滚动实际滚动容器到锚点（与存量 scrollToPos 同公式） */
 async function locateDiff(ann: Annotation) {
   const tabId = state.activeTabId
   if (!tabId || ann.from < 0) return
@@ -162,7 +229,7 @@ async function locateDiff(ann: Annotation) {
       const view = ctx.get(editorViewCtx)
       const pos = Math.min(ann.from, view.state.doc.content.size)
       const c = view.coordsAtPos(pos)
-      const container = document.querySelector('.git-diff-view .render-main') as HTMLElement | null
+      const container = findDiffScrollContainer()
       if (container) {
         const cr = container.getBoundingClientRect()
         container.scrollTo({
@@ -176,14 +243,15 @@ async function locateDiff(ann: Annotation) {
   }
 }
 
-/** 回复输入：Ctrl/Cmd+Enter 提交；Enter 换行；ESC 清空草稿 */
+/** 回复输入：Enter 提交；Shift+Enter 换行；ESC 清空草稿 */
 function onReplyKeydown(ann: Annotation, e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     void reply(ann)
   } else if (e.key === 'Escape') {
     draft.value[ann.id] = ''
   }
+  // Shift+Enter：保留 textarea 默认换行
 }
 
 async function revalidate() {
@@ -210,6 +278,143 @@ function initials(name: string): string {
   return (name || '?').slice(0, 1).toUpperCase()
 }
 
+// ---------- 源码模式：锚点 = textarea 里的 <mark data-note 文本 ----------
+// 视图切到源码后 .milkdown 被隐藏，coordsAtPos 返回左上角垃圾坐标；
+// 改为在源码 textarea 里按等宽字体度量 mark 的屏幕位置（含折行估算）。
+const SOURCE_MARK_RE = /<mark\s+data-note=(["'])((?:(?!\1).)*)\1[^>]*>/g
+
+interface SourceMarkInfo {
+  tagStart: number
+  tagEnd: number
+  contentStart: number
+  contentEnd: number
+  thread: Comment[]
+}
+
+/** 找出 textarea 中所有 <mark data-note> 标签（区间 + 解析后的线程） */
+function findSourceMarks(ta: HTMLTextAreaElement): SourceMarkInfo[] {
+  const value = ta.value
+  const out: SourceMarkInfo[] = []
+  SOURCE_MARK_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = SOURCE_MARK_RE.exec(value))) {
+    const tagStart = m.index
+    const contentStart = tagStart + m[0].length
+    const close = value.indexOf('</mark>', contentStart)
+    const contentEnd = close >= 0 ? close : contentStart
+    const tagEnd = close >= 0 ? close + 7 : contentStart // '</mark>'.length = 7
+    out.push({ tagStart, tagEnd, contentStart, contentEnd, thread: parseThread(m[2]) })
+  }
+  return out
+}
+
+/** 按线程匹配：找与某批注线程一致的 mark 内容区间 */
+function findSourceMarkRange(ta: HTMLTextAreaElement, thread: Comment[]): { start: number; end: number } | null {
+  const hit = findSourceMarks(ta).find((mk) => JSON.stringify(mk.thread) === JSON.stringify(thread))
+  return hit ? { start: hit.contentStart, end: hit.contentEnd } : null
+}
+
+/** 等宽字符宽度（textarea 实际字体） */
+function measureMonoChar(ta: HTMLTextAreaElement, cs: CSSStyleDeclaration): number {
+  try {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return 0
+    ctx.font = cs.font
+    return ctx.measureText('0').width || 0
+  } catch {
+    return 0
+  }
+}
+
+/** 源码 textarea 行度量：从文本开头到 offset 的「视觉行数」与当前行列像素偏移（含折行估算） */
+function sourceLineMetrics(
+  value: string,
+  offset: number,
+  charW: number,
+  availW: number,
+  tabSize: number
+): { lines: number; col: number } {
+  let lines = 0
+  let col = 0
+  const n = Math.min(offset, value.length)
+  for (let i = 0; i < n; i++) {
+    const ch = value[i]
+    if (ch === '\n') {
+      lines++
+      col = 0
+      continue
+    }
+    let w = charW
+    if (ch === '\t') {
+      const colChars = col / charW
+      w = (tabSize - (colChars % tabSize)) * charW
+    }
+    if (col + w > availW && col > 0 && w <= availW) {
+      lines++ // 折行：进入下一视觉行
+      col = w
+    } else {
+      col += w
+    }
+  }
+  return { lines, col }
+}
+
+/** 源码模式：批注 mark 在 textarea 内的屏幕矩形（等宽 + 折行估算） */
+function sourceMarkRect(
+  ta: HTMLTextAreaElement,
+  ann: Annotation
+): { left: number; right: number; top: number; bottom: number; height: number } | null {
+  const range = findSourceMarkRange(ta, ann.thread)
+  if (!range) return null
+  const cs = getComputedStyle(ta)
+  const lineHeight = parseFloat(cs.lineHeight) || 20.8
+  const padTop = parseFloat(cs.paddingTop) || 12
+  const padLeft = parseFloat(cs.paddingLeft) || 16
+  const padRight = parseFloat(cs.paddingRight) || 16
+  const tabSize = parseFloat(cs.tabSize) || 2
+  const availW = Math.max(ta.clientWidth - padLeft - padRight, 1)
+  const charW = measureMonoChar(ta, cs) || 7.8
+  const { lines, col } = sourceLineMetrics(ta.value, range.start, charW, availW, tabSize)
+  // mark 内容宽度（同度量累加，遇换行截断）
+  let markW = 0
+  for (let i = range.start; i < range.end; i++) {
+    const ch = ta.value[i]
+    if (ch === '\n') break
+    markW += ch === '\t' ? tabSize * charW : charW
+  }
+  const tr = ta.getBoundingClientRect()
+  const y = tr.top + padTop + lines * lineHeight - ta.scrollTop + lineHeight / 2
+  const xLeft = tr.left + padLeft + col - ta.scrollLeft
+  const xRight = xLeft + markW
+  return {
+    left: xLeft,
+    right: xRight,
+    top: y - lineHeight / 2,
+    bottom: y + lineHeight / 2,
+    height: lineHeight,
+  }
+}
+
+/** 源码模式：把 textarea 滚动到 mark 所在行居中（不改变选区） */
+function scrollSourceLine(ta: HTMLTextAreaElement, contentStart: number) {
+  const cs = getComputedStyle(ta)
+  const lineHeight = parseFloat(cs.lineHeight) || 20.8
+  const padLeft = parseFloat(cs.paddingLeft) || 16
+  const padRight = parseFloat(cs.paddingRight) || 16
+  const tabSize = parseFloat(cs.tabSize) || 2
+  const availW = Math.max(ta.clientWidth - padLeft - padRight, 1)
+  const charW = measureMonoChar(ta, cs) || 7.8
+  const { lines } = sourceLineMetrics(ta.value, contentStart, charW, availW, tabSize)
+  const target = lines * lineHeight - ta.clientHeight / 2 + lineHeight / 2
+  ta.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
+}
+
+/** 源码模式：滚动到 mark 所在行居中，并选中 mark 内容（点击锚点反馈） */
+function scrollSourceToMark(ta: HTMLTextAreaElement, contentStart: number, contentEnd: number) {
+  scrollSourceLine(ta, contentStart)
+  ta.setSelectionRange(contentStart, contentEnd)
+}
+
 // ---------- 连线（抽屉左边缘 → 激活锚点） ----------
 const connector = ref<SVGPathElement | null>(null)
 const connectorSvg = ref<SVGSVGElement | null>(null)
@@ -228,6 +433,15 @@ function drawConnector() {
     const m = await import('../editor/manager')
     const tabId = state.activeTabId
     const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
+    // M6：源码模式 → 锚点 = textarea 里的 <mark data-note 文本（等宽度量定位），
+    // 不再用隐藏 Crepe 的 coordsAtPos（切视图后返回左上角垃圾坐标）
+    if (tab?.viewMode === 'source') {
+      const ta = m.getSourceTextarea(tabId ?? '')
+      const rect = ta ? sourceMarkRect(ta, active) : null
+      if (rect) drawConnectorPath(rect, drawer, active)
+      else svg.style.display = 'none'
+      return
+    }
     // M14：diff 模式下用渲染 Crepe（doc = 组合 md）；否则主编辑器
     const crepe =
       tab?.viewMode === 'diff'
@@ -253,21 +467,56 @@ function drawConnector() {
             width: c.right - c.left, height: c.bottom - c.top,
           } as DOMRect
         }
-      const drawerRect = drawer.getBoundingClientRect()
-      const x1 = drawerRect.left
-      const y1 = drawerRect.top + drawerRect.height / 2
-      const x2 = anchorRect.right
-      const y2 = anchorRect.top + Math.min(anchorRect.height, 24) / 2
-      const cx = (x1 + x2) / 2
-      path.setAttribute('d', `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`)
-        path.setAttribute('stroke', LEVEL_COLOR[active.level])
-        svg.style.display = 'block'
-        svg.classList.remove('annotation-connector-strong')
+        drawConnectorPath(anchorRect, drawer, active)
       })
     } catch {
       /* 编辑器已销毁 */
     }
   })()
+}
+
+/** 从抽屉内激活卡片左缘中点 → 锚点矩形，绘制三次贝塞尔 S 形平滑连线 */
+function drawConnectorPath(
+  anchorRect: { left: number; right: number; top: number; bottom: number; height: number },
+  drawer: HTMLElement,
+  active: Annotation
+) {
+  const path = connector.value
+  const svg = connectorSvg.value
+  if (!path || !svg) return
+  const drawerRect = drawer.getBoundingClientRect()
+  // 起点：优先吸附到抽屉内激活卡片左缘中点（连线指向具体批注卡而非抽屉中线）；
+  // 卡片滚出可视区时钳制在列表可视范围内，避免连线悬空；无卡片时回退抽屉左缘中点
+  let y1 = drawerRect.top + drawerRect.height / 2
+  const card = drawer.querySelector('.ad-card.active') as HTMLElement | null
+  if (card) {
+    const cr = card.getBoundingClientRect()
+    y1 = cr.top + cr.height / 2
+    const list = drawer.querySelector('.annotation-drawer-list') as HTMLElement | null
+    if (list) {
+      const lr = list.getBoundingClientRect()
+      y1 = Math.min(Math.max(y1, lr.top + 4), lr.bottom - 4)
+    }
+  }
+  const x1 = drawerRect.left
+  const x2 = anchorRect.right
+  const y2 = anchorRect.top + Math.min(anchorRect.height, 24) / 2
+  // 三次贝塞尔 S 形：两端保持水平切线（左缘竖边/锚点横条），控制点水平外扩量随间距自适应，
+  // 并轻微向中点预瞄 → 远近都平滑，不僵硬、不外溢
+  const gap = Math.max(x1 - x2, 0)
+  const pull = Math.min(Math.max(gap * 0.5, 28), 140)
+  const dy = y2 - y1
+  const c1x = x1 - pull
+  const c1y = y1 + dy * 0.12
+  const c2x = x2 + pull
+  const c2y = y2 - dy * 0.12
+  path.setAttribute(
+    'd',
+    `M ${Math.round(x1)} ${Math.round(y1)} C ${Math.round(c1x)} ${Math.round(c1y)}, ${Math.round(c2x)} ${Math.round(c2y)}, ${Math.round(x2)} ${Math.round(y2)}`
+  )
+  path.setAttribute('stroke', LEVEL_COLOR[active.level])
+  svg.style.display = 'block'
+  svg.classList.remove('annotation-connector-strong')
 }
 
 watch(activeId, (id) => {
@@ -280,6 +529,30 @@ watch([() => anns.value.length, open], () => {
 watch(open, (v) => {
   if (!v) connectorSvg.value?.style && (connectorSvg.value.style.display = 'none')
 })
+// M6：视图切换（wysiwyg/source/diff）后重绘连线（源码模式下 Crepe 隐藏、坐标失效）；
+// 切到源码且存在激活批注时，先把 textarea 滚到批注 mark 所在行（连线附着到可见锚点）
+watch(
+  () => state.tabs.find((t) => t.id === state.activeTabId)?.viewMode,
+  () => {
+    requestAnimationFrame(() => {
+      const tabId = state.activeTabId
+      const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
+      if (tab?.viewMode === 'source') {
+        const active = anns.value.find((a) => a.id === activeId.value)
+        if (active && active.persist) {
+          void import('../editor/manager').then((m) => {
+            const ta = m.getSourceTextarea(tabId ?? '')
+            if (ta) {
+              const r = findSourceMarkRange(ta, active.thread)
+              if (r) scrollSourceLine(ta, r.start)
+            }
+          })
+        }
+      }
+      drawConnector()
+    })
+  }
+)
 onMounted(() => {
   window.addEventListener('scroll', scheduleConnector, true)
 })
@@ -418,12 +691,12 @@ function onAnchorHover(strong: boolean) {
                 </div>
               </div>
             </div>
-            <!-- 回复输入（v6：仅点击展开时显示；Ctrl+Enter 提交 / Enter 换行 / ESC 清空） -->
+            <!-- 回复输入（v6：仅点击展开时显示；Enter 提交 / Shift+Enter 换行 / ESC 清空） -->
             <div v-if="expandedId === a.id" class="ad-reply">
               <textarea
                 v-model="draft[a.id]"
                 rows="2"
-                placeholder="回复…（Ctrl+Enter 发送，ESC 取消）"
+                placeholder="回复…（Enter 发送，Shift+Enter 换行，ESC 取消）"
                 @keydown="onReplyKeydown(a, $event)"
               ></textarea>
               <div class="ad-reply-actions">
