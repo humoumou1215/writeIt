@@ -18,7 +18,7 @@ const expandedCommit = ref<string | null>(null)
 // ---------- 加载 ----------
 async function loadAll() {
   if (!isGitAvailable()) {
-    error.value = 'Git 功能仅在桌面应用中可用（当前为浏览器演示模式）'
+    error.value = 'Git 功能在当前模式不可用（桌面应用或演示模式可用）'
     state.gitPanel.repo = null
     return
   }

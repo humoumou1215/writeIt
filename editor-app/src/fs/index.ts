@@ -2,6 +2,7 @@ import type { FileSystem } from './types'
 import { mockFs } from './mock'
 import { webFs } from './web'
 import { tauriFs } from './tauri'
+import { disableGitForRealDir } from '../git'
 
 export type { FileSystem, FsEntry, FsBackendKind } from './types'
 export { isEditableFile, joinPath, dirName, baseName } from './types'
@@ -28,11 +29,15 @@ export function canOpenRealDir(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window
 }
 
-/** 浏览器点「打开目录」时从 mock 切换到 web 实现 */
+/** 浏览器点「打开目录」时从 mock 切换到 web 实现（git 随之禁用） */
 export function useRealDirFs(): boolean {
-  if (backend.kind !== 'mock') return backend.kind === 'web' || backend.kind === 'tauri'
+  if (backend.kind !== 'mock') {
+    if (backend.kind === 'web') disableGitForRealDir()
+    return backend.kind === 'web' || backend.kind === 'tauri'
+  }
   if (canOpenRealDir()) {
     backend = webFs
+    disableGitForRealDir()
     return true
   }
   return false

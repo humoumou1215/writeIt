@@ -237,6 +237,17 @@ M11d  ✅ 还原（整文件 + 单 hunk，仅工作区 diff，危险确认 + 标
 - **UI**：DiffView 工具栏「还原…」+ hunk-meta「↩ 还原此段」（仅工作区 diff `canDiscard`）；GitPanel 分支行 hover「⇄」切换（`switchGitBranch`）+ version watch 自动刷新；TabBar 右键 → `TabContextMenu.vue`（Git 改动/关闭）；状态栏 `.git-badge`（ⓘ branch，GitPanel 加载后可用）
 - **测试**：git-m11a-e2e 扩展至 **60**（状态栏徽标、还原确认/退出 diff/toast、hunk 还原按钮、标签右键 → diff、分支切换 → 徽标更新）；全量 24 套件全绿
 
+### M12 实现记录（浏览器演示模式，2026-08-15）
+
+**背景**：Git 功能此前仅 tauri 可用，vite dev（浏览器）无法预览 diff 效果。M12 让浏览器 mock 模式完整可用——内置「演示笔记」示例仓库，直接查看 git diff 预期效果。
+
+- **git 层 proxy 重构**（src/git/）：类型提取至 `types.ts`；`index.ts` 变 proxy（`GitBackend` 接口 + 后端选择：tauri → invoke；mock → 内置仓库；web 真实目录 → 禁用）；`mock.ts` 新增（示例仓库：README.md 含 mermaid 新旧对比/`![[` 嵌入/引用/需求清单词级变化/**纯删除块**/多提交/双分支；内存态，discard/checkout 可改，刷新重置）
+- **联动**：`isGitAvailable()` = 后端非 null（浏览器 mock 也 true）；`fs.useRealDirFs` 切 web 时 `disableGitForRealDir()`；`gitBackendKind()`/`isMockGit()` 导出
+- **工作区数据源统一**：`readWorktreeFile(path)`（mock → `git.showFile(path, 'WORKTREE')`；否则 fs.readFile）——接入 openGitDiff 打开 tab（openTab 加 contentOverride 参数）、loadRenderData 新版本、reloadTabFromDisk、buildRenderRefCfg（渲染层嵌入/引用物化读取）
+- **GitPanel**：错误文案改「当前模式不可用」
+- **示例效果**（`npm run dev` → 🔀 Git）：工作区 2 文件（README 14+/5-、会议记录 2+/1-）；默认渲染模式看 mermaid 图/嵌入卡片/纯删除块红底划线；切文本看分栏/词级；历史 2 提交 + Shift+点击范围对比；⇄ 切换 feature 分支；还原演示
+- **测试**：git-m11a-smoke 重写为 21 断言（浏览器 mock 完整流程：面板/渲染融合/mermaid/嵌入/词级/hunk 还原按钮）；git-m11a-e2e 60/60 不变（tauri 注入流程）；全量 24 套件全绿
+
 ### M11a 实现记录（2026-08-15）
 
 **Rust（lib.rs，cargo check + 7 单测全绿）**：

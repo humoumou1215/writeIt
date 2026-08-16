@@ -167,6 +167,12 @@ export async function toggleSourceMode(tabId: string): Promise<void> {
 
 // ---------- M11：Git diff 视图 ----------
 
+/** 工作区文件内容（mock 演示仓库 = mockGit worktree；否则 = fs 磁盘） */
+async function readWorktreeFile(path: string): Promise<string> {
+  const { isMockGit } = await import('../git')
+  return isMockGit() ? git.showFile(path, 'WORKTREE') : fs.readFile(path)
+}
+
 /** 打开某文件的 Git diff（工作区 vs HEAD / commit vs 父提交 / a..b）。
  *  进入前自动保存该文件（git diff 反映磁盘状态）；保留已加载的 diff 数据（切回秒开）。 */
 export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
@@ -183,7 +189,7 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
     }
     activateTab(tab.id)
   } else {
-    await openTab(path)
+    await openTab(path, await readWorktreeFile(path))
   }
   const t = state.tabs.find((x) => x.path === path)
   if (!t) return
@@ -232,9 +238,9 @@ export async function loadRenderData(tabId: string): Promise<void> {
   d.renderLoading = true
   d.renderError = null
   try {
-    // 新版本：工作区 → 磁盘文件；commit/范围 → git show to
+    // 新版本：工作区 → 磁盘文件（mock 演示仓库 = mockGit worktree）；commit/范围 → git show to
     const newMd =
-      d.base.from === null ? await fs.readFile(d.path) : await git.showFile(d.path, d.base.to)
+      d.base.from === null ? await readWorktreeFile(d.path) : await git.showFile(d.path, d.base.to)
     // 旧版本：工作区 vs HEAD → HEAD；commit vs parent → 父提交；a..b → a
     const oldRev = d.base.from ?? 'HEAD'
     const oldMd = await git.showFile(d.path, oldRev)
@@ -254,7 +260,7 @@ export async function loadRenderData(tabId: string): Promise<void> {
 export function buildRenderRefCfg(): import('./ref/config').RefConfig {
   return {
     fs: {
-      readFile: (p: string) => fs.readFile(p),
+      readFile: async (p: string) => readWorktreeFile(p),
       readTree: (showAll?: boolean) => fs.readTree(Boolean(showAll)),
       writeFile: (p: string, c: string) => fs.writeFile(p, c),
     },
@@ -310,7 +316,7 @@ async function reloadTabFromDisk(tabId: string): Promise<void> {
   const inst = instances.get(tabId)
   if (!tab || !inst) return
   try {
-    const content = await fs.readFile(tab.path)
+    const content = await readWorktreeFile(tab.path)
     // 源码模式先退出（否则 textarea 残留旧内容）
     if (tab.viewMode === 'source') await setViewMode(tabId, 'wysiwyg')
     inst.suppressing = true
@@ -864,7 +870,7 @@ async function scrollToHeading(fragment: string) {
 
 // ---------- 打开 / 激活 ----------
 
-export async function openTab(path: string): Promise<void> {
+export async function openTab(path: string, contentOverride?: string): Promise<void> {
   // 已在标签中 → 直接激活
   const existing = state.tabs.find((t) => t.path === path)
   if (existing) {
@@ -874,7 +880,7 @@ export async function openTab(path: string): Promise<void> {
 
   let content: string
   try {
-    content = await fs.readFile(path)
+    content = contentOverride ?? (await fs.readFile(path))
   } catch (e) {
     toast(`打开失败: ${(e as Error).message}`, 'error')
     return
