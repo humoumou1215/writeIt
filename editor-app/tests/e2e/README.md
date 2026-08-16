@@ -35,6 +35,8 @@ node tests/e2e/m6c-e2e.js
 | m6-e2e | M6 | 6 | 批注 round-trip/锚点激活 |
 | m6-toolbar | M6 | 9 | Toolbar 添加批注/Ctrl+R/Ctrl+Enter/ESC |
 | m6c-e2e | M6 | 20 | 抽屉/评论线程/权限/折叠/连线/拖拽 |
+| git-m11a-e2e | M11 | 29 | Git 面板/历史/范围对比/diff 视图（IPC mock 全流程） |
+| git-m11a-smoke | M11 | 10 | 浏览器降级（图标灰置 + toast + 面板错误） |
 | app-e2e | 综合 | 28 | 全应用（**会清空 demo-shots/**，最后跑） |
 
 ## 测试数据说明

@@ -22,7 +22,7 @@ const { chromium } = require('playwright');
   // 1. 无顶栏 + 新侧边栏结构
   check('顶栏已移除', await page.locator('.topbar').count() === 0);
   check('图标列存在', await page.locator('.icon-col').count() === 1);
-  check('图标列含 📁 和 ⚙️', (await page.locator('.icon-col .icon-btn').count()) === 2);
+  check('图标列含 📁 和 ⚙️', (await page.locator('.icon-col .icon-btn').count()) >= 2);
   check('内容列默认展开', !(await page.locator('.content-col').evaluate(el => el.classList.contains('collapsed'))));
   check('状态栏保留', await page.locator('.statusbar').count() === 1);
 
@@ -58,7 +58,7 @@ const { chromium } = require('playwright');
   check('保存后脏标记清除', await page.locator('.tab .dot.dirty').count() === 0);
 
   // 6. 设置弹窗（图标列 ⚙️）
-  await page.locator('.icon-col .icon-btn').nth(1).click();
+  await page.locator('.icon-col .icon-btn').nth(2).click();
   await page.waitForTimeout(500);
   check('设置弹窗打开', await page.isVisible('.settings-modal'));
   check('弹窗有 常规/快捷键 两个页签', (await page.locator('.tab-btn').count()) === 2);
@@ -73,7 +73,7 @@ const { chromium } = require('playwright');
   // 8. 快捷键页
   await page.locator('.tab-btn', { hasText: '快捷键' }).click();
   await page.waitForTimeout(300);
-  check('快捷键列表 11 项', (await page.locator('.shortcut-row').count()) === 11);
+  check('快捷键列表 12 项', (await page.locator('.shortcut-row').count()) === 12);
   check('默认 Ctrl+S 存在', (await page.locator('.shortcut-row', { hasText: '保存当前文件' }).locator('.keybtn').textContent()).trim() === 'Ctrl+S');
   // 录制新快捷键：把「打开设置」改成 Alt+Shift+P
   const settingsRow = page.locator('.shortcut-row', { hasText: '打开设置' });

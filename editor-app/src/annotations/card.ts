@@ -49,7 +49,7 @@ function onKeydown(e: KeyboardEvent) {
   if (!editorRef) return
   // M7：源码模式禁用批注——doc 是同步前的旧内容，选区错位；且不 preventDefault 会触发浏览器刷新
   const tab = state.tabs.find((t) => t.id === state.activeTabId)
-  if (tab?.sourceMode) {
+  if (tab?.viewMode === 'source') {
     e.preventDefault()
     toast('源码模式下暂不支持添加批注，请按 Ctrl+E 切回编辑模式', 'info')
     return

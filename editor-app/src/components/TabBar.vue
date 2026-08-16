@@ -8,6 +8,19 @@ function onMiddleClick(e: MouseEvent, id: string) {
     closeTab(id)
   }
 }
+
+// M11d：标签右键菜单
+function onContextMenu(e: MouseEvent, id: string) {
+  e.preventDefault()
+  const tab = state.tabs.find((t) => t.id === id)
+  if (!tab) return
+  state.tabContextMenu = {
+    x: Math.min(e.clientX, window.innerWidth - 170),
+    y: Math.min(e.clientY, window.innerHeight - 120),
+    tabId: id,
+    path: tab.path,
+  }
+}
 </script>
 
 <template>
@@ -20,6 +33,7 @@ function onMiddleClick(e: MouseEvent, id: string) {
       @click="activateTab(tab.id)"
       @auxclick="onMiddleClick($event, tab.id)"
       :title="tab.path"
+      @contextmenu="onContextMenu($event, tab.id)"
     >
       <span class="dot" :class="{ dirty: tab.dirty }"></span>
       <span class="tab-name">{{ tab.name }}</span>

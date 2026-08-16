@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { state } from '../state/store'
 import { mountEditor, unmountEditor } from '../editor/manager'
+import DiffView from './DiffView.vue'
 
 const props = defineProps<{ tabId: string; visible: boolean }>()
 
 const rootEl = ref<HTMLDivElement | null>(null)
+
+const tab = computed(() => state.tabs.find((t) => t.id === props.tabId))
 
 onMounted(() => {
   if (rootEl.value) mountEditor(props.tabId, rootEl.value)
@@ -15,17 +18,36 @@ onBeforeUnmount(() => {
   unmountEditor(props.tabId)
 })
 
-// 可见性切换不销毁实例（保留撤销历史）
+// 可见性切换不销毁实例（保留撤销历史）；diff 模式隐藏 Crepe 容器（DiffView 接管）
 watch(
   () => props.visible,
-  (v) => {
-    if (rootEl.value) rootEl.value.style.display = v ? 'block' : 'none'
+  () => {
+    if (rootEl.value) applyDisplay()
   }
 )
+
+watch(
+  () => tab.value?.viewMode,
+  () => {
+    if (rootEl.value) applyDisplay()
+  }
+)
+
+function applyDisplay() {
+  if (!rootEl.value) return
+  const showCrepe = props.visible && tab.value?.viewMode !== 'diff'
+  rootEl.value.style.display = showCrepe ? 'block' : 'none'
+}
 </script>
 
 <template>
-  <div ref="rootEl" class="editor-pane" :style="{ display: visible ? 'block' : 'none' }"></div>
+  <div
+    ref="rootEl"
+    class="editor-pane"
+    :class="{ 'source-mode': tab?.viewMode === 'source', 'diff-mode': tab?.viewMode === 'diff' }"
+    :style="{ display: visible && tab?.viewMode !== 'diff' ? 'block' : 'none' }"
+  ></div>
+  <DiffView v-if="visible && tab?.viewMode === 'diff'" :tab-id="tabId" />
 </template>
 
 <style scoped>

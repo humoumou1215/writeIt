@@ -30,7 +30,8 @@ import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
 import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings } from '../state/settings'
-import type { Tab } from '../state/store'
+import type { Tab, ViewMode } from '../state/store'
+import { git, type DiffBase } from '../git'
 import { featureConfigs } from './features'
 import { registerMermaidRefDeps } from './mermaid-ref'
 import { templateService } from '../template/service'
@@ -98,7 +99,7 @@ function ensureSourceTa(inst: Instance, tabId: string): HTMLTextAreaElement {
 async function ensureDocSynced(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   const inst = instances.get(tabId)
-  if (!tab || !inst || !tab.sourceMode || !inst.srcTa) return
+  if (!tab || !inst || tab.viewMode !== 'source' || !inst.srcTa) return
   const ta = inst.srcTa
   const current = inst.crepe.getMarkdown()
   if (ta.value === current) return
@@ -107,31 +108,49 @@ async function ensureDocSynced(tabId: string): Promise<void> {
   void refreshBrokenState(inst.crepe.editor)
 }
 
-/** 切换标签视图模式（Ctrl+E）；on=true 进入源码，off=false 切回所见即所得 */
-async function setSourceMode(tabId: string, on: boolean): Promise<void> {
+/** 视图切换（M11：wysiwyg / source / diff 三态）。
+ *  - 进入 source：getMarkdown() 填入 textarea，隐藏 .milkdown，焦点末尾
+ *  - 进入 diff：隐藏 .milkdown（diff 面板由 DiffView.vue 渲染，v-show 跟随 viewMode）
+ *  - 回 wysiwyg：source 先 ensureDocSynced；diff 直接恢复可见性
+ * 保留 diff 数据（tab.diff 不清除，切回再进入秒开）。 */
+async function setViewMode(tabId: string, mode: ViewMode): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   const inst = instances.get(tabId)
-  if (!tab || !inst || tab.sourceMode === on) return
+  if (!tab || !inst || tab.viewMode === mode) return
   const milkdownEl = inst.el.querySelector('.milkdown') as HTMLElement | null
-  if (on) {
+  if (mode === 'source') {
+    // 从 diff 切源码：先恢复 milkdown 可见（diff 面板 v-show 自行隐藏）
+    if (tab.viewMode === 'diff' && milkdownEl) milkdownEl.style.display = 'block'
     const ta = ensureSourceTa(inst, tabId)
     ta.value = inst.crepe.getMarkdown()
     ta.style.display = 'block'
     if (milkdownEl) milkdownEl.style.display = 'none'
     inst.el.classList.add('source-mode')
-    tab.sourceMode = true
+    inst.el.classList.remove('diff-mode')
+    tab.viewMode = 'source'
     // 光标放末尾，便于继续输入
     ta.focus()
     const len = ta.value.length
     ta.setSelectionRange(len, len)
-  } else {
-    // 先同步（此时 sourceMode 仍为 true，ensureDocSynced 才会执行）再切可见性
-    await ensureDocSynced(tabId)
+  } else if (mode === 'diff') {
+    // 从源码切 diff：先同步（此时 viewMode 仍为 source，ensureDocSynced 才会执行）再隐藏
+    if (tab.viewMode === 'source') await ensureDocSynced(tabId)
     const ta = inst.srcTa
     if (ta) ta.style.display = 'none'
-    if (milkdownEl) milkdownEl.style.display = 'block'
+    if (milkdownEl) milkdownEl.style.display = 'none'
+    inst.el.classList.add('diff-mode')
     inst.el.classList.remove('source-mode')
-    tab.sourceMode = false
+    tab.viewMode = 'diff'
+  } else {
+    // 回 wysiwyg
+    if (tab.viewMode === 'source') {
+      await ensureDocSynced(tabId)
+      const ta = inst.srcTa
+      if (ta) ta.style.display = 'none'
+    }
+    if (milkdownEl) milkdownEl.style.display = 'block'
+    inst.el.classList.remove('source-mode', 'diff-mode')
+    tab.viewMode = 'wysiwyg'
     // 焦点还给编辑器
     requestAnimationFrame(() => {
       const viewEl = inst.el.querySelector('.ProseMirror') as HTMLElement | null
@@ -142,9 +161,257 @@ async function setSourceMode(tabId: string, on: boolean): Promise<void> {
 
 export async function toggleSourceMode(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
+  if (!tab) return
+  await setViewMode(tabId, tab.viewMode === 'source' ? 'wysiwyg' : 'source')
+}
+
+// ---------- M11：Git diff 视图 ----------
+
+/** 打开某文件的 Git diff（工作区 vs HEAD / commit vs 父提交 / a..b）。
+ *  进入前自动保存该文件（git diff 反映磁盘状态）；保留已加载的 diff 数据（切回秒开）。 */
+export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
+  if (!git.available) {
+    toast('Git 功能仅在桌面应用中可用', 'info')
+    return
+  }
+  // 该文件已打开且有未保存改动 → 先保存（保证磁盘 == 编辑器所见）
+  const tab = state.tabs.find((t) => t.path === path)
+  if (tab) {
+    if (tab.dirty) {
+      const ok = await saveTab(tab.id)
+      if (!ok) return
+    }
+    activateTab(tab.id)
+  } else {
+    await openTab(path)
+  }
+  const t = state.tabs.find((x) => x.path === path)
+  if (!t) return
+  await waitForInstance(t.id)
+  // base 相同且有数据 → 直接切视图
+  if (t.diff && t.diff.base.from === base.from && t.diff.base.to === base.to && !t.diff.loading) {
+    await setViewMode(t.id, 'diff')
+    return
+  }
+  t.diff = {
+    path,
+    base,
+    hunks: [],
+    added: 0,
+    deleted: 0,
+    exists: true,
+    loading: true,
+    mode: 'render',
+    renderData: null,
+    renderLoading: false,
+    renderError: null,
+  }
+  await setViewMode(t.id, 'diff')
+  try {
+    const res = await git.diffFile(path, base.from, base.to)
+    const cur = state.tabs.find((x) => x.id === t.id)
+    if (cur && cur.diff) {
+      cur.diff.hunks = res.hunks
+      cur.diff.added = res.added
+      cur.diff.deleted = res.deleted
+      cur.diff.exists = res.exists
+      cur.diff.loading = false
+    }
+  } catch (e) {
+    toast(`加载 diff 失败: ${(e as Error).message}`, 'error')
+    const cur = state.tabs.find((x) => x.id === t.id)
+    if (cur && cur.diff) cur.diff.loading = false
+  }
+}
+
+/** M11c：懒加载渲染模式所需的两版本内容（旧 = git show；新 = 工作区文件或 git show） */
+export async function loadRenderData(tabId: string): Promise<void> {
+  const t = state.tabs.find((x) => x.id === tabId)
+  const d = t?.diff
+  if (!d || d.renderData || d.renderLoading) return
+  d.renderLoading = true
+  d.renderError = null
+  try {
+    // 新版本：工作区 → 磁盘文件；commit/范围 → git show to
+    const newMd =
+      d.base.from === null ? await fs.readFile(d.path) : await git.showFile(d.path, d.base.to)
+    // 旧版本：工作区 vs HEAD → HEAD；commit vs parent → 父提交；a..b → a
+    const oldRev = d.base.from ?? 'HEAD'
+    const oldMd = await git.showFile(d.path, oldRev)
+    const cur = state.tabs.find((x) => x.id === tabId)
+    if (cur?.diff) cur.diff.renderData = { oldMd, newMd }
+  } catch (e) {
+    toast(`加载渲染数据失败: ${(e as Error).message}`, 'error')
+    const cur = state.tabs.find((x) => x.id === tabId)
+    if (cur?.diff) cur.diff.renderError = (e as Error).message
+  } finally {
+    const cur = state.tabs.find((x) => x.id === tabId)
+    if (cur?.diff) cur.diff.renderLoading = false
+  }
+}
+
+/** 渲染模式引用 chip 点击打开目标（复用正文 handleOpenRef 逻辑） */
+export function buildRenderRefCfg(): import('./ref/config').RefConfig {
+  return {
+    fs: {
+      readFile: (p: string) => fs.readFile(p),
+      readTree: (showAll?: boolean) => fs.readTree(Boolean(showAll)),
+      writeFile: (p: string, c: string) => fs.writeFile(p, c),
+    },
+    toast,
+    openFile: (path, fragment) => {
+      void openRefTarget(path, fragment)
+    },
+    reSelect: () => undefined,
+    getTreeVersion: () => state.treeVersion,
+    templateService,
+  }
+}
+
+/** 引用 chip 点击 → 解析真实路径 → 打开标签 → #片段滚动 */
+export async function openRefTarget(path: string, fragment: string | null): Promise<void> {
+  const refCfg = buildRenderRefCfg()
+  const real = await resolveRefPath(refCfg, path)
+  if (!real) {
+    toast(`文件不存在：${path}`, 'error')
+    return
+  }
+  await openTab(real)
+  if (fragment) await scrollToHeading(fragment)
+}
+
+/** 退出 diff 视图（回到 wysiwyg；diff 数据保留） */
+export async function closeGitDiff(tabId: string): Promise<void> {
+  await setViewMode(tabId, 'wysiwyg')
+}
+
+/** 当前活动文件打开 Git 改动（快捷键/文件树右键入口） */
+export async function openActiveGitDiff(): Promise<void> {
+  if (!git.available) {
+    toast('Git 功能仅在桌面应用中可用', 'info')
+    return
+  }
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (!tab) {
+    toast('当前没有打开的文件', 'info')
+    return
+  }
+  await openGitDiff(tab.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+}
+
+/** Git 面板刷新钩子（还原/切换分支后调用） */
+export function refreshGitPanel() {
+  state.gitPanel.version++
+}
+
+/** 从磁盘重载标签内容（还原后同步编辑器；不写盘） */
+async function reloadTabFromDisk(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
   const inst = instances.get(tabId)
   if (!tab || !inst) return
-  await setSourceMode(tabId, !tab.sourceMode)
+  try {
+    const content = await fs.readFile(tab.path)
+    // 源码模式先退出（否则 textarea 残留旧内容）
+    if (tab.viewMode === 'source') await setViewMode(tabId, 'wysiwyg')
+    inst.suppressing = true
+    inst.crepe.editor.action(replaceAll(content))
+    await resolveRefs(inst.crepe.editor)
+    tab.savedContent = inst.crepe.getMarkdown()
+    tab.dirty = false
+    tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+    tab.lastModified = Date.now()
+    // diff 数据过期：清空重新加载（base 不变时 openGitDiff 会复用 → 强制失效）
+    if (tab.diff) tab.diff = null
+    inst.suppressing = false
+  } catch (e) {
+    inst.suppressing = false
+    toast(`刷新文件内容失败: ${(e as Error).message}`, 'error')
+  }
+}
+
+/** 还原整文件（仅工作区 diff；危险操作带确认） */
+export async function discardFileDiff(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const d = tab?.diff
+  if (!d || d.base.from !== null || !d.exists) return
+  const ok = await confirmDialog({
+    title: '还原整个文件？',
+    message: `将丢弃「${d.path}」的全部未提交改动（${d.added} 增 / ${d.deleted} 删），恢复到 HEAD 版本。\n\n此操作不可撤销。`,
+    confirmText: '还原文件',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await git.discardFile(d.path)
+    // 该文件的打开标签同步为磁盘内容；diff 视图关闭（内容已变）
+    if (state.tabs.find((t) => t.path === d.path)) {
+      await reloadTabFromDisk(tab.id)
+      // 退出 diff 视图（内容已刷新，回到编辑器）
+      await setViewMode(tab.id, 'wysiwyg')
+    }
+    refreshGitPanel()
+    toast('已还原到 HEAD 版本', 'success')
+  } catch (e) {
+    toast(`还原失败: ${(e as Error).message}`, 'error')
+  }
+}
+
+/** 还原单个 hunk（仅工作区 diff） */
+export async function discardHunkDiff(tabId: string, hunkIdx: number): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const d = tab?.diff
+  if (!d || d.base.from !== null) return
+  const hunk = d.hunks[hunkIdx]
+  if (!hunk) return
+  const ok = await confirmDialog({
+    title: '还原这段改动？',
+    message: `将丢弃第 ${hunkIdx + 1} 处改动（@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@），恢复到 HEAD 版本。\n\n此操作不可撤销。`,
+    confirmText: '还原此段',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await git.discardHunk(d.path, hunkIdx)
+    if (state.tabs.find((t) => t.path === d.path)) {
+      await reloadTabFromDisk(tab.id)
+      await setViewMode(tab.id, 'wysiwyg')
+    }
+    refreshGitPanel()
+    toast('已还原该处改动', 'success')
+  } catch (e) {
+    toast(`还原失败: ${(e as Error).message}`, 'error')
+  }
+}
+
+/** 切换分支（未提交改动确认 + 关闭旧分支打开的文件） */
+export async function switchGitBranch(name: string): Promise<void> {
+  const g = state.gitPanel
+  if (!g.repo?.isRepo || g.repo.branch === name) return
+  const dirtyCount = g.status.length
+  const ok = await confirmDialog({
+    title: `切换到分支「${name}」？`,
+    message:
+      dirtyCount > 0
+        ? `当前有 ${dirtyCount} 个文件的未提交改动，切换分支可能导致冲突（未提交改动会随分支保留）。\n\n建议先提交或还原未提交改动。`
+        : `切换到分支「${name}」，工作区内容将更新为该分支版本，已打开的文件会重新加载。`,
+    confirmText: '切换分支',
+    danger: dirtyCount > 0,
+  })
+  if (!ok) return
+  try {
+    await git.checkoutBranch(name)
+    // 关闭所有打开标签（内容属于旧分支）→ 刷新文件树 + Git 面板
+    const openTabs = [...state.tabs]
+    for (const t of openTabs) {
+      await closeTab(t.id)
+    }
+    state.treeVersion++
+    await refreshTree()
+    refreshGitPanel()
+    toast(`已切换到分支 ${name}`, 'success')
+  } catch (e) {
+    toast(`切换分支失败: ${(e as Error).message}`, 'error')
+  }
 }
 
 // M5：校验面板点击违规跳转到文档位置（打开/激活标签 + 滚动到 pos）
@@ -152,7 +419,7 @@ export async function scrollToPos(tabId: string, pos: number): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
   // M7：源码模式下定位 → 先切回所见即所得（用户要看到位置）
-  if (tab.sourceMode) await setSourceMode(tabId, false)
+  if (tab.viewMode === 'source') await setViewMode(tabId, 'wysiwyg')
   if (state.activeTabId !== tabId) {
     await openTab(tabId)
   }
@@ -197,6 +464,15 @@ export function getActiveInstance(): Instance | null {
   return state.activeTabId ? (instances.get(state.activeTabId) ?? null) : null
 }
 
+/** 当前活动标签的 markdown（导出/诊断用；源码模式返回 textarea 最新内容，同 __editorGetMarkdown） */
+export function getActiveTabMarkdown(): string | null {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return null
+  const tab = state.tabs.find((t) => t.id === state.activeTabId)
+  if (tab?.viewMode === 'source' && inst.srcTa) return inst.srcTa.value
+  return inst.crepe.getMarkdown()
+}
+
 // 调试钩子：测试时可访问当前编辑器的内部（schema / doc 等）
 ;(window as unknown as { __editorDebug?: unknown }).__editorDebug = () => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
@@ -207,7 +483,7 @@ export function getActiveInstance(): Instance | null {
   if (!inst) return ''
   // M7：源码模式下返回 textarea 最新内容（doc 是同步前的旧内容）
   const tab = state.tabs.find((t) => t.id === state.activeTabId)
-  if (tab?.sourceMode && inst.srcTa) return inst.srcTa.value
+  if (tab?.viewMode === 'source' && inst.srcTa) return inst.srcTa.value
   return inst.crepe.getMarkdown()
 }
 ;(window as unknown as { __editorSetRefPath?: unknown }).__editorSetRefPath = (oldPath: string, newPath: string) => {
@@ -614,7 +890,8 @@ export async function openTab(path: string): Promise<void> {
     blockSnapshot: null,
     userEditedAt: 0,
     lastExternalSyncAt: 0,
-    sourceMode: false,
+    viewMode: 'wysiwyg',
+    diff: null,
   }
   state.tabs.push(tab)
   state.activeTabId = tab.id
@@ -633,7 +910,7 @@ export function activateTab(id: string) {
   requestAnimationFrame(() => {
     const inst = instances.get(id)
     const tab = state.tabs.find((t) => t.id === id)
-    if (inst && tab?.sourceMode) {
+    if (inst && tab?.viewMode === 'source') {
       inst.srcTa?.focus()
       return
     }
@@ -825,7 +1102,7 @@ async function refreshTabToContent(
     srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
     srcTab.lastModified = Date.now()
     // M7：源标签处于源码模式 → textarea 同步为最新内容（与 doc/磁盘一致）
-    if (srcTab.sourceMode && srcInst.srcTa) {
+    if (srcTab.viewMode === 'source' && srcInst.srcTa) {
       srcInst.srcTa.value = canonical
     }
   } catch (e) {
@@ -902,7 +1179,7 @@ export async function saveTab(tabId: string): Promise<boolean> {
     return true
   }
   // M7：源码模式保存 → 先把 textarea 最新内容解析回 doc（保持源码模式，保存后继续编辑源码）
-  if (tab.sourceMode) await ensureDocSynced(tabId)
+  if (tab.viewMode === 'source') await ensureDocSynced(tabId)
   // M5 strict 门禁：先确保校验结果新鲜（文档可能已编辑），mode strict + error 违规 → 需确认
   const result = await validateEditor(inst.crepe.editor, tabId, { silent: true })
   if (hasStrictBlock(result)) {
@@ -1114,7 +1391,7 @@ export async function openDirectory(): Promise<void> {
 
 export async function refreshTree() {
   try {
-    state.tree = await fs.readTree(settings.showAllFiles)
+    state.tree = await fs.readTree(true)
     state.rootName = fs.rootName
     state.treeVersion++
   } catch (e) {

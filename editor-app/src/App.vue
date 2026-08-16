@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { onMounted, onBeforeUnmount, watch, nextTick, ref } from 'vue'
 import { state, toast } from './state/store'
 import { settings, applyTheme, saveSettings, SHORTCUT_DEFS, comboMatches } from './state/settings'
 import { fs } from './fs'
 import { isEditableFile, type FsEntry } from './fs/types'
+import { isGitAvailable } from './git'
+import GitPanel from './components/GitPanel.vue'
+import TabContextMenu from './components/TabContextMenu.vue'
 import {
   openDirectory,
   refreshTree,
@@ -13,6 +16,7 @@ import {
   activateTab,
   closeTab,
   toggleSourceMode,
+  openActiveGitDiff,
 } from './editor/manager'
 import {
   startNewFile,
@@ -31,6 +35,7 @@ import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
 import AnnotationDrawer from './components/AnnotationDrawer.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import ExportModal from './components/ExportModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import TemplatePicker from './components/TemplatePicker.vue'
@@ -80,9 +85,21 @@ const shortcutActions: Record<string, () => void> = {
   toggleSource: () => {
     if (state.activeTabId) void toggleSourceMode(state.activeTabId)
   },
+  gitDiff: () => {
+    void openActiveGitDiff()
+  },
   settings: () => {
     state.settingsOpen = !state.settingsOpen
   },
+}
+
+// ---------- 设置 / 快捷键入口 ----------
+/** 设置弹窗初始页签：⚙️ 进「常规」，⌨️ 进「快捷键」 */
+const settingsTab = ref<'general' | 'shortcuts'>('general')
+
+function openSettings(tab: 'general' | 'shortcuts') {
+  settingsTab.value = tab
+  state.settingsOpen = true
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -109,6 +126,27 @@ function cycleTab(delta: number) {
   const idx = state.tabs.findIndex((t) => t.id === state.activeTabId)
   const next = state.tabs[(idx + delta + state.tabs.length) % state.tabs.length]
   activateTab(next.id)
+}
+
+function onGitIcon() {
+  if (!isGitAvailable()) {
+    toast('Git 功能仅在桌面应用中可用（当前为浏览器演示模式）', 'info')
+    return
+  }
+  state.gitPanel.tab = 'git'
+}
+
+// M11d：标签右键菜单动作
+function onTabMenuAction(action: string, tabId: string) {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (!tab) return
+  if (action === 'gitDiff') {
+    void import('./editor/manager').then((m) =>
+      m.openGitDiff(tab.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+    )
+  } else if (action === 'close') {
+    void import('./editor/manager').then((m) => m.closeTab(tabId))
+  }
 }
 
 // ---------- 侧边栏 ----------
@@ -152,6 +190,17 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
   switch (action) {
     case 'open':
       if (kind === 'file' && isEditableFile(path)) await openTab(path)
+      break
+    case 'gitDiff':
+      if (kind === 'file' && isEditableFile(path)) {
+        if (!isGitAvailable()) {
+          toast('Git 功能仅在桌面应用中可用', 'info')
+        } else {
+          await import('./editor/manager').then((m) =>
+            m.openGitDiff(path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+          )
+        }
+      }
       break
     case 'newFile':
       snf(path)
@@ -266,10 +315,33 @@ function onTreeRootDrop(e: DragEvent) {
         </button>
         <button
           class="icon-btn"
+          :class="{ active: state.gitPanel.tab === 'git' }"
+          :title="`Git（分支/工作区/历史）`"
+          :style="{ opacity: isGitAvailable() ? undefined : 0.35 }"
+          @click="onGitIcon"
+        >
+          🔀
+        </button>
+        <button
+          class="icon-btn"
           :title="`设置（${settings.shortcuts.settings || 'Ctrl+,'}）`"
-          @click="state.settingsOpen = true"
+          @click="openSettings('general')"
         >
           ⚙️
+        </button>
+        <button
+          class="icon-btn"
+          title="快捷键设置"
+          @click="openSettings('shortcuts')"
+        >
+          ⌨️
+        </button>
+        <button
+          class="icon-btn"
+          title="导出当前文档（PDF / DOCX / Markdown）"
+          @click="state.exportOpen = true"
+        >
+          📤
         </button>
       </div>
 
@@ -279,6 +351,7 @@ function onTreeRootDrop(e: DragEvent) {
         :style="{ width: settings.sidebarWidth + 'px' }"
       >
         <div class="sidebar-head">
+          <span class="app-logo" title="WriteIt">W</span>
           <span class="root-name" :title="state.rootName">{{ state.rootName }}</span>
           <button
             class="mini pin"
@@ -291,18 +364,36 @@ function onTreeRootDrop(e: DragEvent) {
           </button>
         </div>
         <div class="sidebar-actions">
-          <button
-            class="mini wide"
-            title="在文件树中定位当前文件（展开目录 + 高亮）"
-            @click="revealActiveFile"
-          >
-            🎯 定位
-          </button>
-          <button class="mini" title="新建文件" @click="startNewFile('')">＋文件</button>
-          <button class="mini" title="新建文件夹" @click="startNewDir('')">＋目录</button>
-          <button class="mini" title="刷新" @click="refreshTree">⟳</button>
+          <div class="panel-tabs">
+            <button
+              class="panel-tab"
+              :class="{ active: state.gitPanel.tab === 'files' }"
+              @click="state.gitPanel.tab = 'files'"
+            >
+              📁 文件
+            </button>
+            <button
+              class="panel-tab"
+              :class="{ active: state.gitPanel.tab === 'git', disabled: !isGitAvailable() }"
+              @click="onGitIcon"
+            >
+              🔀 Git
+            </button>
+          </div>
+          <template v-if="state.gitPanel.tab === 'files'">
+            <button
+              class="mini wide"
+              title="在文件树中定位当前文件（展开目录 + 高亮）"
+              @click="revealActiveFile"
+            >
+              🎯 定位
+            </button>
+            <button class="mini" title="新建文件" @click="startNewFile('')">＋文件</button>
+            <button class="mini" title="新建文件夹" @click="startNewDir('')">＋目录</button>
+            <button class="mini" title="刷新" @click="refreshTree">⟳</button>
+          </template>
         </div>
-        <div class="tree" @dragover="onTreeRootDragOver" @drop="onTreeRootDrop">
+        <div v-show="state.gitPanel.tab === 'files'" class="tree" @dragover="onTreeRootDragOver" @drop="onTreeRootDrop">
           <FileTree
             v-for="node in state.tree"
             :key="node.path"
@@ -323,6 +414,7 @@ function onTreeRootDrop(e: DragEvent) {
           </div>
           <p v-if="!state.tree.length" class="empty">空目录</p>
         </div>
+        <GitPanel v-show="state.gitPanel.tab === 'git'" />
       </div>
 
       <div class="resizer" title="拖拽调整宽度" @mousedown="startResize"></div>
@@ -340,7 +432,7 @@ function onTreeRootDrop(e: DragEvent) {
               :visible="tab.id === state.activeTabId"
             />
             <div v-if="!state.tabs.length" class="welcome">
-              <h2>🥛 Milkdown Note</h2>
+              <h2>WriteIt</h2>
               <p>从左侧文件树打开一个文件，或新建文件开始编辑。</p>
               <p class="hint">
                 快捷键：Ctrl+S 保存 · Ctrl+O 打开目录 · Ctrl+B 收纳侧边栏 · 更多在设置中查看
@@ -362,7 +454,10 @@ function onTreeRootDrop(e: DragEvent) {
         </template>
       </span>
       <span class="spacer"></span>
-      <span v-if="state.tabs.find((t) => t.id === state.activeTabId)?.sourceMode" class="mode-badge">
+      <span v-if="state.gitPanel.repo?.isRepo" class="git-badge" :title="state.gitPanel.repo.headHash ?? ''">
+        ⓘ {{ state.gitPanel.repo.branch ?? '(detached)' }}
+      </span>
+      <span v-if="state.tabs.find((t) => t.id === state.activeTabId)?.viewMode === 'source'" class="mode-badge">
         源码模式
       </span>
       <span>
@@ -372,9 +467,11 @@ function onTreeRootDrop(e: DragEvent) {
     </footer>
 
     <!-- 浮层 -->
-    <SettingsModal v-if="state.settingsOpen" @close="state.settingsOpen = false" />
+    <SettingsModal v-if="state.settingsOpen" :initial-tab="settingsTab" @close="state.settingsOpen = false" />
+    <ExportModal v-if="state.exportOpen" @close="state.exportOpen = false" />
     <ConfirmDialog />
     <ContextMenu @action="onMenuAction" />
+    <TabContextMenu @action="onTabMenuAction" />
     <TemplatePicker
       v-if="state.templatePick !== null"
       @pick="onTemplatePicked"
@@ -462,12 +559,28 @@ function onTreeRootDrop(e: DragEvent) {
 .sidebar-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--chrome-border);
   flex-shrink: 0;
 }
+.app-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #ffc454, #ff913c);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  user-select: none;
+}
 .root-name {
+  flex: 1;
   font-size: 12px;
   font-weight: 600;
   color: var(--chrome-on-surface-variant);
@@ -517,6 +630,36 @@ function onTreeRootDrop(e: DragEvent) {
   border-bottom: 1px solid var(--chrome-border);
   flex-shrink: 0;
   align-items: center;
+}
+/* M11：内容列双面板 tab（文件 / Git） */
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.panel-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  font-size: 11px;
+  padding: 4px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.panel-tab.active {
+  background: var(--chrome-selected);
+  color: var(--chrome-primary);
+  font-weight: 600;
+}
+.panel-tab:hover:not(.disabled) {
+  background: var(--chrome-hover);
+}
+.panel-tab.disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .mini.wide {
   flex: 1;
@@ -638,6 +781,16 @@ function onTreeRootDrop(e: DragEvent) {
   font-size: 11px;
   background: var(--chrome-selected);
   color: var(--chrome-primary);
+}
+.git-badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--chrome-selected);
+  color: var(--chrome-primary);
+  font-family: ui-monospace, Consolas, monospace;
+  cursor: default;
 }
 .backend {
   flex-shrink: 0;

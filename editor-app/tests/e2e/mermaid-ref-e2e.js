@@ -50,7 +50,7 @@ const { chromium } = require('playwright');
   // ---- B: 点击跳转 ----
   await page.locator('.preview a.mmd-text-ref').first().click();
   await page.waitForTimeout(2500);
-  const activeTab = await page.evaluate(() => document.querySelector('[class*=tab].active, .tabbar-tab.active')?.textContent?.trim());
+  const activeTab = await page.evaluate(() => document.querySelector('.tabbar .tab.active')?.textContent?.trim());
   ok('B1: 点击引用打开目标文档（loan_apply.md）', (activeTab || '').includes('loan_apply'));
 
   // ---- C: 代码块内 @ 联想（回到引用测试文档） ----
@@ -267,7 +267,7 @@ const { chromium } = require('playwright');
   ok('H1: 时序图消息文本链接化（tspan）', tspans.some(t => t === '数据库/loan/loan_apply#amount'));
   await page.locator('.preview tspan.mmd-text-ref').first().click();
   await page.waitForTimeout(2500);
-  const seqActive = await page.evaluate(() => document.querySelector('[class*=tab].active')?.textContent?.trim());
+  const seqActive = await page.evaluate(() => document.querySelector('.tabbar .tab.active')?.textContent?.trim());
   ok('H2: 时序图 tspan 点击跳转', (seqActive || '').includes('loan_apply'));
 
   // H3: 边标签引用链接化（a.mmd-text-ref）

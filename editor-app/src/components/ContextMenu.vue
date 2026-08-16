@@ -1,9 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { state } from '../state/store'
+import { isEditableFile, baseName } from '../fs/types'
 
 const emit = defineEmits<{
   (e: 'action', action: string, path: string, kind: 'file' | 'dir'): void
 }>()
+
+/** 当前菜单项是否可打开/编辑（目录与可编辑文件为 true；其他类型文件仅展示） */
+const canOpen = computed(() => {
+  const c = state.contextMenu
+  if (!c) return false
+  return c.kind === 'dir' || isEditableFile(baseName(c.path))
+})
 
 function run(action: string) {
   if (state.contextMenu) {
@@ -30,7 +39,8 @@ function close() {
         :style="{ left: state.contextMenu.x + 'px', top: state.contextMenu.y + 'px' }"
       >
         <template v-if="state.contextMenu.kind === 'file'">
-          <button class="menu-item" @click="run('open')">打开</button>
+          <button v-if="canOpen" class="menu-item" @click="run('open')">打开</button>
+          <button v-if="canOpen" class="menu-item" @click="run('gitDiff')">Git 改动</button>
           <button class="menu-item" @click="run('rename')">重命名</button>
           <button class="menu-item danger" @click="run('delete')">删除</button>
         </template>

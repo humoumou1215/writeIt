@@ -26,6 +26,9 @@ const SUITES = [
   'm9-placeholder-e2e', // M9 占位符：{{}} decoration 渲染（代码块内保留字面）
   'mermaid-zoom-e2e', // Mermaid 预览放大查看（悬停放大镜 + Lightbox + ESC）
   'mermaid-ref-e2e', // M9 Mermaid 代码块 @ 联想 + 文本级引用跳转
+  'export-e2e',     // M10 导出：默认 PDF/DOCX/MD + 设置导出页签 + export.ts 自定义
+  'git-m11a-e2e',   // M11 Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程）
+  'git-m11a-smoke', // M11 浏览器降级：Git 图标灰置 + toast + 面板错误提示
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 

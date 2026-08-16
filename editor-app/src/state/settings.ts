@@ -41,6 +41,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'nextFile', label: '下一个文件', default: 'Alt+ArrowDown' },
   { id: 'toggleSidebar', label: '收纳/展开侧边栏', default: 'Ctrl+B' },
   { id: 'toggleSource', label: '切换源码/编辑模式', default: 'Ctrl+E' },
+  { id: 'gitDiff', label: '打开当前文件 Git 改动', default: 'Ctrl+Shift+D' },
   { id: 'settings', label: '打开设置', default: 'Ctrl+,' },
 ]
 
@@ -97,7 +98,6 @@ export interface AppSettings {
   theme: ThemeId
   autoSave: boolean
   autoSaveDelay: number // ms
-  showAllFiles: boolean
   /** 侧边栏内容列宽度（px） */
   sidebarWidth: number
   /** 侧边栏是否固定（固定后打开文件不自动收纳） */
@@ -116,7 +116,6 @@ const defaultSettings: AppSettings = {
   theme: 'frame',
   autoSave: false,
   autoSaveDelay: 2000,
-  showAllFiles: false,
   sidebarWidth: 250,
   sidebarPinned: false,
   templateDir: '',

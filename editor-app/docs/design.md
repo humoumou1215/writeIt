@@ -1,6 +1,8 @@
 # Milkdown Note — 模板与引用机制设计文档
 
 > 状态：设计定稿（v0.1，M1-M4 已实现）｜ 范围：设计文档 + 实现进展记录
+> 里程碑：M1–M10 已实现（最新：M10 template→.template / Mermaid 引用，2026-08-15）
+> 下一步：**M11 Git 工作台** → 见 [git-workbench.md](git-workbench.md)（设计已定稿）
 > 前置知识：Milkdown（Crepe）节点 schema / SlashProvider / NodeView / ProseMirror decorations
 
 ---
