@@ -25,7 +25,8 @@ jobs:
             timeout: 60
             bundles: nsis
           # macOS Intel (x64)：.app + DMG
-          - os: macos-13
+          # macos-13 已退役（2025-11）→ 用 macos-15-intel（GitHub 现役 Intel runner）
+          - os: macos-15-intel
             arch: x64
             timeout: 90
             bundles: app,dmg
