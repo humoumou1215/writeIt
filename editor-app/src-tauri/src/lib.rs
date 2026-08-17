@@ -35,13 +35,13 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
   Ok(p)
 }
 
-fn walk(dir: &Path, root: &Path) -> Vec<FsEntry> {
+fn walk(dir: &Path, root: &Path, show_all: bool) -> Vec<FsEntry> {
   let mut entries = Vec::new();
   if let Ok(rd) = fs::read_dir(dir) {
     for e in rd.flatten() {
       let name = e.file_name().to_string_lossy().to_string();
-      if name.starts_with('.') {
-        continue; // 隐藏文件默认跳过
+      if !show_all && name.starts_with('.') {
+        continue; // 隐藏文件默认跳过；showAll=true 时保留（.template 模板目录等需要可见）
       }
       let rel = e
         .path()
@@ -55,7 +55,7 @@ fn walk(dir: &Path, root: &Path) -> Vec<FsEntry> {
           name: name.clone(),
           path: rel,
           kind: "dir",
-          children: Some(walk(&e.path(), root)),
+          children: Some(walk(&e.path(), root, show_all)),
         });
       } else {
         // 所有文件类型都展示（非可编辑文件仅展示，不支持打开/编辑）
@@ -89,14 +89,14 @@ fn set_root(state: State<'_, AppState>, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn read_tree(state: State<'_, AppState>, _show_all: bool) -> Result<Vec<FsEntry>, String> {
+fn read_tree(state: State<'_, AppState>, show_all: bool) -> Result<Vec<FsEntry>, String> {
   let root = state
     .root
     .lock()
     .unwrap()
     .clone()
     .ok_or("尚未选择目录")?;
-  Ok(walk(&root, &root))
+  Ok(walk(&root, &root, show_all))
 }
 
 #[tauri::command]

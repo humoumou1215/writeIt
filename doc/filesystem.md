@@ -69,5 +69,5 @@ export const fs = new Proxy({} as FileSystem, {
 ## 4. 使用要点
 
 - 路径一律相对根目录、`/` 分隔（Rust 侧 `replace('\\', '/')` 归一化）。
-- 隐藏文件/目录（`.` 开头）默认跳过（Rust `walk` 直接 continue；mock 同理），`showAllFiles` 设置只影响"显示"不影响"可访问"。
-- `readTree(showAll)` 的 `showAll` 由设置项「显示所有文件」控制。
+- 隐藏文件/目录（`.` 开头）仅在 `showAll=false` 时跳过；`showAll=true` 时保留（`.template` 模板域等必须可见，模板扫描依赖）。
+- `readTree(showAll)`：前端树展示 / ref 菜单过滤「可编辑文件」之外的隐藏目录（`filterHiddenDirs`）；模板扫描用 `true` 拿到含 `.template` 的全量树。

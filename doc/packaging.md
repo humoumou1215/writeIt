@@ -44,7 +44,7 @@ npm run tauri build -- --bundles appimage
 | 命令 | 作用 | 备注 |
 |---|---|---|
 | `set_root` | 设置根目录 | 校验是目录 |
-| `read_tree` | 读整棵文件树 | 目录在前，名字排序；隐藏文件（`.` 开头）默认跳过；非 showAll 只含可编辑文件 + `template/` 前缀 |
+| `read_tree` | 读整棵文件树 | 目录在前，名字排序；隐藏文件（`.` 开头）仅 `showAll=false` 时跳过；`showAll=true` 保留全部（`.template` 模板域依赖） |
 | `read_file` / `write_file` | 读写文件 | 自动建父目录；`resolve()` 校验不越界（`starts_with(root)`） |
 | `create_file` / `create_dir` | 新建 | 已存在报错 |
 | `rename` | 重命名/移动 | 目标已存在报错；自动建父目录 |
