@@ -2,13 +2,20 @@
 // 内容库（独立 git 仓库 `/Users/huyongsheng/project/消金业务合作平台`）是唯一源：mock 浏览器演示数据跟随内容库。predev/prebuild 自动执行。
 // 用法：node scripts/sync-demo.mjs          （生成）
 //       node scripts/sync-demo.mjs --check  （校验：有差异则 exit 1，供 CI）
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+// 注意：CI/其他机器没有本地内容库目录时自动跳过（改用已入库的 mock-samples.generated.ts）。
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = '/Users/huyongsheng/project/消金业务合作平台'
 const OUT = join(__dirname, '../src/fs/mock-samples.generated.ts')
+
+// 本地内容库不存在（CI、其他机器）：直接使用已入库的生成文件，跳过同步
+if (!existsSync(ROOT)) {
+  console.log(`[sync-demo] 跳过：本地内容库 ${ROOT} 不存在（CI/其他机器）——使用已入库的 mock-samples.generated.ts`)
+  process.exit(0)
+}
 
 const esc = (s) => s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
 
