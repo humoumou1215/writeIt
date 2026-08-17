@@ -99,6 +99,55 @@ function resolveChromium() {
   check('无结果提示', (emptyText ?? '').includes('没有找到'));
   await page.locator('.sp-opt').click();
   check('大小写开关可切换', await page.locator('.sp-opt').evaluate((el) => el.classList.contains('on')));
+  await page.locator('.sp-opt').click(); // 恢复忽略大小写
+
+  // ===== 7. 替换功能：全部替换 → 确认 → 数据变更 + 缓存失效 =====
+  await page.locator('.sp-input').fill('助贷放款');
+  await waitHits(1);
+  await page.waitForTimeout(400);
+  const hitsBefore = await hitCount();
+  check('替换行可见', await page.locator('.sp-replace-row').isVisible());
+  await page.locator('.sp-rinput').fill('助贷放款TEST');
+  await page.locator('.sp-btn.danger').click(); // 全部替换
+  await page.waitForTimeout(600);
+  check('确认框出现', await page.locator('.modal').isVisible());
+  await page.locator('.modal .btn.danger, .modal button:has-text("全部替换")').click();
+  await page.waitForTimeout(2500);
+  check('替换成功 toast', ((await page.locator('.toast').last().textContent()) ?? '').includes('已替换'));
+  check('替换后旧词命中归零', (await hitCount()) === 0);
+  await page.locator('.sp-input').fill('助贷放款TEST');
+  await waitHits(1);
+  check('替换后新词命中', (await hitCount()) >= hitsBefore);
+  // 恢复 mock 示例数据（设置页刷新）
+  await page.locator('.sp-input').press('Escape');
+  await page.locator('.sp-input').press('Escape');
+  await page.locator('button[title^="设置"]').click();
+  await page.waitForTimeout(600);
+  await page.locator('button:has-text("刷新 Mock 示例数据")').click();
+  await page.waitForTimeout(2000);
+  await page.locator('.modal-mask, .modal').count(); // 兜底等待
+  await page.keyboard.press('Escape');
+
+  // ===== 8. 跳转定位 + 编辑器内高亮 =====
+  await page.locator('button[title^="全局搜索"]').click();
+  await page.waitForTimeout(300);
+  await page.locator('.sp-input').fill('助贷放款');
+  await waitHits(1);
+  await page.locator('.sp-hit').first().click();
+  await page.waitForTimeout(2500);
+  check('点击结果打开文件', ((await page.locator('.tab-name').allTextContents()) || []).length > 0);
+  check('编辑器内命中词高亮', (await page.locator('.milkdown .search-hit-highlight').count()) > 0);
+  check('同文件所有匹配都高亮', (await page.locator('.milkdown .search-hit-highlight').count()) >= (await page.locator('.sp-hit').count()));
+  check('当前命中带橙红闪烁样式', await page.locator('.milkdown .search-hit-current').first().evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return cs.animationName.includes('pulse') && (cs.color === 'rgb(255, 255, 255)');
+  }));
+  check('普通命中淡橙无动画', await page.locator('.milkdown .search-hit-highlight:not(.search-hit-current)').first().evaluate((el) => getComputedStyle(el).animationName === 'none'));
+  // 编辑一次 → 高亮自动清除
+  await page.locator('.milkdown .ProseMirror').click({ position: { x: 40, y: 40 } });
+  await page.keyboard.type('x');
+  await page.waitForTimeout(600);
+  check('编辑后高亮自动清除', (await page.locator('.milkdown .search-hit-highlight').count()) === 0);
 
   console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
   console.log(errors.length ? '页面错误:\n' + errors.join('\n') : '');

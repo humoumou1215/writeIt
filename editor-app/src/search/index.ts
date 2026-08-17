@@ -81,6 +81,12 @@ export async function readSearchDiskContent(path: string): Promise<string> {
   return fs.readFile(path)
 }
 
+/** 替换等写盘操作后调用：使内容缓存失效，保证下次搜索读到新内容 */
+export function invalidateSearchCache(): void {
+  contentCache.clear()
+  cacheTreeVersion = -1
+}
+
 function matchLines(content: string, rawQuery: string, opts: SearchOptions): SearchHit[] {
   const needle = opts.caseSensitive ? rawQuery : rawQuery.toLowerCase()
   const lines = content.split('\n')

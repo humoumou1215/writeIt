@@ -84,10 +84,13 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id] of newNodes) {
+  for (const [id, info] of newNodes) {
     const old = oldNodes.get(id)
     if (!old) add.push(id)
-    // M16：标签修改不再单独标注（黄），二元语义：仅增/删；同 id 标签变化视为节点仍在，不打扰
+    // M16b：同 id 标签变化（两侧都有真实形状）→ mod（渲染：绿新 + 红旧划线附加；统计算 删+增 各 1）
+    else if (old.hasShape && info.hasShape && old.label !== info.label) {
+      mod.push({ id, old: old.label, new: info.label })
+    }
   }
   for (const id of oldNodes.keys()) {
     if (!newNodes.has(id)) del.push(id)
@@ -117,6 +120,23 @@ function mergeFlowchart(
 // ---------- sequence ----------
 
 const SEQ_MSG_RE = /^\s*([A-Za-z0-9_]+)\s*(->>|-->>|->|-->|-)>\s*([A-Za-z0-9_]+)\s*:\s*(.*)$/
+const SEQ_PART_RE = /^\s*participant\s+([A-Za-z0-9_]+)(?:\s+as\s+(.+))?$/
+
+/** 参与者行（含原文） */
+interface SeqPartRow {
+  id: string
+  label: string
+  line: string
+}
+
+function extractPartRows(src: string): SeqPartRow[] {
+  const rows: SeqPartRow[] = []
+  for (const line of src.split('\n')) {
+    const m = SEQ_PART_RE.exec(line)
+    if (m) rows.push({ id: m[1], label: (m[2] || m[1]).trim(), line })
+  }
+  return rows
+}
 
 /** 消息行（含原文，供删除消息加回渲染） */
 interface SeqMsgRow {
@@ -137,12 +157,20 @@ function extractSequenceRows(src: string): SeqMsgRow[] {
   return rows
 }
 
-/** 简单 LCS 文本序列 diff（按序标记增删；M16：去掉 mod 配对——修改视为删+增二元） */
+/** 简单 LCS 文本序列 diff（按序标记增删；M16：去掉 mod 配对——修改视为删+增二元）
+ *  steps：每一步的对齐决策（ctx/del/add + 两侧索引），供按序重建 merged（删除消息插回原位） */
+interface SeqStep {
+  kind: 'ctx' | 'del' | 'add'
+  oldIdx: number
+  newIdx: number
+}
+
 function diffTextSeq(oldSeq: string[], newSeq: string[]): {
   add: string[]
   del: string[]
   mod: MermaidMod[]
   messages: Array<{ kind: 'add' | 'del'; text: string }>
+  steps: SeqStep[]
 } {
   const n = oldSeq.length
   const m = newSeq.length
@@ -154,28 +182,39 @@ function diffTextSeq(oldSeq: string[], newSeq: string[]): {
   const add: string[] = []
   const del: string[] = []
   const messages: Array<{ kind: 'add' | 'del'; text: string }> = []
+  const steps: SeqStep[] = []
   let i = 0
   let j = 0
   while (i < n && j < m) {
     if (oldSeq[i] === newSeq[j]) {
+      steps.push({ kind: 'ctx', oldIdx: i, newIdx: j })
       i++
       j++
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
       del.push(oldSeq[i])
       messages.push({ kind: 'del', text: oldSeq[i] })
+      steps.push({ kind: 'del', oldIdx: i, newIdx: -1 })
       i++
     } else {
       add.push(newSeq[j])
       messages.push({ kind: 'add', text: newSeq[j] })
+      steps.push({ kind: 'add', oldIdx: -1, newIdx: j })
       j++
     }
   }
   while (i < n) {
     del.push(oldSeq[i])
     messages.push({ kind: 'del', text: oldSeq[i] })
+    steps.push({ kind: 'del', oldIdx: i, newIdx: -1 })
     i++
   }
-  return { add, del, mod: [], messages }
+  while (j < m) {
+    add.push(newSeq[j])
+    messages.push({ kind: 'add', text: newSeq[j] })
+    steps.push({ kind: 'add', oldIdx: -1, newIdx: j })
+    j++
+  }
+  return { add, del, mod: [], messages, steps }
 }
 
 function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
@@ -185,16 +224,39 @@ function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
     oldRows.map((x) => x.msg),
     newRows.map((x) => x.msg)
   )
-  // M16：删除消息按原行加回底部（红标），否则二元渲染下看不到被删消息
-  const delLines = new Set(oldRows.filter((x) => r.del.includes(x.msg)).map((x) => x.line))
-  const merged = newSrc + (delLines.size ? '\n' + [...delLines].join('\n') : '')
+  // M16b：删除消息按 LCS 对齐步骤插回原位（先删旧线、再增新线，保持时序顺序），非消息行原位保留
+  const seqLines: string[] = r.steps.map((s) =>
+    s.kind === 'del' ? oldRows[s.oldIdx].line : newRows[s.newIdx].line
+  )
+  const newLines = newSrc.split('\n')
+  let si = 0
+  const mergedLines: string[] = []
+  for (const ln of newLines) {
+    if (SEQ_MSG_RE.test(ln.trim())) {
+      mergedLines.push(si < seqLines.length ? seqLines[si++] : ln)
+    } else {
+      mergedLines.push(ln)
+    }
+  }
+  while (si < seqLines.length) mergedLines.push(seqLines[si++])
+  // M16b：participant 参与者行增删标注（新增绿 / 删除红）——删除行加回 merged
+  const messages = [...r.messages]
+  const oldParts = extractPartRows(oldSrc)
+  const newParts = extractPartRows(newSrc)
+  const delParts = oldParts.filter((p) => !newParts.some((n) => n.id === p.id))
+  const addParts = newParts.filter((p) => !oldParts.some((n) => n.id === p.id))
+  for (const p of delParts) {
+    messages.push({ kind: 'del', text: p.label })
+    mergedLines.push(p.line)
+  }
+  for (const p of addParts) messages.push({ kind: 'add', text: p.label })
   return {
     type: 'sequence',
-    add: r.add,
-    del: r.del,
+    add: [...r.add, ...addParts.map((p) => p.label)],
+    del: [...r.del, ...delParts.map((p) => p.label)],
     mod: r.mod,
-    merged,
-    messages: r.messages,
+    merged: mergedLines.join('\n'),
+    messages,
   }
 }
 
@@ -222,28 +284,38 @@ function diffState(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id] of newStates) {
+  for (const [id, info] of newStates) {
     if (!oldStates.has(id)) add.push(id)
-    // M16：同 id 标签变化不再标注（二元增删语义）
+    // M16b：同 id 标签变化 → mod（渲染：绿新 + 红旧划线附加）
+    else if (oldStates.get(id)!.label !== info.label) mod.push({ id, old: oldStates.get(id)!.label, new: info.label })
   }
   for (const id of oldStates.keys()) if (!newStates.has(id)) del.push(id)
-  const merged = mergeState(newSrc, oldStates, { add, del, mod })
+  const merged = mergeState(newSrc, oldStates, oldSrc.split('\n'), { add, del, mod })
   return { type: 'state', add, del, mod, merged }
 }
 
 function mergeState(
   newSrc: string,
   oldStates: Map<string, StNodeInfo>,
+  oldSrcLines: string[],
   diff: { add: string[]; del: string[]; mod: MermaidMod[] }
 ): string {
   const out = newSrc.split('\n')
-  // 删除状态加回（原定义行，渲染后 DOM 标注）
   const addedLines = new Set<string>()
   for (const id of diff.del) {
     const info = oldStates.get(id)
-    if (info && !addedLines.has(info.line)) {
-      out.push(info.line)
-      addedLines.add(info.line)
+    if (!info) continue
+    // M16b：删除状态加回「定义行 + 所有含该 id 的过渡行」（WAIT --> ROUTED / ROUTED --> LENDING），
+    //   否则删除状态孤立、过渡线丢失（红标应同时覆盖节点与边）
+    for (const line of oldSrcLines) {
+      const t = line.trim()
+      if (addedLines.has(line)) continue
+      const isDef = t === info.line.trim()
+      const isTransition = /\s*\w+\s*-->\s*\w+\s*$/.test(t) && t.includes(id)
+      if (isDef || isTransition) {
+        out.push(line)
+        addedLines.add(line)
+      }
     }
   }
   return out.join('\n')

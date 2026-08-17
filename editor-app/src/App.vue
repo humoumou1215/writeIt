@@ -905,20 +905,72 @@ function onTreeRootDrop(e: DragEvent) {
 </style>
 
 <style>
-/* 搜索结果高亮（编辑器内，非 scoped：编辑器 DOM 不在组件模板内） */
+/* ===== 搜索结果高亮（编辑器内，非 scoped：编辑器 DOM 不在组件模板内） =====
+/* 橙红色系固定变量：不依赖主题 primary，深浅主题下都一致（不要太浓艳） */
+:root {
+  --search-hit-bg: rgba(232, 118, 42, 0.26);
+  --search-hit-fg: #b45309;
+  --search-hit-current-bg: rgba(233, 88, 20, 0.58);
+  --search-hit-current-fg: #fff;
+}
+/* 同文件所有匹配词：淡橙底 + 深橙字 */
 .milkdown .search-hit-highlight {
-  background: color-mix(in srgb, var(--crepe-color-primary, var(--chrome-primary)) 34%, transparent);
-  color: var(--crepe-color-on-background, inherit);
+  background: var(--search-hit-bg);
+  color: var(--search-hit-fg);
+  font-weight: 600;
   border-radius: 3px;
   padding: 0 1px;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
-  transition: background 0.25s ease;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--search-hit-fg) 30%, transparent);
+  transition: background 0.15s ease;
 }
-/* 原子节点（嵌入卡片）内命中：整卡淡色高亮 + 左侧强调条 */
+/* 当前选中的命中：饱和橙红底 + 白字 + 微弱呼吸闪烁 */
+.milkdown .search-hit-current {
+  background: var(--search-hit-current-bg);
+  color: var(--search-hit-current-fg);
+  font-weight: 700;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--search-hit-current-bg) 90%, transparent);
+  animation: search-hit-pulse 1.8s ease-in-out infinite;
+}
+@keyframes search-hit-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(233, 88, 20, 0.45), 0 0 2px rgba(233, 88, 20, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(233, 88, 20, 0.75), 0 0 8px rgba(233, 88, 20, 0.55);
+  }
+}
+/* 原子节点（嵌入卡片）内命中：整卡淡橙高亮 + 左侧强调条 */
 .milkdown .search-hit-highlight-node {
-  background: color-mix(in srgb, var(--crepe-color-primary, var(--chrome-primary)) 14%, transparent);
+  background: var(--search-hit-bg);
   border-radius: 8px;
-  box-shadow: inset 3px 0 0 var(--crepe-color-primary, var(--chrome-primary));
+  box-shadow: inset 3px 0 0 rgba(233, 88, 20, 0.7);
+  outline: 1px solid color-mix(in srgb, var(--search-hit-fg) 35%, transparent);
+  outline-offset: 2px;
+}
+/* 原子/代码块命中：块前徽标提示 */
+.milkdown .search-hit-widget {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  color: #fff;
+  background: #e0582c;
+  border-radius: 999px;
+  padding: 0 7px;
+  margin-right: 5px;
+  vertical-align: middle;
+  box-shadow: 0 1px 4px rgba(224, 88, 44, 0.5);
+  animation: search-hit-pulse 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .milkdown .search-hit-highlight,
+  .milkdown .search-hit-current,
+  .milkdown .search-hit-widget {
+    animation: none !important;
+  }
 }
 </style>

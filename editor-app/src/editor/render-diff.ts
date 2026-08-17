@@ -19,6 +19,10 @@ export interface RenderDiffOptions {
   hunks: DiffHunk[]
   refCfg: RefConfig
   path: string
+  /** M16b：当前 diff 的对比基准（工作区 from=null to=HEAD；提交对比 from=sha^ to=sha）——嵌入摘要用它计算源文件改动 */
+  from: string | null
+  to: string
+  baseLabel: string
   onFallback?: (reason: string) => void
 }
 
@@ -97,7 +101,8 @@ async function mountRenderCrepe(
 
 /** mermaid 渲染后 DOM 标注（M14：不用 classDef/id:::class 语法）：
  *  flowchart / stateDiagram → 按节点 id 定位 SVG <g> 元素加 class（add 绿 / del 红虚线划线）
- *  sequence → 按消息文本定位加 class（add 绿 / del 红）——M16：去掉黄色 mod，二元增删语义 */
+ *  mod（同 id 标签变化）→ 节点绿（新）+ 节点下追加红划线旧值小字；
+ *  sequence → 按消息文本精确匹配加 class（add 绿 / del 红）——M16b：二元语义 */
 function applyMermaidAnnotations(target: HTMLElement, mermaidList: MermaidNodeDiff[]) {
   for (const d of mermaidList) {
     const svg = target.querySelector(
@@ -118,18 +123,37 @@ function applyMermaidAnnotations(target: HTMLElement, mermaidList: MermaidNodeDi
     }
     if (d.type !== 'flowchart' && d.type !== 'state') continue
     const prefix = d.type === 'flowchart' ? 'flowchart' : 'state'
-    // <g class="node|state"> 的 id 形如 "mmd-N-flowchart-A-0"（带 mermaid 实例前缀）→ 子串匹配
     const nodes = [...svg.querySelectorAll('g.node, g.state')] as HTMLElement[]
-    const apply = (id: string, cls: string) => {
-      if (!id) return
-      const el = nodes.find((g) => {
+    const findById = (id: string) =>
+      nodes.find((g) => {
         const gid = g.id || ''
         return gid.includes(`-${prefix}-${id}-`) || gid.endsWith(`-${prefix}-${id}`)
       })
+    const apply = (id: string, cls: string) => {
+      if (!id) return
+      const el = findById(id)
       if (el) el.classList.add(cls)
     }
     for (const id of d.add) apply(id, 'diff-node-add')
     for (const id of d.del) apply(id, 'diff-node-del')
+    // M16b：标签修改 → 节点绿（新值）+ 节点下方红划线旧值（体现「删除后新增」）
+    for (const m of d.mod) {
+      const g = findById(m.id)
+      if (!g) continue
+      g.classList.add('diff-node-add')
+      g.classList.add('diff-node-mod')
+      const old = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      old.setAttribute('class', 'diff-mod-old')
+      old.textContent = m.old
+      const label = g.querySelector('.nodeLabel, .state-label, text') as SVGTextElement | null
+      if (label) {
+        const b = label.getBBox ? label.getBBox() : null
+        old.setAttribute('x', String(b ? b.x + b.width / 2 : 0))
+        old.setAttribute('y', String(b ? b.y + b.height + 14 : 14))
+        old.setAttribute('text-anchor', 'middle')
+        g.appendChild(old)
+      }
+    }
   }
 }
 
@@ -158,17 +182,6 @@ function collectEmbedChanges(hunks: DiffHunk[]): EmbedChange[] {
     }
   }
   return [...addSet].map((path) => ({ kind: 'add' as const, path }))
-}
-
-/** 卡片路径（无扩展名）→ git 状态路径匹配（可能带 .md/.markdown/.txt 后缀） */
-function matchChangedPath(p: string, changed: string[]): string | null {
-  if (changed.includes(p)) return p
-  return changed.find((sp) => {
-    for (const ext of ['.md', '.markdown', '.txt']) {
-      if (sp === p + ext || sp.endsWith('/' + p + ext)) return true
-    }
-    return false
-  }) ?? null
 }
 
 /** 卡片头部徽标容器（.ref-embed-badges 绝对定位于卡片右上，多徽标纵向排列；同一徽标不重复） */
@@ -229,86 +242,122 @@ function buildMermaidSummary(delLines: string[], addLines: string[]): string | n
 }
 
 /** 内嵌源文件改动摘要：仅变化行（+/-） + mermaid 结构变化概要；表格分隔行噪音省略 */
-async function renderEmbedDiffSummary(changedPath: string): Promise<HTMLElement | null> {
-  const { git } = await import('../git')
-  let diff: Awaited<ReturnType<typeof git.diffFile>>
-  try {
-    diff = await git.diffFile(changedPath, null, 'HEAD')
-  } catch {
-    return null
-  }
-  const lines = diff.hunks.flatMap((h) => h.lines)
-  if (!lines.length) return null
-
-  const wrap = document.createElement('div')
-  wrap.className = 'ref-embed-diff-summary'
-  const title = document.createElement('div')
-  title.className = 'eds-title'
-  title.textContent = `源文件改动 → ${changedPath}`
-  title.title = '被嵌入模块（源文件）相对 HEAD 的未提交改动'
-  wrap.appendChild(title)
-
-  const delLines: string[] = []
-  const addLines: string[] = []
-  for (const l of lines) {
-    if (l.kind === 'add') addLines.push(l.text)
-    else if (l.kind === 'del') delLines.push(l.text)
-  }
-  // mermaid 结构变化概要
-  const mermaidRow = buildMermaidSummary(delLines, addLines)
-  if (mermaidRow) {
-    const row = document.createElement('div')
-    row.className = 'eds-line eds-mermaid'
-    row.textContent = mermaidRow
-    wrap.appendChild(row)
-  }
-  // mermaid 语法行已并入概要，避免重复逐行展示
-  const isMermaidSyntax = (t: string) => /->>|-->>|-->|==>|-\.->|^\s*state\s/.test(t)
-  const isSep = (s: string) => /^\s*\|/.test(s) && s.split('|').slice(1, -1).every((c) => /^:?-+:?$/.test(c.trim()))
-  for (const h of diff.hunks) {
-    for (const l of h.lines) {
-      if (l.kind === 'ctx') continue
-      if (isSep(l.text)) continue
-      if (isMermaidSyntax(l.text)) continue
-      const row = document.createElement('div')
-      row.className = 'eds-line ' + (l.kind === 'add' ? 'eds-add' : 'eds-del')
-      row.textContent = (l.kind === 'add' ? '+ ' : '− ') + l.text
-      wrap.appendChild(row)
-    }
-  }
-  return wrap
-}
-
-async function annotateEmbedDiffBadges(target: HTMLElement, hunks?: DiffHunk[]) {
-  const { git } = await import('../git')
-  if (!git.available) return
-  let changed: string[] = []
-  try {
-    changed = (await git.status()).map((s) => s.path)
-  } catch {
-    return
-  }
-  if (!changed.length) return
-  target.querySelectorAll('.ref-file-block').forEach((card) => {
-    const p = card.querySelector('.ref-file-block-path')?.textContent?.trim() ?? ''
-    if (!p) return
-    // ① 引用行本身是本次改动（新增/移除/变更）→ 头部徽标
-    const embeds = collectEmbedChanges(hunks ?? [])
-    const ec = embeds.find((c) => c.path === p)
-    if (ec) {
-      addCardBadge(card, 'ref-embed-add', '新增引用', '当前文件新增了此引用')
-    }
-    // ② 源文件有未提交改动 → 「内容有改动」角标 + 内嵌改动摘要
-    const changedPath = matchChangedPath(p, changed)
-    if (changedPath) {
-      addCardBadge(card, 'ref-embed-diff-badge', '内容有改动', `源文件 ${changedPath} 有未提交改动`)
-      if (!card.querySelector('.ref-embed-diff-summary')) {
-        void renderEmbedDiffSummary(changedPath).then((el) => {
-          if (el && card.isConnected) card.appendChild(el)
-        })
+/** 引用路径候选解析：优先带 .md 的已跟踪文件（diffFile 需要真实路径） */
+function resolveRefFilePath(p: string, base: DiffBaseRef): Promise<string | null> {
+  return (async () => {
+    const { git } = await import('../git')
+    for (const cand of [p, `${p}.md`, `${p}.markdown`, `${p}.txt`]) {
+      try {
+        const d = await git.diffFile(cand, base.from, base.to)
+        if (d && (d.hunks.length || d.exists)) return cand
+      } catch {
+        /* 尝试下一候选 */
       }
     }
-  })
+    return null
+  })()
+}
+
+/** 嵌入摘要结果缓存（path+from+to） */
+const embedSummaryCache = new Map<string, Promise<HTMLElement | null>>()
+
+async function renderEmbedDiffSummary(changedPath: string, base: DiffBaseRef): Promise<HTMLElement | null> {
+  const key = `${base.from ?? ''}..${base.to}::${changedPath}`
+  const hit = embedSummaryCache.get(key)
+  if (hit) return hit
+  const run = (async () => {
+    const { git } = await import('../git')
+    let diff: Awaited<ReturnType<typeof git.diffFile>>
+    try {
+      diff = await git.diffFile(changedPath, base.from, base.to)
+    } catch {
+      return null
+    }
+    const lines = diff.hunks.flatMap((h) => h.lines)
+    if (!lines.length) return null
+
+    const wrap = document.createElement('div')
+    wrap.className = 'ref-embed-diff-summary'
+    const title = document.createElement('div')
+    title.className = 'eds-title'
+    title.textContent = `源文件改动 → ${changedPath}`
+    title.title = `被嵌入模块（源文件）在「${base.label}」范围内的改动`
+    wrap.appendChild(title)
+
+    const delLines: string[] = []
+    const addLines: string[] = []
+    for (const l of lines) {
+      if (l.kind === 'add') addLines.push(l.text)
+      else if (l.kind === 'del') delLines.push(l.text)
+    }
+    // mermaid 结构变化概要
+    const mermaidRow = buildMermaidSummary(delLines, addLines)
+    if (mermaidRow) {
+      const row = document.createElement('div')
+      row.className = 'eds-line eds-mermaid'
+      row.textContent = mermaidRow
+      wrap.appendChild(row)
+    }
+    // mermaid 语法行已并入概要，避免重复逐行展示
+    const isMermaidSyntax = (t: string) => /->>|-->>|-->|==>|-\.->|^\s*state\s/.test(t)
+    const isSep = (s: string) => /^\s*\|/.test(s) && s.split('|').slice(1, -1).every((c) => /^:?-+:?$/.test(c.trim()))
+    for (const h of diff.hunks) {
+      for (const l of h.lines) {
+        if (l.kind === 'ctx') continue
+        if (isSep(l.text)) continue
+        if (isMermaidSyntax(l.text)) continue
+        const row = document.createElement('div')
+        row.className = 'eds-line ' + (l.kind === 'add' ? 'eds-add' : 'eds-del')
+        row.textContent = (l.kind === 'add' ? '+ ' : '− ') + l.text
+        wrap.appendChild(row)
+      }
+    }
+    return wrap
+  })()
+  embedSummaryCache.set(key, run)
+  return run
+}
+
+/** 嵌入 diff 对比基准 */
+interface DiffBaseRef {
+  from: string | null
+  to: string
+  label: string
+}
+
+/** M14/M16：嵌入块源文件在对比范围内有改动 → 卡片角标 + 内嵌改动摘要；
+ *  ① 引用行本身是本次改动（新增引用）→ 卡片头部绿徽标（删除由组合器输出缩略红行）
+ *  ② 源文件在 from..to 有改动（工作区 / commit 对比统一）→ 「内容有改动」角标 + 底部源文件改动摘要 */
+async function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined, base: DiffBaseRef) {
+  const embeds = collectEmbedChanges(hunks ?? [])
+  const cards = [...target.querySelectorAll('.ref-file-block')]
+  await Promise.all(
+    cards.map(async (card) => {
+      const p = card.querySelector('.ref-file-block-path')?.textContent?.trim() ?? ''
+      if (!p) return
+      // ① 引用行本身是本次改动（新增引用）→ 绿徽标
+      if (embeds.some((c) => c.path === p) && !card.querySelector('.ref-embed-add')) {
+        addCardBadge(card, 'ref-embed-add', '新增引用', '当前文件新增了此引用')
+      }
+      // ② 源文件在对比范围内有改动 → 角标 + 摘要
+      if (card.querySelector('.ref-embed-diff-badge') || card.querySelector('.ref-embed-diff-summary')) return
+      const changedPath = await resolveRefFilePath(p, base)
+      if (!changedPath) return
+      const d = await (async () => {
+        const { git } = await import('../git')
+        try {
+          return await git.diffFile(changedPath, base.from, base.to)
+        } catch {
+          return null
+        }
+      })()
+      if (d && d.hunks.length) {
+        addCardBadge(card, 'ref-embed-diff-badge', '内容有改动', `源文件 ${changedPath} 在「${base.label}」有改动`)
+        const el = await renderEmbedDiffSummary(changedPath, base)
+        if (el && card.isConnected) card.appendChild(el)
+      }
+    })
+  )
 }
 
 /** 渲染单 Crepe 组合 md 到 target。返回句柄 + 批注卡 + mermaid 变更（调用方负责 destroy） */
@@ -316,7 +365,8 @@ export async function renderDiffToContainer(
   target: HTMLElement,
   opts: RenderDiffOptions
 ): Promise<RenderDiffResult | null> {
-  const { oldMd, newMd, hunks, refCfg, path, onFallback } = opts
+  const { oldMd, newMd, hunks, refCfg, path, from, to, baseLabel, onFallback } = opts
+  const base = { from: from ?? null, to, label: baseLabel }
   let crepe: Crepe | null = null
   try {
     const { composedMd, notes, mermaid } = composeDiff({ oldMd, newMd, hunks, path })
@@ -331,7 +381,7 @@ export async function renderDiffToContainer(
     // mermaid 渲染完成 + 节点标注（异步）→ 立即 + 轮询补标
     const annotateNow = () => {
       applyMermaidAnnotations(target, mermaid)
-      void annotateEmbedDiffBadges(target, hunks)
+      void annotateEmbedDiffBadges(target, hunks, base)
     }
     annotateNow()
     setTimeout(annotateNow, 400)

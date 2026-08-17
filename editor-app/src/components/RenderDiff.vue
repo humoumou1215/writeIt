@@ -24,16 +24,47 @@ let renderSeq = 0
 
 // ---------- M14：diff 批注注入（notes → Annotation[] → 存量抽屉） ----------
 
-/** 在渲染 doc 中定位每个 note 的锚点 pos（diffDel/diffIns 按 value 匹配；mermaid 按 code_block 语言） */
+/** 在渲染 doc 中定位每个 note 的锚点 pos：
+ *  - diffIns/diffDel 按 value 精确匹配；新增 note 只匹配 diffIns、删除只匹配 diffDel（避免同名漂移）
+ *  - 相同 value 的多个 note 按文档顺序分配不同 pos（used 去重，如两处「一→二」）
+ *  - 新增/移除引用 note → 定位到 file_block 卡片节点（按 path 属性）
+ *  - mermaid → code_block 语言 */
 function computeNotePositions(notes: DiffNote[], crepe: Crepe): Map<string, number> {
   const positions = new Map<string, number>()
+  const used = new Set<number>()
   try {
     crepe.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx)
+      const doc = view.state.doc
+      const matchByValue = (needle: string, wantIns: boolean, wantDel: boolean): number => {
+        let pos = -1
+        doc.descendants((n, p) => {
+          if ((n.type.name === 'diffIns' && wantIns) || (n.type.name === 'diffDel' && wantDel)) {
+            if ((n.attrs.value as string) === needle && !used.has(p)) {
+              pos = p
+              return false
+            }
+          }
+          return true
+        })
+        if (pos >= 0) used.add(pos)
+        return pos
+      }
+      const matchFileBlock = (path: string): number => {
+        let pos = -1
+        doc.descendants((n, p) => {
+          if (n.type.name === 'file_block' && (n.attrs.path as string) === path) {
+            pos = p
+            return false
+          }
+          return true
+        })
+        return pos
+      }
       for (const note of notes) {
         if (note.kind === 'mermaid') {
           let pos = -1
-          view.state.doc.descendants((n, p) => {
+          doc.descendants((n, p) => {
             if (n.type.name === 'code_block' && (n.attrs.language as string) === 'mermaid') {
               pos = p
               return false
@@ -43,21 +74,33 @@ function computeNotePositions(notes: DiffNote[], crepe: Crepe): Map<string, numb
           positions.set(note.id, pos)
           continue
         }
-        // 锚点：M16 起 note.anchor 即为精确查找串（表格行=首个变更单元格；普通行/词级=标记文本）。
-        // 注意：diffDel/diffIns 的 value 是精确文本（含前导空格），不能 trim
+        // 引用增删卡 → 定位到 file_block 卡片
+        if (note.text.startsWith('新增了引用') || note.text.startsWith('移除了引用')) {
+          const path = ((note.add ?? note.del ?? '').replace(/^!\[\[/, '').replace(/\]\]$/, '')).trim()
+          let pos = -1
+          doc.descendants((n, p) => {
+            if (n.type.name === 'file_block' && (n.attrs.path as string) === path) {
+              pos = p
+              return false
+            }
+            return true
+          })
+          positions.set(note.id, pos)
+          continue
+        }
         const needle = (note.anchor || note.add || note.del || '').split('\n')[0]
         if (!needle.trim()) {
           positions.set(note.id, -1)
           continue
         }
-        let pos = -1
-        view.state.doc.descendants((n, p) => {
-          if ((n.type.name === 'diffIns' || n.type.name === 'diffDel') && (n.attrs.value as string) === needle) {
-            pos = p
-            return false
-          }
-          return true
-        })
+        // 新增 note 匹配 diffIns；删除 note 匹配 diffDel；两者都有（词级改）→ 先匹配新增值
+        const wantIns = !note.del || !!note.add
+        const wantDel = !note.add || !!note.del
+        let pos = matchByValue(needle, wantIns, wantDel)
+        // 词级「修改A为B」：needle=新增值；若新增值也找不到再退回删除值节点
+        if (pos < 0 && note.add && note.del && note.anchor === note.del) {
+          pos = matchByValue(note.del, false, true)
+        }
         positions.set(note.id, pos)
       }
     })
@@ -99,6 +142,9 @@ async function render() {
       hunks: d.hunks,
       path: d.path,
       refCfg: buildRenderRefCfg(),
+      from: d.base?.from ?? null,
+      to: d.base?.to ?? 'HEAD',
+      baseLabel: d.base?.label ?? '工作区 vs HEAD',
       onFallback: (reason: string) => {
         if (seq !== renderSeq) return
         status.value = reason
@@ -369,17 +415,14 @@ onBeforeUnmount(() => {
   text-decoration-thickness: 1.5px !important;
   opacity: 0.85;
 }
-:deep(.diff-node-mod rect),
-:deep(.diff-node-mod circle),
-:deep(.diff-node-mod .node-bkg) {
-  fill: color-mix(in srgb, #b58900, transparent 80%) !important;
-  stroke: #b58900 !important;
-  stroke-width: 2px !important;
-}
-:deep(.diff-node-mod .nodeLabel),
-:deep(.diff-node-mod .state-label) {
-  color: #6d5300 !important;
-  font-weight: 600 !important;
+/* M16b：标签修改节点 —— 节点本身绿（新值，diff-node-add 生效），节点下方追加红划线旧值小字 */
+:deep(.diff-mod-old) {
+  fill: #c62828 !important;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
 }
 /* sequence 消息标注（M16：红删/绿增二元） */
 :deep(.diff-seq-add) {

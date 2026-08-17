@@ -14,6 +14,7 @@ import {
   highlightSegments,
   replaceInContent,
   readSearchDiskContent,
+  invalidateSearchCache,
   type SearchFileGroup,
   type SearchHit,
 } from '../search'
@@ -173,6 +174,8 @@ async function doReplace(scope: 'selected' | 'all') {
     if (updated.size) {
       const { syncTabsAfterReplace } = await import('../editor/manager')
       const skipped = await syncTabsAfterReplace(updated)
+      // 写盘后使搜索内容缓存失效（下次搜索读到新内容）
+      invalidateSearchCache()
       const skipNote = skipped.length ? `；跳过未保存标签 ${skipped.length} 个` : ''
       toast(
         scope === 'all'
@@ -658,15 +661,35 @@ watch(selected, () => {
   color: var(--chrome-on-background);
 }
 .sp-mark {
-  background: color-mix(in srgb, var(--chrome-primary) 32%, transparent);
-  color: var(--chrome-primary);
+  background: rgba(232, 118, 42, 0.3);
+  color: #b45309;
+  font-weight: 600;
   border-radius: 3px;
   padding: 0 1px;
   box-decoration-break: clone;
+  box-shadow: 0 0 0 1px rgba(232, 118, 42, 0.25);
+  transition: background 0.15s ease, color 0.15s ease;
 }
+/* 选中命中：橙红实底 + 白字 + 微弱呼吸闪烁 */
 .sp-hit.sel .sp-mark {
-  background: var(--chrome-primary);
-  color: var(--chrome-on-primary, #fff);
+  background: #e0582c;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(224, 88, 44, 0.6);
+  animation: sp-mark-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sp-mark-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(224, 88, 44, 0.5), 0 0 2px rgba(224, 88, 44, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(224, 88, 44, 0.8), 0 0 8px rgba(224, 88, 44, 0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sp-hit.sel .sp-mark {
+    animation: none !important;
+  }
 }
 .sp-empty {
   padding: 22px 10px;

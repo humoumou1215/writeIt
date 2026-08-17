@@ -222,12 +222,13 @@ function mergeTablePair(del: DiffLine, add: DiffLine, out: string[], notes: Diff
   notes.push(makeNote('table', '修改了表格单元格', anchorD || del.text, anchorA || add.text, anchorA || add.text))
 }
 
-/** 列表项 / 引用块行首 marker 保留正则：{++..++} 不能包住 marker，
- *  否则 `- 事项` 变成 `{++- 事项++}` 会失去列表/引用语义被吞入上一行（M16 修复） */
+/** 列表项 / 引用块 / 标题行首 marker 保留正则：{++..++} 不能包住 marker，
+ *  否则 `- 事项` 变成 `{++- 事项++}` 会失去块语义被吞入上一行（M16 修复） */
 const LIST_MARK_RE = /^(\s*(?:[-+*]|\d+[.)])\s+)(.*)$/
 const QUOTE_MARK_RE = /^(\s*>[ >]*\s*)(.*)$/
+const HEADING_MARK_RE = /^(\s*(#{1,6})\s+)(.*)$/
 
-/** 行级标记：表格行 → 逐单元格标记（整行包 {++..++} 会被 GFM 表格解析吃掉）；普通行 → 整行标记；列表/引用 → 保留 marker */
+/** 行级标记：表格行 → 逐单元格标记；块 marker（列表/引用/标题）保留标记外；普通行 → 整行标记 */
 function markLine(line: string, kind: 'add' | 'del'): { text: string; anchor: string } {
   if (TABLE_RE.test(line)) {
     // M16：表格分隔行原样输出（标记会破坏 GFM 分隔行识别 → 整表退化为段落）
@@ -238,26 +239,45 @@ function markLine(line: string, kind: 'add' | 'del'): { text: string; anchor: st
     )
     return { text: `| ${marked.join(' | ')} |`, anchor: cells.find((c) => c) ?? '' }
   }
+  const mark = (marker: string, inner: string): { text: string; anchor: string } => ({
+    text: `${marker}${kind === 'add' ? `{++${inner}++}` : `{--${inner}--}`}`,
+    anchor: inner,
+  })
   // 列表项：marker 保留在标记外（- / 1. 等），内容做标记
   const lm = LIST_MARK_RE.exec(line)
-  if (lm && lm[2]) {
-    return {
-      text: `${lm[1]}${kind === 'add' ? `{++${lm[2]}++}` : `{--${lm[2]}--}`}`,
-      anchor: lm[2],
-    }
-  }
+  if (lm && lm[2]) return mark(lm[1], lm[2])
   // 引用块（> 前缀）同理
   const qm = QUOTE_MARK_RE.exec(line)
-  if (qm && qm[2]) {
-    return {
-      text: `${qm[1]}${kind === 'add' ? `{++${qm[2]}++}` : `{--${qm[2]}--}`}`,
-      anchor: qm[2],
-    }
-  }
+  if (qm && qm[2]) return mark(qm[1], qm[2])
+  // 标题（## 等）：marker 保留 → 仍是标题元素
+  const hm = HEADING_MARK_RE.exec(line)
+  if (hm && hm[3]) return mark(hm[1], hm[3])
   return { text: kind === 'add' ? `{++${line}++}` : `{--${line}--}`, anchor: line }
 }
 
-/** 纯 del 段 → 每行 {--行--}（表格行逐单元格）；纯 add 段 → 每行 {++行++}；修改对 → 词级 {--}{++} 或整行重写 */
+/** 无共同内容的修改对 → 旧行红、新行绿 各占一段（比行内 {--..--}{++..++} 清晰；
+ *  也避免把两种块语义（如 `> 引用` 与 `## 标题`）拼进同一行 */
+function pushReplacedPair(del: DiffLine, add: DiffLine, out: string[], notes: DiffNote[]) {
+  const d = markLine(del.text, 'del')
+  const a = markLine(add.text, 'add')
+  if (out.length && out[out.length - 1] !== '') out.push('')
+  out.push(d.text)
+  if (out[out.length - 1] !== '') out.push('')
+  out.push(a.text)
+  out.push('')
+  notes.push(makeNote('block', '修改了此行', del.text, add.text, a.anchor || d.anchor))
+}
+
+/** LCS 段是否含「有意义的共同内容」（>1 非空白字符） */
+function lcsHasMeaningfulCtx(segs: LcsSeg[]): boolean {
+  let len = 0
+  for (const s of segs) {
+    if (s.type === 'ctx' && s.text.trim()) len += s.text.trim().length
+  }
+  return len >= 2
+}
+
+/** 纯 del 段 → 每行 {--行--}（表格行逐单元格）；纯 add 段 → 每行 {++行++}；修改对 → 词级 {--}{++} 或无共同内容拆双行 */
 function handleSeg(
   seg: { dels: DiffLine[]; adds: DiffLine[] },
   out: string[],
@@ -284,16 +304,21 @@ function handleSeg(
   if (dels.length === 0) {
     // 纯新增（分隔行原样输出，标记会破坏表格语法）
     const visible = adds.filter((a) => a.text !== '' && !isTableSepLine(a.text))
+    // M16b：相邻「段落行」之间补空行，避免多行新增粘连成一段（Milkdown 单换行=hardbreak）
+    let prevIsPara = false
     for (const a of visible) {
       // M14b：嵌入行原样输出（不包 {++..++}，否则 remark-ref 整段匹配失败 → 退化为文件链接）
       if (EMBED_RE.test(a.text)) {
-        // Milkdown 单换行=hardbreak（WYSIWYG 往返）→ 嵌入行必须前后独立成段
         if (out.length && out[out.length - 1] !== '') out.push('')
         out.push(a.text)
         out.push('')
-      } else {
-        out.push(markLine(a.text, 'add').text)
+        prevIsPara = false
+        continue
       }
+      const isBlock = /^(\s*(?:[-+*]|\d+[.)])\s+|>\s|#{1,6}\s|\|)/.test(a.text)
+      if (!isBlock && prevIsPara && out.length && out[out.length - 1] !== '') out.push('')
+      out.push(markLine(a.text, 'add').text)
+      prevIsPara = !isBlock
     }
     if (visible.length) {
       notes.push(
@@ -340,6 +365,15 @@ function handleSeg(
     // M16：行含 markdown 元字符时用字符级 LCS 多点标记（避免单段合并把 * ` [] 包进标记→强调纠缠乱码）
     if (MARKDOWN_META_RE.test(del.text) || MARKDOWN_META_RE.test(add.text)) {
       const segs = lcsSegments(del.text, add.text)
+      if (!lcsHasMeaningfulCtx(segs)) {
+        // 无共同内容（纯替换）→ 双行
+        if (segs.some((s) => s.type === 'del' || s.type === 'add')) {
+          pushReplacedPair(del, add, out, notes)
+        } else {
+          out.push(add.text)
+        }
+        continue
+      }
       const { text, del: dWord, add: aWord } = segsToLine(segs)
       if (dWord || aWord) {
         out.push(text)
@@ -379,12 +413,8 @@ function handleSeg(
         continue
       }
     }
-    // 整行重写 → 行内 {--旧行--}{++新行++}
-    const line = `${del.text ? `{--${del.text}--}` : ''}${add.text ? `{++${add.text}++}` : ''}`
-    if (line) {
-      out.push(line)
-      notes.push(makeNote('block', '修改了此行', del.text, add.text, (add.text || del.text)))
-    }
+    // M16b：无共同内容（整行替换）→ 旧行红 / 新行绿 两行（替代旧版行内 {--旧--}{++新++}）
+    pushReplacedPair(del, add, out, notes)
   }
   // 多余 del / add（段首/段尾行数不对称）——M16：也生成批注卡（此前这批行无卡）
   const extraDels = dels.slice(n).filter((d) => d.text && !isTableSepLine(d.text))
@@ -449,13 +479,16 @@ function finalizeFence(
 
   if (fence.lang === 'mermaid') {
     const d = diffMermaid(oldSrc, newSrc)
-    // M16：二元语义——只报新增/删除（去掉「修改 N 个」黄标）
-    if (d.type !== 'unknown' && (d.add.length || d.del.length)) {
+    // M16b：二元语义——只报「新增 N / 删除 N」；mod（同 id 标签变化）并入删+增各 1
+    if (d.type !== 'unknown' && (d.add.length || d.del.length || d.mod.length)) {
       const label =
         d.type === 'flowchart' ? '流程图' : d.type === 'sequence' ? '时序图' : d.type === 'state' ? '状态图' : '图表'
+      const unit = d.type === 'sequence' ? '消息' : '节点'
+      const addCount = d.add.length + d.mod.length
+      const delCount = d.del.length + d.mod.length
       const parts: string[] = []
-      if (d.add.length) parts.push(`新增 ${d.add.length} 个${d.type === 'sequence' ? '消息' : '节点'}`)
-      if (d.del.length) parts.push(`删除 ${d.del.length} 个`)
+      if (addCount) parts.push(`新增 ${addCount} 个${unit}`)
+      if (delCount) parts.push(`删除 ${delCount} 个`)
       out.push(open)
       for (const l of d.merged.split('\n')) out.push(l)
       if (close) out.push(close)

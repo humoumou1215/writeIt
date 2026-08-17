@@ -46,7 +46,11 @@ import { annotationPlugin, annotationConfigCtx } from '../annotations'
 import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
 import { getRuntimeAnnotations, clearAnnotations } from '../annotations/service'
 import { outlinePlugin, outlineStore, clearOutline } from './outline'
-import { searchHighlightPlugin, setSearchHighlight, setSearchHighlightNode } from './search-highlight'
+import {
+  searchHighlightPlugin,
+  setSearchHighlights,
+  setSearchHighlightWidget,
+} from './search-highlight'
 
 interface Instance {
   crepe: Crepe
@@ -970,11 +974,12 @@ async function scrollToHeading(fragment: string) {
 
 // M15：搜索结果跳转 → 打开文件并滚动到匹配处
 // 参数为文件路径（与搜索结果一致）；内部确保标签打开/激活后再定位。
-// 定位策略（优先级）：
-//  ① 第 occurrence 次关键词出现（调用方按源文件扫描顺序累计，能精确对应点击的命中行）
-//  ② 匹配行全文（行文本在渲染 doc 中完整出现时最准）
-//  ③ 关键词首次出现
-// 定位成功后给命中词加临时高亮（search-hit-highlight，编辑自动清除）。
+// 定位策略：
+//  ① DOM 文本流第 occurrence 次出现（渲染顺序 = 源顺序，含嵌入卡片等 DOM 注入内容）→ 滚动到位
+//  ② 普通文本场景附加 PM inline decoration 高亮命中词（occurrence 与 DOM 一致；
+//     代码块/卡片内部文本不可按 pos 寻址或 inline 不渲染 → 仅滚动，块本身醒目）
+//  ③ DOM 失败时回退 PM 文本流（顺序保底 + 上下文纠偏）
+// 高亮编辑/重绘自动清除；不做任何 DOM 结构修改（避免 PM DOMObserver 重绘干扰）。
 export interface SearchJumpOptions {
   /** 该命中在源文件中是关键词的第几次出现（0 起；与搜索结果产生时的统计一致） */
   occurrence?: number
@@ -986,14 +991,114 @@ export interface SearchJumpOptions {
   after?: string
 }
 
+/** 编辑器滚动容器（复用 scrollToPos 的判定：溢出量最大的滚动祖先） */
+function findScrollContainer(el: HTMLElement): HTMLElement {
+  let cur: HTMLElement | null = el
+  let best = el
+  let bestOverflow = 0
+  while (cur && cur !== document.body) {
+    const overflow = cur.scrollHeight - cur.clientHeight
+    if (overflow > bestOverflow) {
+      bestOverflow = overflow
+      best = cur
+    }
+    cur = cur.parentElement
+  }
+  return best
+}
+
+/**
+ * DOM 文本流定位：第 occurrence 次关键词出现的文本节点 → 滚动到可见（不修改 DOM）。
+ * 首次打开文件时编辑器异步渲染（懒加载图片/卡片/mermaid）会在滚动后重排布局、
+ * 把 scrollTop 重置；为此对同一命中节点做多次延迟重滚（内容收敛后自动校正对齐）。
+ * plain=true 表示命中在普通文本区域（PM inline decoration 可渲染且序号与 DOM 一致）。
+ */
+function locateInDom(
+  needle: string,
+  occurrence: number,
+  caseSensitive: boolean,
+  doSettle: boolean
+): { ok: boolean; plain: boolean } {
+  const root = document.querySelector('.milkdown .ProseMirror') as HTMLElement | null
+  if (!root || !needle) return { ok: false, plain: false }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const q = caseSensitive ? needle : needle.toLowerCase()
+  let n = 0
+  let node: Node | null = walker.nextNode()
+  while (node) {
+    const text = node.nodeValue ?? ''
+    const src = caseSensitive ? text : text.toLowerCase()
+    let i = src.indexOf(q)
+    while (i >= 0) {
+      if (n === occurrence) {
+        const el = node.parentElement
+        const plain = !el?.closest('pre, code, [contenteditable="false"]')
+        try {
+          const hitNode = node as Text
+          const offset = i
+          const len = needle.length
+          const hitRoot = root
+          // 与原 scrollToPos 一致：命中顶部对齐视口下方 10px + 平滑滚动
+          const scrollToHit = (smooth: boolean) => {
+            try {
+              const range = document.createRange()
+              range.setStart(hitNode, offset)
+              range.setEnd(hitNode, Math.min(offset + len, hitNode.length))
+              const r = range.getBoundingClientRect()
+              const pane = findScrollContainer(hitRoot)
+              const paneRect = pane.getBoundingClientRect()
+              const target = Math.max(0, pane.scrollTop + (r.top - paneRect.top) - 10)
+              pane.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' })
+            } catch {
+              /* 节点可能在重绘中被重建/移除：忽略 */
+            }
+          }
+          // 立即定位（首帧不跳动）
+          scrollToHit(false)
+          // 仅首次打开文件时才延迟校正：首次打开时编辑器异步渲染会在滚动后重排、
+          // 可能重置 scrollTop——仅当命中词不在视口内才平滑滚回（在视口内则不动，避免无谓跳滚）。
+          // 已稳定文件二次点击无需校正，避免出现多余的「向上/向下微调滚动」。
+          if (doSettle) {
+            const settle = () => {
+              try {
+                const range = document.createRange()
+                range.setStart(hitNode, offset)
+                range.setEnd(hitNode, Math.min(offset + len, hitNode.length))
+                const r = range.getBoundingClientRect()
+                const pane = findScrollContainer(hitRoot)
+                const pr = pane.getBoundingClientRect()
+                const inView = r.bottom > pr.top + 4 && r.top < pr.bottom - 4
+                if (!inView) scrollToHit(true)
+              } catch {
+                /* 忽略 */
+              }
+            }
+            setTimeout(settle, 320)
+            setTimeout(settle, 900)
+          }
+          return { ok: true, plain }
+        } catch {
+          return { ok: false, plain }
+        }
+      }
+      n++
+      i = src.indexOf(q, i + Math.max(q.length, 1))
+    }
+    node = walker.nextNode()
+  }
+  return { ok: false, plain: false }
+}
+
 export async function scrollToSearchMatch(
   path: string,
   lineText: string,
   needle: string,
   opts: SearchJumpOptions = {}
 ): Promise<number | null> {
+  // 记录是否首次打开（首次打开需要延迟校正滚动，已打开则无需）
+  const isNewTab = !state.tabs.find((t) => t.path === path)
   // 未打开则打开（已打开则激活）
-  if (!state.tabs.find((t) => t.path === path)) await openTab(path)
+  if (state.tabs.find((t) => t.path === path) === undefined) await openTab(path)
   const tab = state.tabs.find((t) => t.path === path)
   if (!tab || tab.viewMode === 'diff') return null
   // 源码模式下先切回所见即所得（用户要看到渲染位置）
@@ -1011,131 +1116,214 @@ export async function scrollToSearchMatch(
   }
   if (!inst) return null
 
-  const lineNorm = lineText.trim()
   const needleStr = needle.trim()
-  const needleNorm = opts.caseSensitive ? needleStr : needleStr.toLowerCase()
   const targetOcc = opts.occurrence ?? 0
+  const lineNorm = lineText.trim()
+  const needleNorm = opts.caseSensitive ? needleStr : needleStr.toLowerCase()
   const before = (opts.before ?? '').trim()
   const after = (opts.after ?? '').trim()
 
-  // 编辑器异步加载内容（defaultValue 注入）可能晚于实例创建：doc 为空时重试（最多 ~2.4s）
+  // ① DOM 文本流定位（滚动）——等待编辑器渲染出内容
+  let domOk = false
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const r = locateInDom(needleStr, targetOcc, !!opts.caseSensitive, isNewTab)
+    if (r.ok) {
+      domOk = true
+      break
+    }
+    if (document.querySelector('.milkdown .ProseMirror')?.textContent?.trim()) break
+    await new Promise((res) => setTimeout(res, 150))
+  }
+  if (domOk) {
+    // 同文件全部匹配高亮（普通文本区域；卡片/代码块内部文本不可寻址则跳过）
+    const ranges = await collectAllRanges(inst, needleStr, !!opts.caseSensitive)
+    if (ranges.length) {
+      const cur = Math.min(targetOcc, ranges.length - 1)
+      setSearchHighlights(
+        inst.crepe.editor,
+        ranges.map((r, i) => ({ from: r.from, to: r.to, current: i === cur }))
+      )
+    }
+    return null
+  }
+
+  // ② PM 文本流兜底（含重试：内容异步加载可能晚于实例创建）
   for (let attempt = 0; attempt < 8; attempt++) {
-    try {
-      const found = await inst.crepe.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx)
-        if (!view.state.doc.textContent.trim()) return { kind: 'none', pos: -2, from: -1, to: -1 } // 尚未就绪
-        let linePos = -1
-        // 把文档展平成「文本流」：普通文本节点精确到 pos；原子节点（嵌入卡片等）
-        // 内部的文本不可按 pos 寻址，挂在节点起点位置上（全局第 N 次出现仍准确）。
-        interface Seg {
-          kind: 'text' | 'node'
-          /** 文本流中的字符偏移范围 [start, end) */
-          start: number
-          end: number
-          /** 命中字符在流中的全局偏移（定位用） */
-          hitOff: number
-          /** 文本节点 → 精确偏移；节点 → 起点 */
-          pos: number
-          /** 节点区间（node 级 decoration 用） */
-          from: number
-          to: number
-        }
-        const segs: Seg[] = []
-        let flow = ''
-        view.state.doc.descendants((node, pos) => {
-          if (node.isText) {
-            const text = node.text ?? ''
-            if (text) {
-              flow += text
-              segs.push({ kind: 'text', start: flow.length - text.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
-            }
-            if (linePos < 0 && lineNorm && text.includes(lineNorm)) {
-              linePos = pos + text.indexOf(lineNorm)
-            }
-            return true
-          }
-          // 非文本节点：只对「原子/容器」补一段流（避免与子文本重复计数）
-          if (!node.isText && node.type.isLeaf) {
-            const t = node.textContent
-            if (t) {
-              flow += t
-              segs.push({ kind: 'node', start: flow.length - t.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
-            }
-            return false
-          }
-          return true
-        })
-        const needleLen = Math.max(needleStr.length, 1)
-        // 全局第 N 次出现（大小写一致规则）
-        const flowNorm = opts.caseSensitive ? flow : flow.toLowerCase()
-        const qn = opts.caseSensitive ? needleStr : needleNorm
-        const hits: Array<{ seg: Seg; off: number; ctxBefore: string; ctxAfter: string }> = []
-        let i = flowNorm.indexOf(qn)
-        while (i >= 0) {
-          const seg = segs.find((s) => i >= s.start && i < s.end)
-          if (seg) {
-            hits.push({
-              seg,
-              off: i,
-              ctxBefore: flow.slice(Math.max(0, i - 12), i),
-              ctxAfter: flow.slice(i + needleLen, i + needleLen + 12),
-            })
-          }
-          i = flowNorm.indexOf(qn, i + needleLen)
-        }
-        // 顺序保底 + 上下文纠偏打分
-        let bestScore = -Infinity
-        let bestHit: (typeof hits)[number] | null = null
-        for (let k = 0; k < hits.length; k++) {
-          const h = hits[k]
-          let score = 0
-          if (k === targetOcc) score += 100
-          if (before && h.ctxBefore.includes(before)) score += 40
-          if (after && h.ctxAfter.includes(after)) score += 40
-          if (before && h.ctxBefore.endsWith(before.slice(-8))) score += 15
-          if (after && h.ctxAfter.startsWith(after.slice(0, 8))) score += 15
-          if (score > bestScore) {
-            bestScore = score
-            bestHit = h
-          }
-        }
-        if (bestHit) {
-          const seg = bestHit.seg
-          const offInSeg = bestHit.off - seg.start
-          if (seg.kind === 'text') {
-            return { kind: 'inline', pos: seg.pos + offInSeg, from: seg.pos + offInSeg, to: seg.pos + offInSeg + needleLen }
-          }
-          return { kind: 'node', pos: seg.pos, from: seg.from, to: seg.to }
-        }
-        if (linePos >= 0) return { kind: 'inline', pos: linePos, from: linePos, to: linePos + needleLen }
-        return { kind: 'none', pos: -1, from: -1, to: -1 }
-      })
-      const f = found as { kind: string; pos: number; from: number; to: number }
-      if (f.kind === 'none') {
-        if (f.pos === -2) {
-          // 编辑器内容尚未就绪 → 稍后重试
-          await new Promise((r) => setTimeout(r, 150))
-          continue
-        }
-        return null
-      }
-      if (f.pos >= 0) {
-        const f = found as { kind: 'inline' | 'node'; pos: number; from: number; to: number }
-        await scrollToPos(tab.id, f.pos)
-        if (f.kind === 'inline') {
-          setSearchHighlight(inst.crepe.editor, f.from, f.to)
-        } else {
-          setSearchHighlightNode(inst.crepe.editor, f.from, f.to)
-        }
-        return f.pos
+    const f = await pmLocateHit(
+      inst,
+      needleStr,
+      needleNorm,
+      lineNorm,
+      before,
+      after,
+      targetOcc,
+      !!opts.caseSensitive
+    )
+    if (!f) return null
+    if (f.kind === 'none') {
+      if (f.pos === -2) {
+        await new Promise((r) => setTimeout(r, 150))
+        continue
       }
       return null
-    } catch {
-      return null // 编辑器已销毁
     }
+    await scrollToPos(tab.id, f.pos)
+    // 兜底路径同样高亮同文件全部匹配
+    const ranges = await collectAllRanges(inst, needleStr, !!opts.caseSensitive)
+    if (ranges.length) {
+      const cur = Math.min(targetOcc, ranges.length - 1)
+      setSearchHighlights(
+        inst.crepe.editor,
+        ranges.map((r, i) => ({ from: r.from, to: r.to, current: i === cur }))
+      )
+    }
+    if (f.kind === 'code' || f.kind === 'node') {
+      // 代码块 / 原子卡片内命中：块前徽标提示
+      setSearchHighlightWidget(inst.crepe.editor, f.pos)
+    }
+    return f.pos
   }
   return null
 }
+
+/**
+ * PM 文本流定位：把文档展平成文本流（普通文本节点精确到 pos；原子节点挂在起点），
+ * 按「顺序保底 + 上下文纠偏」挑选第 targetOcc 次出现，返回定位结果。
+ */
+async function pmLocateHit(
+  inst: Instance,
+  needleStr: string,
+  needleNorm: string,
+  lineNorm: string,
+  before: string,
+  after: string,
+  targetOcc: number,
+  caseSensitive: boolean
+): Promise<{ kind: string; pos: number; from: number; to: number } | null> {
+  try {
+    const found = await inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      if (!view.state.doc.textContent.trim()) return { kind: 'none', pos: -2, from: -1, to: -1 } // 尚未就绪
+      let linePos = -1
+      interface Seg {
+        kind: 'text' | 'node'
+        start: number
+        end: number
+        hitOff: number
+        pos: number
+        from: number
+        to: number
+      }
+      const segs: Seg[] = []
+      let flow = ''
+      view.state.doc.descendants((node, pos) => {
+        if (node.isText) {
+          const text = node.text ?? ''
+          if (text) {
+            flow += text
+            segs.push({ kind: 'text', start: flow.length - text.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
+          }
+          if (linePos < 0 && lineNorm && text.includes(lineNorm)) {
+            linePos = pos + text.indexOf(lineNorm)
+          }
+          return true
+        }
+        // 非文本且无子节点（原子 / 空容器，如嵌入卡片）：文本挂在节点起点
+        if (!node.isText && node.childCount === 0) {
+          const t = node.textContent
+          if (t) {
+            flow += t
+            segs.push({ kind: 'node', start: flow.length - t.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
+          }
+          return false
+        }
+        return true
+      })
+      const needleLen = Math.max(needleStr.length, 1)
+      const flowNorm = caseSensitive ? flow : flow.toLowerCase()
+      const qn = caseSensitive ? needleStr : needleNorm
+      const hits: Array<{ seg: Seg; off: number; ctxBefore: string; ctxAfter: string }> = []
+      let i = flowNorm.indexOf(qn)
+      while (i >= 0) {
+        const seg = segs.find((s) => i >= s.start && i < s.end)
+        if (seg) {
+          hits.push({ seg, off: i, ctxBefore: flow.slice(Math.max(0, i - 12), i), ctxAfter: flow.slice(i + needleLen, i + needleLen + 12) })
+        }
+        i = flowNorm.indexOf(qn, i + needleLen)
+      }
+      // 顺序保底 + 上下文纠偏
+      let bestScore = -Infinity
+      let bestHit: (typeof hits)[number] | null = null
+      for (let k = 0; k < hits.length; k++) {
+        const h = hits[k]
+        let score = 0
+        if (k === targetOcc) score += 100
+        if (before && h.ctxBefore.includes(before)) score += 40
+        if (after && h.ctxAfter.includes(after)) score += 40
+        if (before && h.ctxBefore.endsWith(before.slice(-8))) score += 15
+        if (after && h.ctxAfter.startsWith(after.slice(0, 8))) score += 15
+        if (score > bestScore) {
+          bestScore = score
+          bestHit = h
+        }
+      }
+      if (bestHit) {
+        const seg = bestHit.seg
+        const offInSeg = bestHit.off - seg.start
+        if (seg.kind === 'text') {
+          const at = seg.pos + offInSeg
+          if (view.state.doc.resolve(at).parent.type.name === 'code_block') {
+            return { kind: 'code', pos: view.state.doc.resolve(at).before(), from: -1, to: -1 }
+          }
+          return { kind: 'inline', pos: at, from: at, to: at + needleLen }
+        }
+        return { kind: 'node', pos: seg.pos, from: seg.from, to: seg.to }
+      }
+      if (linePos >= 0) return { kind: 'inline', pos: linePos, from: linePos, to: linePos + needleLen }
+      return { kind: 'none', pos: -1, from: -1, to: -1 }
+    })
+    return found as { kind: string; pos: number; from: number; to: number }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 收集 PM 文档中关键词的全部可寻址命中范围（普通文本区域；
+ * code 块内 inline decoration 不渲染、嵌入卡片内部文本不可寻址 → 跳过）。
+ */
+async function collectAllRanges(
+  inst: Instance,
+  needleStr: string,
+  caseSensitive: boolean
+): Promise<Array<{ from: number; to: number }>> {
+  if (!needleStr) return []
+  try {
+    return await inst.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const ranges: Array<{ from: number; to: number }> = []
+      const len = needleStr.length
+      const q = caseSensitive ? needleStr : needleStr.toLowerCase()
+      view.state.doc.descendants((node, pos) => {
+        if (!node.isText) return true
+        const text = node.text ?? ''
+        const src = caseSensitive ? text : text.toLowerCase()
+        let i = src.indexOf(q)
+        while (i >= 0) {
+          if (view.state.doc.resolve(pos + i).parent.type.name !== 'code_block') {
+            ranges.push({ from: pos + i, to: pos + i + len })
+          }
+          i = src.indexOf(q, i + Math.max(len, 1))
+        }
+        return true
+      })
+      return ranges
+    })
+  } catch {
+    return []
+  }
+}
+
 
 // ---------- 打开 / 激活 ----------
 
