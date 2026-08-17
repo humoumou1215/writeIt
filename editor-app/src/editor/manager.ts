@@ -1038,7 +1038,7 @@ function locateInDom(
           const offset = i
           const len = needle.length
           const hitRoot = root
-          // 与原 scrollToPos 一致：命中顶部对齐视口下方 10px + 平滑滚动
+          // 命中词定位到视口高度约 30% 处（偏上但留出下方空间，看着舒服）
           const scrollToHit = (smooth: boolean) => {
             try {
               const range = document.createRange()
@@ -1047,7 +1047,10 @@ function locateInDom(
               const r = range.getBoundingClientRect()
               const pane = findScrollContainer(hitRoot)
               const paneRect = pane.getBoundingClientRect()
-              const target = Math.max(0, pane.scrollTop + (r.top - paneRect.top) - 10)
+              const target = Math.max(
+                0,
+                pane.scrollTop + (r.top - paneRect.top) - pane.clientHeight * 0.3
+              )
               pane.scrollTo({ top: target, behavior: smooth ? 'smooth' : 'auto' })
             } catch {
               /* 节点可能在重绘中被重建/移除：忽略 */
@@ -1056,23 +1059,10 @@ function locateInDom(
           // 立即定位（首帧不跳动）
           scrollToHit(false)
           // 仅首次打开文件时才延迟校正：首次打开时编辑器异步渲染会在滚动后重排、
-          // 可能重置 scrollTop——仅当命中词不在视口内才平滑滚回（在视口内则不动，避免无谓跳滚）。
-          // 已稳定文件二次点击无需校正，避免出现多余的「向上/向下微调滚动」。
+          // 可能重置 scrollTop——延迟两次直接平滑对齐到目标位置（30%），确保最终落点正确。
+          // 已稳定文件二次点击无需校正，避免多余的微调滚动。
           if (doSettle) {
-            const settle = () => {
-              try {
-                const range = document.createRange()
-                range.setStart(hitNode, offset)
-                range.setEnd(hitNode, Math.min(offset + len, hitNode.length))
-                const r = range.getBoundingClientRect()
-                const pane = findScrollContainer(hitRoot)
-                const pr = pane.getBoundingClientRect()
-                const inView = r.bottom > pr.top + 4 && r.top < pr.bottom - 4
-                if (!inView) scrollToHit(true)
-              } catch {
-                /* 忽略 */
-              }
-            }
+            const settle = () => scrollToHit(true)
             setTimeout(settle, 320)
             setTimeout(settle, 900)
           }
