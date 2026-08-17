@@ -29,9 +29,10 @@ export interface ComposeOpts {
   path: string
 }
 
-const MERMAID_FENCE_RE = /^```mermaid\s*$/
 const FENCE_RE = /^```/
 const TABLE_RE = /^\s*\|/
+/** 块嵌入引用行（整段匹配 remark-ref 的 fileBlock；复合段落错误会退回内联解析） */
+const EMBED_RE = /^\s*!\[\[/
 
 let noteSeq = 0
 function makeNote(
@@ -180,7 +181,15 @@ function handleSeg(
   if (dels.length === 0) {
     // 纯新增
     const visible = adds.filter((a) => a.text !== '')
-    for (const a of visible) out.push(markLine(a.text, 'add').text)
+    for (const a of visible) {
+      // M14b：嵌入行原样输出（不包 {++..++}，否则 remark-ref 整段匹配失败 → 退化为文件链接）
+      if (EMBED_RE.test(a.text)) {
+        out.push(a.text)
+        out.push('')
+      } else {
+        out.push(markLine(a.text, 'add').text)
+      }
+    }
     if (visible.length) {
       notes.push(
         makeNote(
@@ -202,6 +211,14 @@ function handleSeg(
     const add = adds[k]
     if (TABLE_RE.test(del.text) && TABLE_RE.test(add.text)) {
       mergeTablePair(del, add, out, notes)
+      continue
+    }
+    // M14b：嵌入改行原样输出新行（旧版本不再需要，卡片展示当前内容）
+    if (EMBED_RE.test(del.text) || EMBED_RE.test(add.text)) {
+      if (add.text) {
+        out.push(add.text)
+        out.push('')
+      }
       continue
     }
     const dw = del.words ?? []
@@ -249,80 +266,92 @@ function handleSeg(
   }
 }
 
-// ---------- mermaid fence ----------
+// ---------- 代码栅栏（mermaid / 其他） ----------
+// M14b：栅栏在文档级跟踪（复制区 + hunk 内统一漏斗）——栅栏开行在 hunk 外（复制区）时，
+// 段内的 del/add 行若被 {++..++} 包裹会破坏代码块语法（mermaid Parse error）
 
-function handleMermaidFence(
-  rows: DiffLine[],
+interface FenceState {
+  lang: string
+  rows: Array<{ kind: DiffLine['kind']; text: string }>
+}
+
+/** 栅栏收尾：mermaid → 节点级合并源码（diffMermaid）；其他/无节点级变化 → 新版本源码原样 */
+function finalizeFence(
+  fence: FenceState,
   out: string[],
   notes: DiffNote[],
   mermaidList: MermaidNodeDiff[]
 ) {
+  const rows = fence.rows
   const open = rows[0].text
-  const close = rows[rows.length - 1].text
-  const mid = rows.slice(1, -1)
+  const closed = rows.length > 1 && FENCE_RE.test(rows[rows.length - 1].text.trim())
+  const mid = closed ? rows.slice(1, -1) : rows.slice(1)
+  const close = closed ? rows[rows.length - 1].text : ''
   const newSrc = mid.filter((r) => r.kind !== 'del').map((r) => r.text).join('\n')
   const oldSrc = mid.filter((r) => r.kind !== 'add').map((r) => r.text).join('\n')
-  const d = diffMermaid(oldSrc, newSrc)
-  if (d.type === 'unknown' || (!d.add.length && !d.del.length && !d.mod.length)) {
-    // 无节点级变化或无法解析 → 新源码原样
-    out.push(open)
-    for (const r of mid) if (r.kind !== 'del') out.push(r.text)
-    out.push(close)
-    return
+
+  if (fence.lang === 'mermaid') {
+    const d = diffMermaid(oldSrc, newSrc)
+    if (d.type !== 'unknown' && (d.add.length || d.del.length || d.mod.length)) {
+      const label =
+        d.type === 'flowchart' ? '流程图' : d.type === 'sequence' ? '时序图' : d.type === 'state' ? '状态图' : '图表'
+      const parts: string[] = []
+      if (d.add.length) parts.push(`新增 ${d.add.length} 个${d.type === 'sequence' ? '消息' : '节点'}`)
+      if (d.del.length) parts.push(`删除 ${d.del.length} 个`)
+      if (d.mod.length) parts.push(`修改 ${d.mod.length} 个`)
+      out.push(open)
+      for (const l of d.merged.split('\n')) out.push(l)
+      if (close) out.push(close)
+      notes.push(makeNote('mermaid', `${label}：${parts.join('、')}`, undefined, undefined, `${label}节点`))
+      mermaidList.push(d)
+      return
+    }
   }
-  const label =
-    d.type === 'flowchart' ? '流程图' : d.type === 'sequence' ? '时序图' : d.type === 'state' ? '状态图' : '图表'
-  const parts: string[] = []
-  if (d.add.length) parts.push(`新增 ${d.add.length} 个${d.type === 'sequence' ? '消息' : '节点'}`)
-  if (d.del.length) parts.push(`删除 ${d.del.length} 个`)
-  if (d.mod.length) parts.push(`修改 ${d.mod.length} 个`)
+  // 无节点级变化 / 非 mermaid / 无法解析 → 新版本源码原样
   out.push(open)
-  for (const l of d.merged.split('\n')) out.push(l)
-  out.push(close)
-  notes.push(makeNote('mermaid', `${label}：${parts.join('、')}`, undefined, undefined, `${label}节点`))
-  mermaidList.push(d)
+  for (const r of mid) if (r.kind !== 'del') out.push(r.text)
+  if (close) out.push(close)
 }
 
-// ---------- hunk 处理 ----------
-
-function collectFence(i: number, lines: DiffLine[]): { rows: DiffLine[]; end: number } {
-  const rows: DiffLine[] = [lines[i]]
-  let j = i + 1
-  while (
-    j < lines.length &&
-    !(lines[j].kind === 'ctx' && FENCE_RE.test(lines[j].text.trim()))
-  ) {
-    rows.push(lines[j])
-    j++
-  }
-  if (j < lines.length && FENCE_RE.test(lines[j].text.trim())) {
-    rows.push(lines[j])
-    j++
-  }
-  return { rows, end: j }
-}
-
-function processHunk(
-  hunk: DiffHunk,
-  out: string[],
-  notes: DiffNote[],
+interface ComposeCtx {
+  out: string[]
+  notes: DiffNote[]
   mermaidList: MermaidNodeDiff[]
-) {
+  fence: FenceState | null
+}
+
+/** 栅栏漏斗：fence 外遇到开行 → 建 fence 消费；fence 内 → 收集行，闭合时收尾。返回「是否已消费该行」 */
+function feedFence(ctx: ComposeCtx, row: { kind: DiffLine['kind']; text: string }): boolean {
+  if (!ctx.fence) {
+    if (FENCE_RE.test(row.text.trim())) {
+      const m = /^```(\w*)\s*$/.exec(row.text.trim())
+      ctx.fence = { lang: m ? m[1] : '', rows: [row] }
+      return true
+    }
+    return false
+  }
+  ctx.fence.rows.push(row)
+  if (FENCE_RE.test(row.text.trim())) {
+    finalizeFence(ctx.fence, ctx.out, ctx.notes, ctx.mermaidList)
+    ctx.fence = null
+  }
+  return true
+}
+
+function processHunk(ctx: ComposeCtx, hunk: DiffHunk) {
   const lines = hunk.lines
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
     if (line.kind === 'ctx') {
-      if (MERMAID_FENCE_RE.test(line.text.trim())) {
-        const fence = collectFence(i, lines)
-        i = fence.end
-        handleMermaidFence(fence.rows, out, notes, mermaidList)
-      } else {
-        out.push(line.text)
-        // 嵌入引用需独立成段（remark-ref 整段匹配）→ 补空行
-        if (/^\s*!\[\[/.test(line.text)) out.push('')
+      if (feedFence(ctx, line)) {
         i++
+        continue
       }
+      ctx.out.push(line.text)
+      // 嵌入引用需独立成段（remark-ref 整段匹配）→ 补空行
+      if (/^\s*!\[\[/.test(line.text)) ctx.out.push('')
+      i++
     } else {
       // del/add 段
       const dels: DiffLine[] = []
@@ -336,7 +365,13 @@ function processHunk(
         adds.push(lines[j])
         j++
       }
-      handleSeg({ dels, adds }, out, notes)
+      // 段内含栅栏开行（整块新增代码块）或当前在栅栏内 → 原样进漏斗（避免标记破坏代码块）
+      const segRows = [...dels, ...adds]
+      if (ctx.fence || segRows.some((r) => FENCE_RE.test(r.text.trim()))) {
+        for (const r of segRows) feedFence(ctx, r)
+      } else {
+        handleSeg({ dels, adds }, ctx.out, ctx.notes)
+      }
       i = j
     }
   }
@@ -347,18 +382,23 @@ function processHunk(
 export function composeDiff(opts: ComposeOpts): ComposeResult {
   noteSeq = 0
   const newLines = opts.newMd.split('\n')
-  const out: string[] = []
-  const notes: DiffNote[] = []
-  const mermaidList: MermaidNodeDiff[] = []
+  const ctx: ComposeCtx = { out: [], notes: [], mermaidList: [], fence: null }
   let prevNewEnd = 0 // 0-based 已复制到的新版本行索引
+  const feed = (row: { kind: DiffLine['kind']; text: string }) => feedFence(ctx, row)
   for (const hunk of opts.hunks) {
-    // 复制 hunk 前的未变化区（新版本）
+    // 复制 hunk 前的未变化区（新版本；经栅栏漏斗，避免栅栏开行在 hunk 外时漏处理）
     const copyTo = hunk.newStart - 1
-    for (let k = prevNewEnd; k < copyTo && k < newLines.length; k++) out.push(newLines[k])
+    for (let k = prevNewEnd; k < copyTo && k < newLines.length; k++) {
+      if (!feed({ kind: 'ctx', text: newLines[k] })) ctx.out.push(newLines[k])
+    }
     // hunk 内
-    processHunk(hunk, out, notes, mermaidList)
+    processHunk(ctx, hunk)
     prevNewEnd = hunk.newStart + hunk.newLines - 1
   }
-  for (let k = prevNewEnd; k < newLines.length; k++) out.push(newLines[k])
-  return { composedMd: out.join('\n'), notes, mermaid: mermaidList }
+  for (let k = prevNewEnd; k < newLines.length; k++) {
+    if (!feed({ kind: 'ctx', text: newLines[k] })) ctx.out.push(newLines[k])
+  }
+  // 文档末尾未闭合栅栏 → 收尾（不丢内容）
+  if (ctx.fence) finalizeFence(ctx.fence, ctx.out, ctx.notes, ctx.mermaidList)
+  return { composedMd: ctx.out.join('\n'), notes: ctx.notes, mermaid: ctx.mermaidList }
 }

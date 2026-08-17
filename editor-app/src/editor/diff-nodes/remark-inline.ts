@@ -12,6 +12,9 @@ interface MdNode {
   value?: string
   children?: MdNode[]
   marks?: unknown[]
+  /** remark-ref 拆出的引用节点（[[path#frag]]） */
+  path?: string
+  fragment?: string | null
 }
 
 const INLINE_RE = /\{--([\s\S]*?)--\}|\{\+\+([\s\S]*?)\+\+\}/g
@@ -49,21 +52,46 @@ function flattenText(node: MdNode): string {
   if (node.type === 'delete') {
     return '~~' + ((node.children as MdNode[]) ?? []).map(flattenText).join('') + '~~'
   }
+  // remark-ref 已拆出的引用节点 → 按源码还原（拼接进 diff 值，保持往返一致）
+  if (node.type === 'fileRef') {
+    const p = String(node.path ?? '')
+    const f = node.fragment as string | null | undefined
+    return `[[${p}${f ? `#${f}` : ''}]]`
+  }
   return ((node.children as MdNode[]) ?? []).map(flattenText).join('')
 }
 
-const OPEN_RE = /(\{\+\+|\{--)\s*$/
+/** 找文本段中「最后一个未闭合」的 {++/{-- 标记（跳过 \{-- 转义字面） */
+function lastUnclosedOpen(value: string): { open: string; idx: number } | null {
+  let found: { open: string; idx: number } | null = null
+  for (let i = 0; i < value.length - 2; i++) {
+    const isPlus = value.startsWith('{++', i)
+    const isMinus = value.startsWith('{--', i)
+    if ((isPlus || isMinus) && !(i > 0 && value[i - 1] === '\\')) {
+      found = { open: isPlus ? '{++' : '{--', idx: i }
+    }
+  }
+  if (!found) return null
+  // 本段内已有闭合（splitDiffInline 会先拆掉完整标记）→ 不需要合并
+  const close = found.open === '{++' ? '++}' : '--}'
+  if (value.indexOf(close, found.idx + 3) !== -1) return null
+  return found
+}
 
 /** 从 children[idx] 起向后找闭合标记，合并为 diff 节点（内容 = 收集节点源码还原） */
 function mergeForward(
   open: string,
   text: string,
   children: MdNode[],
-  idx: number
+  idx: number,
+  openIdx: number
 ): { nodes: MdNode[]; consumed: number } | null {
   const close = open === '{++' ? '++}' : '--}'
-  const prefix = text.slice(0, -open.length)
+  const prefix = text.slice(0, openIdx)
   const collected: MdNode[] = []
+  // 标记起始与闭合之间的当前文本内容（{++![[..]] 的 "!"、{++- 参见 的 "- 参见 "）
+  const initial = text.slice(openIdx + open.length)
+  if (initial) collected.push({ type: 'text', value: initial, marks: [] })
   let j = idx
   while (j < children.length) {
     const n2 = children[j]
@@ -96,9 +124,10 @@ function splitAndMerge(
   let consumed = 1 // 当前 text 节点
   for (const part of parts) {
     if (part.type === 'text') {
-      const om = OPEN_RE.exec(part.value as string)
+      // 兼容：标记起始不在文本末尾（remark-ref 先拆出 fileRef，{++![[…]]++} → "{++!" + fileRef + "++}"）
+      const om = lastUnclosedOpen(part.value as string)
       if (om) {
-        const r = mergeForward(om[1], part.value as string, children, startIdx + consumed)
+        const r = mergeForward(om.open, part.value as string, children, startIdx + consumed, om.idx)
         if (r) {
           nodes.push(...r.nodes)
           consumed += r.consumed
