@@ -298,13 +298,13 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
   will-change: transform;
 }
 /* 交互缩放：菜单栏与工具栏按钮 */
-:global(.icon-btn:hover) .mi,
-:global(.icon-btn.active) .mi,
-:global(.mini:hover) .mi {
+:global(.icon-btn:hover .mi),
+:global(.icon-btn.active .mi),
+:global(.mini:hover .mi) {
   transform: translateY(-1px) scale(1.08);
 }
-:global(.icon-btn:active) .mi,
-:global(.mini:active) .mi {
+:global(.icon-btn:active .mi),
+:global(.mini:active .mi) {
   transform: translateY(0) scale(0.86);
 }
 
@@ -370,17 +370,17 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
 }
 
 /* 菜单栏五件套：悬停时动 */
-:global(.icon-btn:hover) .mi-files .mi-g { animation: mi-nod 1.3s ease-in-out 2; }
-:global(.icon-btn:hover) .mi-settings .mi-g { animation: mi-spin 1.8s linear infinite; }
-:global(.icon-btn:hover) .mi-git .mi-flow { animation: mi-flow 1.2s linear infinite; }
-:global(.icon-btn:hover) .mi-git .mi-flow-rev { animation: mi-flow-rev-kf 1.8s linear infinite; }
-:global(.icon-btn:hover) .mi-shortcuts .mi-keys { animation: mi-key 1.3s ease-in-out infinite; }
-:global(.icon-btn:hover) .mi-export .mi-arrow { animation: mi-pop 0.9s ease-in-out infinite; }
+:global(.icon-btn:hover .mi-files .mi-g) { animation: mi-nod 1.3s ease-in-out 2; }
+:global(.icon-btn:hover .mi-settings .mi-g) { animation: mi-spin 1.8s linear infinite; }
+:global(.icon-btn:hover .mi-git .mi-flow) { animation: mi-flow 1.2s linear infinite; }
+:global(.icon-btn:hover .mi-git .mi-flow-rev) { animation: mi-flow-rev-kf 1.8s linear infinite; }
+:global(.icon-btn:hover .mi-shortcuts .mi-keys) { animation: mi-key 1.3s ease-in-out infinite; }
+:global(.icon-btn:hover .mi-export .mi-arrow) { animation: mi-pop 0.9s ease-in-out infinite; }
 
 /* 工具栏：刷新转一圈 / 定位十字闪烁（仅悬停） */
-:global(.mini:hover) .mi-refresh .mi-g,
-:global(.mini:active) .mi-refresh .mi-g { animation: mi-refresh-spin 0.7s ease-out 1; }
-:global(.mini:hover) .mi-locate .mi-cross { animation: mi-cross-blink 0.9s ease-in-out infinite; }
+:global(.mini:hover .mi-refresh .mi-g),
+:global(.mini:active .mi-refresh .mi-g) { animation: mi-refresh-spin 0.7s ease-out 1; }
+:global(.mini:hover .mi-locate .mi-cross) { animation: mi-cross-blink 0.9s ease-in-out infinite; }
 
 /* 流动描边默认静止（悬停时才动） */
 .mi-flow {
