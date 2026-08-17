@@ -1,7 +1,7 @@
-# Git 工作台（M11–M14）
+# Git 工作台（M11–M15）
 
 > 核心代码：`editor-app/src/git/`（mock 演示后端）+ `components/GitPanel.vue`（面板）+ `DiffView.vue` / `RenderDiff.vue`（diff 视图）+ `editor/diff-compose.ts`（组合器）+ `editor/mermaid-diff.ts`（mermaid 节点级）+ `src-tauri/src/lib.rs`（Rust git 命令）。
-> 设计文档：`editor-app/docs/git-workbench.md`（M11a–M14 完整实现记录）。
+> 设计文档：`editor-app/docs/git-workbench.md`（M11a–M15 完整实现记录）。
 > 一句话：**仓库级 Git 工作台——侧边栏面板（分支/工作区/历史）+ 编辑区 diff 视图（文本/渲染双模式），渲染模式把 diff 变成看得懂的 Markdown 融合视图**。
 
 ## 1. 入口与面板
@@ -58,6 +58,28 @@
 - 点击卡片 = 激活 + 连线（抽屉左缘 → 锚点）+ 平滑滚动到改动位置；diff 模式下定位/连线切换到渲染 Crepe（`coordsAtPos` + 滚动 `.render-main`）。
 - 退出 diff 自动清理（不残留到 wysiwyg 编辑器）。
 
+## 5b. 文件树与面板强化（M15）
+
+**目标**：改动看得见的文件树——主文件树 git 角标；变更列表树形化；面板可用性（区块折叠/分支搜索/提交图）。
+
+### 主文件树 git 角标
+
+- 工作区 git status（不只面板打开时，App 启动即拉一次）→ `state.gitMark = { files: path→状态, dirs: 目录路径→聚合状态 }`（`git/mark.ts`，复用 buildChangeTree 聚合）。
+- `FileTree.vue` 节点渲染角标小圆点（M 橙 / A 绿 / D 红 / ? 灰 / R 紫）：文件 = 自身状态；目录 = 子级聚合（仅含有改动子级的祖先目录，含 D 最醒目）。
+- 有改动文件 hover 行尾出现「Git 改动」按钮 → 直接打开工作区 diff（单击行为保持正常打开编辑，不劫持）；右键菜单「Git 改动」原有。
+- 打开 diff 时 `revealInTree(path, 8000)` 联动主文件树定位高亮（长保持，切回文件树仍可见）。
+
+### 变更列表树形化（`components/GitChangeTree.vue`）
+
+- 工作区 status / 提交变更 files 由扁平列表升级为**可折叠目录树**（`git/change-tree.ts` 构建）：目录行聚合状态色板 + `+N −M` 合计，仅创建有改动文件的祖先目录（无空目录）。
+- 目录点击折叠/展开；文件点击 → 打开 diff（工作区 vs HEAD / commit vs 父 / a..b 范围）。默认全展开；刷新重置。
+
+### 面板布局与可用性
+
+- 区块顺序调整为 **工作区 → 分支 → 历史**；三区可折叠收纳（chevron，localStorage `writeit.gitPanel.sections.v1` 记忆）。
+- 分支区块新增**搜索框**（大仓库分支多时按名过滤）。
+- 历史区渲染**提交图**（`git/graph.ts` lane 算法：`o` 提交 / `+` 合并 / `|` 延续 / `\`、`/` 分叉与汇聚），提交数据 Rust 侧 `git_log` 增加 `%P` 父提交（`GitCommit.parents`）。
+
 ## 4. 数据层（Rust，git CLI）
 
 `src-tauri/src/lib.rs` 全部走 git CLI（`--no-color` + `-z` + UTF-8；中文路径 `core.quotepath=false`）：
@@ -77,7 +99,7 @@
   - `README.md` —— mermaid 节点修改/新增/删除、词级修改、纯删除块、需求清单、嵌入引用；
   - `笔记/会议纪要.md` —— 嵌入块内容调整（备注词级 + 议题新增）；
   - `数据/需求表.md` —— 表格单元格级改动；
-  - 两提交（Alice 优化 / Bob 初始）+ `feature/图表优化` 分支。
+  - 4 提交（2 条主线 + feature 分叉 + Alice 合并）+ `feature/图表优化` 分支（演示提交图分叉/合并）。
 - 交互：🔀 打开面板 → 工作区点文件 → 默认渲染模式；切「文本」看分栏/词级；历史点提交/Shift+范围对比；⇄ 切分支；还原演示。
 - 内存态：discard / checkout 会改状态，刷新页面重置；设置页「🔄 刷新 Mock 示例数据」恢复示例。
 
@@ -85,9 +107,14 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/git/mock-data.ts` | 演示仓库真实数据（内容/hunks/元信息，自动生成） |
+| `src/git/mock-data.ts` | 演示仓库真实数据（内容/hunks/元信息，自动生成；M15：4 提交带 parents） |
 | `src/git/mock.ts` / `index.ts` | mock 后端实现 / GitBackend proxy（tauri → mock → 禁用） |
-| `components/GitPanel.vue` | 面板三区块 + 范围对比 + 分支切换 |
+| `src/git/mark.ts` | 主文件树角标数据（工作区 status → files/dirs 聚合 Map） |
+| `src/git/change-tree.ts` | 变更文件树构建（目录聚合状态色板 + 行数合计） |
+| `src/git/graph.ts` | 提交图 lane 算法（o/+ / 竖线 / 分叉汇入） |
+| `components/GitPanel.vue` | 面板三区块（折叠/搜索/提交图） + 范围对比 + 分支切换 |
+| `components/GitChangeTree.vue` | 变更文件可折叠树（工作区/提交 files 共用） |
+| `components/FileTree.vue` | 主文件树：git 角标 + hover 快捷 diff 按钮 |
 | `components/DiffView.vue` | diff 视图：工具栏 + 文本模式（分栏/统一/词级/折叠/导航/还原） |
 | `components/RenderDiff.vue` | 渲染模式：组合 md 渲染 + 批注注入 + 降级双栏 |
 | `components/AnnotationDrawer.vue` | 存量批注抽屉（diff 改动说明卡 + 连线/定位） |
@@ -95,7 +122,7 @@
 | `editor/diff-nodes/` | `{--..--}`/`{++..++}` 解析（remark-inline）+ diffDel/diffIns 节点 |
 | `editor/mermaid-diff.ts` | mermaid 节点级 diff（flowchart/sequence/state） |
 | `editor/render-diff.ts` | 单 Crepe 渲染组合 md + mermaid DOM 标注 + 嵌入角标 |
-| `src-tauri/src/lib.rs` | Rust git 命令（面板/diff/还原/分支） |
+| `src-tauri/src/lib.rs` | Rust git 命令（面板/diff/还原/分支；M15：`git_log` 带 `%P` 父提交） |
 
 ## 7. 边界与降级
 

@@ -1,6 +1,7 @@
-# 演示工作区「消金业务合作」
+# 演示工作区「消金业务合作平台」
 
-> 位置：`demo/消金业务合作/`（52 个文件 + 8 个模板域目录）。浏览器 mock 模式开箱即用（localStorage 内置），也可用「打开目录」指向本目录在真实环境体验。
+> 内容库位置：`/Users/huyongsheng/project/消金业务合作平台`（独立 git 仓库，52 个文件 + 8 个模板域目录）。
+> 浏览器 mock 模式开箱即用（localStorage 内置，数据由 sync-demo 从内容库生成）；vite dev 可用 `?repo=1` 走真实内容库 + 真实 git（见下）。
 
 ## 1. 背景
 
@@ -35,8 +36,10 @@
 - M8 重构：数据库 1 文件 = 1 表；xxljob 1 文件 = 1 任务。
 - 合规/违规样例对（校验演示）：`助贷接口.md` vs `助贷接口-违规.md`、`loan_apply.md` vs `loan_apply-违规.md`、`下游机构通知.md` vs `下游机构通知-违规.md`。
 
-## 4. 与 mock 文件系统的关系
+## 4. 与 mock / 真实调试的关系
 
-- `editor-app/scripts/sync-demo.mjs`：把 `demo/` 同步为 `src/fs/mock-samples.generated.ts`（生成式数据源，避免手写两遍）。
+- 内容库实际位置：`/Users/huyongsheng/project/消金业务合作平台`（独立 git 仓库；从 `writeIt/demo/` 迁出后初始化）。
+- `editor-app/scripts/sync-demo.mjs`：把内容库同步为 `src/fs/mock-samples.generated.ts`（生成式数据源，避免手写两遍）。
 - mock 的 `SEED_VERSION` 控制演示数据版本迁移（FORCE_UPDATE_PATHS 强制覆盖核心演示文件）。
-- 改 demo 内容 → 跑 sync-demo → bump SEED_VERSION → 浏览器刷新即可看到新演示。
+- **真实调试**：`npm run dev:repo` 启动 vite dev，URL 带 `?repo=1` → 文件系统走 Vite Node 中间件（真实读取内容库），git 走真实 git CLI（child_process），面板/文本/渲染 diff、还原、分支切换全部基于真实仓库。
+- 改内容库 → 跑 sync-demo → bump SEED_VERSION → 浏览器刷新即可看到新演示（mock 模式）。

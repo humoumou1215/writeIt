@@ -98,7 +98,7 @@ writeIt/
 │   ├── src-tauri/      #   Rust 壳（文件系统 + git CLI 命令 / 窗口 / 打包配置）
 │   ├── tests/e2e/      #   Playwright 端到端回归套件
 │   └── docs/design.md  #   里程碑设计文档（M1-M14 完整实现记录）
-├── demo/               # 演示工作区「消金业务合作」（52 个示例文件 + 8 个模板域）
+├── demo/               # （已迁出）演示内容库 → /Users/huyongsheng/project/消金业务合作平台（独立 git 仓库）
 ├── raw/                # milkdown 官方源码语料（只读，供知识库引用）
 └── wiki/               # milkdown 知识库（Agent.md 管理）
 ```
@@ -119,7 +119,7 @@ writeIt/
 | [doc/settings.md](doc/settings.md) | 设置 / 主题 / 快捷键 |
 | [doc/packaging.md](doc/packaging.md) | Tauri 打包与 CI 发布 |
 | [doc/testing.md](doc/testing.md) | 测试体系与调试钩子 |
-| [doc/demo-workspace.md](doc/demo-workspace.md) | 演示工作区「消金业务合作」 |
+| [doc/demo-workspace.md](doc/demo-workspace.md) | 演示内容库「消金业务合作平台」（独立仓库 + mock 同步 + 真实调试） |
 
 ## 六、给开发者
 

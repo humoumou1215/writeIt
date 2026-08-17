@@ -26,7 +26,7 @@
 
 - [打包与发布](packaging.md) —— Tauri 构建、Windows/macOS 产物、GitHub Actions
 - [测试体系](testing.md) —— Playwright e2e 套件、调试钩子
-- [演示工作区](demo-workspace.md) —— `demo/消金业务合作` 示例内容与目录约定
+- [演示内容库](demo-workspace.md) —— `消金业务合作平台`（独立仓库 @ /Users/huyongsheng/project/）示例内容与目录约定
 
 ## 快速索引
 
