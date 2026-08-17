@@ -335,8 +335,19 @@ pub struct GitDiffResult {
   pub exists: bool,
 }
 
+/// 构造子进程 Command：Windows 下附加 CREATE_NO_WINDOW，避免 git 等控制台程序每次调用闪现黑窗
+#[cfg(target_os = "windows")]
+fn no_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+  use std::os::windows::process::CommandExt;
+  cmd.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+}
+#[cfg(not(target_os = "windows"))]
+fn no_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+  cmd
+}
+
 fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-  std::process::Command::new("git")
+  no_console(std::process::Command::new("git"))
     .args(args)
     .current_dir(root)
     .output()
@@ -1106,7 +1117,7 @@ fn git_discard_hunk(
   let text = String::from_utf8_lossy(&out.stdout);
   let patch = extract_hunk_patch(&text, hunk_index).ok_or("hunk 不存在或文件无改动")?;
   use std::io::Write;
-  let mut child = std::process::Command::new("git")
+  let mut child = no_console(std::process::Command::new("git"))
     .args(["apply", "--reverse", "--unidiff-zero", "-"])
     .current_dir(&root)
     .stdin(std::process::Stdio::piped())
@@ -1182,7 +1193,7 @@ fn git_user_name(state: State<AppState>) -> Option<String> {
   if !has_git {
     return None;
   }
-  let out = std::process::Command::new("git")
+  let out = no_console(std::process::Command::new("git"))
     .args(["config", "user.name"])
     .current_dir(&root)
     .output()
