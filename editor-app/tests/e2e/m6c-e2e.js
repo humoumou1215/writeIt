@@ -6,7 +6,7 @@ const { chromium } = require('playwright');
   page.on('pageerror', (e) => console.log('PAGEERROR:', String(e).slice(0, 300)));
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
   // 构造：周报 + 一条人工批注（线程）+ 校验违规（需求表部分填写）
   // 产品路径格式：双引号属性 + &quot; 转义（与 toMarkdown 一致）

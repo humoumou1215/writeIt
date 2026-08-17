@@ -43,9 +43,9 @@ function computeNotePositions(notes: DiffNote[], crepe: Crepe): Map<string, numb
           positions.set(note.id, pos)
           continue
         }
-        // 锚点：新增值优先（渲染元素 .diff-ins）；删除值次之（.diff-del）；块级取首行。
+        // 锚点：M16 起 note.anchor 即为精确查找串（表格行=首个变更单元格；普通行/词级=标记文本）。
         // 注意：diffDel/diffIns 的 value 是精确文本（含前导空格），不能 trim
-        const needle = (note.add ?? note.del ?? '').split('\n')[0]
+        const needle = (note.anchor || note.add || note.del || '').split('\n')[0]
         if (!needle.trim()) {
           positions.set(note.id, -1)
           continue
@@ -258,21 +258,88 @@ onBeforeUnmount(() => {
 :deep(.render-host .milkdown) {
   color: var(--chrome-on-background);
 }
-/* 嵌入块「内容有改动」角标（M14：源文件有未提交改动） */
-:deep(.ref-embed-diff-badge) {
+/* M16：diff 徽标——容器（卡片右上角纵向排布）+ 基础样式 + 语义配色 */
+:deep(.ref-embed-badges) {
   position: absolute;
   top: 6px;
   right: 8px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+:deep(.ref-embed-badge) {
   font-size: 10.5px;
   font-weight: 600;
-  color: #7a4f00;
-  background: #fff3cd;
-  border: 1px solid #f0c040;
   border-radius: 999px;
   padding: 0 8px;
   line-height: 18px;
-  z-index: 2;
   box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  white-space: nowrap;
+}
+/* 新增引用（绿）/ 移除引用（红）/ 引用变更（黄） */
+:deep(.ref-embed-badge.ref-embed-add) {
+  color: #1b5e20;
+  background: #e6f4ea;
+  border: 1px solid #4caf50;
+}
+:deep(.ref-embed-badge.ref-embed-del) {
+  color: #8e0000;
+  background: #fdecea;
+  border: 1px solid #e57373;
+}
+:deep(.ref-embed-badge.ref-embed-mod) {
+  color: #6d5300;
+  background: #fef7e0;
+  border: 1px solid #f0c040;
+}
+/* 内容有改动（黄） */
+:deep(.ref-embed-badge.ref-embed-diff-badge) {
+  color: #7a4f00;
+  background: #fff3cd;
+  border: 1px solid #f0c040;
+}
+/* M16：卡片内嵌源文件改动摘要 */
+:deep(.ref-embed-diff-summary) {
+  margin: 6px 8px 8px;
+  border: 1px dashed color-mix(in srgb, var(--chrome-primary, #4169e1), 45%);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--chrome-background, #fff), #f4f6ff 55%);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+:deep(.ref-embed-diff-summary .eds-title) {
+  font-weight: 700;
+  color: var(--chrome-primary, #4169e1);
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+:deep(.ref-embed-diff-summary .eds-line) {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+:deep(.ref-embed-diff-summary .eds-add) {
+  background: color-mix(in srgb, #2e7d32, transparent 88%);
+}
+:deep(.ref-embed-diff-summary .eds-del) {
+  background: color-mix(in srgb, #c62828, transparent 90%);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  opacity: 0.92;
+}
+:deep(.ref-embed-diff-summary .eds-mermaid) {
+  color: var(--chrome-primary, #4169e1);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--chrome-primary, #4169e1), transparent 92%);
+  padding: 2px 6px;
+  margin: 2px 0;
 }
 /* mermaid 节点级标注（M14 渲染后 DOM 操作）——flowchart/state 节点 <g> */
 :deep(.diff-node-add rect),
@@ -314,13 +381,16 @@ onBeforeUnmount(() => {
   color: #6d5300 !important;
   font-weight: 600 !important;
 }
-/* sequence 消息标注 */
+/* sequence 消息标注（M16：红删/绿增二元） */
 :deep(.diff-seq-add) {
   fill: #2e7d32 !important;
   font-weight: 600;
 }
-:deep(.diff-seq-mod) {
-  fill: #b58900 !important;
+:deep(.diff-seq-del) {
+  fill: #c62828 !important;
   font-weight: 600;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
 }
 </style>

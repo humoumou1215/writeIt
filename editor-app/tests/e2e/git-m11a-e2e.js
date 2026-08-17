@@ -156,7 +156,7 @@ async function installMock(repoJson) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.text()); });
   await page.addInitScript(installMock, JSON.stringify(REPO));
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   let pass = 0, fail = 0;

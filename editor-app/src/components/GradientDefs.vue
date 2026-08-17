@@ -9,6 +9,7 @@ const GRADIENTS = [
   { id: 'wi-g-settings', a: '#fbbf24', b: '#f97316' },
   { id: 'wi-g-shortcuts', a: '#2dd4bf', b: '#22c55e' },
   { id: 'wi-g-export', a: '#818cf8', b: '#a855f7' },
+  { id: 'wi-g-search', a: '#22d3ee', b: '#3b82f6' },
   { id: 'wi-g-accent', a: '#94a3b8', b: '#64748b' },
 ] as const
 </script>

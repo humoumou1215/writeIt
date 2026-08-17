@@ -69,6 +69,7 @@ span.ref-object:hover {
 
 /* file_block：卡片容器 */
 .ref-file-block {
+  position: relative; /* M16：diff 徽标/摘要 absolute 定位基准 */
   border: 1px solid var(--chrome-border);
   border-radius: 10px;
   margin: 8px 0;

@@ -5,7 +5,7 @@ const { chromium } = require('playwright')
   const page = await browser.newPage({ viewport: { width: 1280, height: 700 } })
   page.on('pageerror', (e) => console.log('  [PAGEERR]', e.message.slice(0, 250)))
   page.on('console', (m) => { if (m.type() === 'error') console.log(`  [ERR]`, m.text().slice(0, 250)) })
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 })
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 })
   await page.waitForTimeout(1200)
   await page.evaluate(() => {
     const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}')

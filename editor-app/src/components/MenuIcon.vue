@@ -11,7 +11,7 @@
 // 避免每个实例重复定义、也避免 id 冲突；引用固定 id（wi-g-*）。
 
 export type MenuIconName =
-  | 'files' | 'git' | 'settings' | 'shortcuts' | 'export'
+  | 'files' | 'git' | 'settings' | 'shortcuts' | 'export' | 'search'
   | 'folder' | 'file' | 'fileNew' | 'dirNew'
   | 'refresh' | 'locate' | 'pin' | 'rename' | 'chevron'
 export type MenuIconSet = 'line' | 'soft' | 'gradient'
@@ -75,6 +75,12 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
           <path d="M12 3.8v7.4" /><path d="M8.4 7.4 12 3.8l3.6 3.6" />
         </g>
         <path d="M4.6 14v3.2a2.2 2.2 0 0 0 2.2 2.2h10.4a2.2 2.2 0 0 0 2.2-2.2V14" />
+      </template>
+      <template v-else-if="name === 'search'">
+        <g class="mi-scan">
+          <circle cx="10.2" cy="10.2" r="6.1" />
+          <path d="M14.7 14.7 20 20" />
+        </g>
       </template>
       <!-- 文件树 -->
       <template v-else-if="name === 'folder'">
@@ -152,6 +158,13 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
         <g class="mi-arrow">
           <path class="mi-pri-stroke" d="M12 4v7.2" />
           <path class="mi-pri-stroke" d="M8.4 7.6 12 4l3.6 3.6" />
+        </g>
+      </template>
+      <template v-else-if="name === 'search'">
+        <g class="mi-scan">
+          <circle class="mi-pri" cx="10.2" cy="10.2" r="6.1" />
+          <circle cx="10.2" cy="10.2" r="2.5" fill="color-mix(in srgb, var(--chrome-background) 70%, transparent)" />
+          <path class="mi-pri-stroke" d="M14.7 14.7 20 20" />
         </g>
       </template>
       <!-- 文件树 -->
@@ -238,6 +251,13 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
           d="M4.6 13.8a2.2 2.2 0 0 1 2.2-2.2h10.4a2.2 2.2 0 0 1 2.2 2.2v2.8a2.2 2.2 0 0 1-2.2 2.2H6.8a2.2 2.2 0 0 1-2.2-2.2Z" />
         <g class="mi-arrow" :stroke="`url(#wi-g-export)`" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 4v7.2" /><path d="M8.4 7.6 12 4l3.6 3.6" />
+        </g>
+      </template>
+      <template v-else-if="name === 'search'">
+        <g class="mi-scan">
+          <circle :fill="`url(#wi-g-search)`" cx="10.2" cy="10.2" r="6.1" />
+          <circle cx="10.2" cy="10.2" r="2.5" fill="rgba(255,255,255,.9)" />
+          <path :stroke="`url(#wi-g-search)`" stroke-width="2.4" stroke-linecap="round" d="M14.7 14.7 20 20" />
         </g>
       </template>
       <!-- 文件树 -->
@@ -363,6 +383,10 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
+@keyframes mi-pan {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(2.2px); }
+}
 @keyframes mi-refresh-spin { to { transform: rotate(360deg); } }
 @keyframes mi-cross-blink {
   0%, 100% { opacity: 0.9; }
@@ -376,6 +400,7 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
 :global(.icon-btn:hover .mi-git .mi-flow-rev) { animation: mi-flow-rev-kf 1.8s linear infinite; }
 :global(.icon-btn:hover .mi-shortcuts .mi-keys) { animation: mi-key 1.3s ease-in-out infinite; }
 :global(.icon-btn:hover .mi-export .mi-arrow) { animation: mi-pop 0.9s ease-in-out infinite; }
+:global(.icon-btn:hover .mi-search .mi-scan) { animation: mi-pan 1.4s ease-in-out infinite; }
 
 /* 工具栏：刷新转一圈 / 定位十字闪烁（仅悬停） */
 :global(.mini:hover .mi-refresh .mi-g),

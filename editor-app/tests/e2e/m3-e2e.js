@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
     if (m.text().includes('[M3]')) console.log('LOG:', m.text().slice(0, 130));
   });
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   let pass = 0, fail = 0;

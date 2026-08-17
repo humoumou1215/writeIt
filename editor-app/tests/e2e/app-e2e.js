@@ -13,7 +13,7 @@ const { chromium } = require('playwright');
   // 清掉旧截图
   for (const f of fs.readdirSync(shots)) if (f.endsWith('.png')) fs.unlinkSync(shots + '/' + f);
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   let pass = 0, fail = 0;

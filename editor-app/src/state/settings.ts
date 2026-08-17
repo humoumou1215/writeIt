@@ -50,6 +50,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'toggleSidebar', label: '收纳/展开侧边栏', default: 'Ctrl+B' },
   { id: 'toggleSource', label: '切换源码/编辑模式', default: 'Ctrl+E' },
   { id: 'gitDiff', label: '打开当前文件 Git 改动', default: 'Ctrl+Shift+D' },
+  { id: 'search', label: '全局搜索（打开/关闭侧栏搜索面板）', default: 'Ctrl+Shift+F' },
   { id: 'settings', label: '打开设置', default: 'Ctrl+,' },
 ]
 
@@ -118,6 +119,10 @@ export interface AppSettings {
   annotationUsername: string
   /** 批注抽屉默认宽度（px） */
   annotationDrawerWidth: number
+  /** 大纲面板默认宽度（px） */
+  outlineWidth: number
+  /** 大纲面板是否展开 */
+  outlineOpen: boolean
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
 }
@@ -132,6 +137,8 @@ const defaultSettings: AppSettings = {
   templateDir: '',
   annotationUsername: '我',
   annotationDrawerWidth: 300,
+  outlineWidth: 56,
+  outlineOpen: true,
   shortcuts: { ...defaultShortcuts },
 }
 

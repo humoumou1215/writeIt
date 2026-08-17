@@ -6,7 +6,7 @@ const { chromium } = require('playwright');
   page.on('pageerror', (e) => console.log('PAGEERROR:', String(e).slice(0, 300)));
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
 
   // 打开 Mermaid 图表集（根文件）

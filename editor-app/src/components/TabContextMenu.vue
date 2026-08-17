@@ -31,6 +31,10 @@ function close() {
         :style="{ left: state.tabContextMenu.x + 'px', top: state.tabContextMenu.y + 'px' }"
       >
         <button class="menu-item" title="查看该文件的 Git 改动" @click="run('gitDiff')">Git 改动</button>
+        <button class="menu-item" title="打开文件所在目录并选中该文件" @click="run('revealInExplorer')">在文件管理器中显示</button>
+        <div class="divider"></div>
+        <button class="menu-item" title="关闭除当前标签外的所有标签" @click="run('closeOthers')">关闭其他</button>
+        <button class="menu-item" title="关闭所有标签" @click="run('closeAll')">全部关闭</button>
         <button class="menu-item danger" @click="run('close')">关闭</button>
       </div>
     </div>
@@ -71,5 +75,10 @@ function close() {
 }
 .menu-item.danger {
   color: var(--chrome-error);
+}
+.divider {
+  height: 1px;
+  background: var(--chrome-border);
+  margin: 4px 8px;
 }
 </style>

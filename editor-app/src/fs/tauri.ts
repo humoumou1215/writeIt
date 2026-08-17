@@ -49,6 +49,10 @@ export const tauriFs: FileSystem = {
   async remove(path) {
     await (await core()).invoke('remove', { path })
   },
+
+  async revealInExplorer(path) {
+    await (await core()).invoke('reveal_in_explorer', { path })
+  },
 }
 
 let lastRootName = '工作区'

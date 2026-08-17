@@ -40,8 +40,8 @@ export interface Tab {
 
 /** Git 面板状态（M11） */
 export interface GitPanelState {
-  /** content-col 双面板：文件树 / Git */
-  tab: 'files' | 'git'
+  /** content-col 面板：文件树 / Git / 全局搜索 */
+  tab: 'files' | 'git' | 'search'
   repo: GitRepoInfo | null
   branches: GitBranch[]
   status: GitFileStatus[]

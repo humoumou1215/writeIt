@@ -8,7 +8,7 @@ function check(name, ok) { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
   page.on('pageerror', (e) => console.log('PAGEERROR:', e.message.slice(0, 180)));
   page.on('console', (m) => { if (m.type() === 'error') console.log('ERR:', m.text().slice(0, 160)); });
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   // ---- 1. suggest 新对象解析（引用演示打开后）----

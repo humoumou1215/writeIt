@@ -18,8 +18,8 @@ export interface MermaidNodeDiff {
   mod: MermaidMod[]
   /** 合并后的源码（fence 渲染用；sequence = 新源码原样） */
   merged: string
-  /** 变更消息文本（sequence DOM 操作用） */
-  messages?: Array<{ kind: 'add' | 'mod'; text: string }>
+  /** 变更消息文本（sequence DOM 操作用，M16：仅增/删二元） */
+  messages?: Array<{ kind: 'add' | 'del'; text: string }>
 }
 
 export function detectMermaidType(src: string): MermaidNodeDiff['type'] {
@@ -52,14 +52,15 @@ interface FcNodeInfo {
 /** 提取 flowchart 节点（id → label + 定义行）。
  *  支持带边标签的行（B -- 是 --> C[...] / A -->|label| B）——M14 修复：
  *  按边分隔符拆段逐段解析；有形状的节点定义优先，裸 id 不覆盖已有形状定义。 */
-function extractFlowchartNodes(src: string): Map<string, FcNodeInfo> {
+export function extractFlowchartNodes(src: string): Map<string, FcNodeInfo> {
   const nodes = new Map<string, FcNodeInfo>()
   for (const line of src.split('\n')) {
     const t = line.trim()
     if (!t || FC_KEYWORDS.has(t.split(/\s+/)[0])) continue
     for (let seg of t.split(EDGE_SEP_RE)) {
-      // 去掉边的 |label| 前缀（A -->|label| B）
-      seg = seg.replace(/^\|\[[^|]*\]\|/, '').trim()
+      // 去掉边的 |label| 前缀（A -->|label| B）——注意真实语法是 |label|，
+      // 旧正则 ^\|\[[^|]*\]\| 误匹配带方括号的内容；改为 ^\|[^|]*\|
+      seg = seg.replace(/^\|[^|]*\|/, '').trim()
       if (!seg) continue
       const m = FC_NODE_RE.exec(seg)
       if (m && !FC_KEYWORDS.has(m[1])) {
@@ -83,13 +84,10 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id, info] of newNodes) {
+  for (const [id] of newNodes) {
     const old = oldNodes.get(id)
     if (!old) add.push(id)
-    else if (old.label !== info.label && old.hasShape && info.hasShape) {
-      // 两侧都有真实形状 label 且不同 → 修改
-      mod.push({ id, old: old.label, new: info.label })
-    }
+    // M16：标签修改不再单独标注（黄），二元语义：仅增/删；同 id 标签变化视为节点仍在，不打扰
   }
   for (const id of oldNodes.keys()) {
     if (!newNodes.has(id)) del.push(id)
@@ -120,21 +118,31 @@ function mergeFlowchart(
 
 const SEQ_MSG_RE = /^\s*([A-Za-z0-9_]+)\s*(->>|-->>|->|-->|-)>\s*([A-Za-z0-9_]+)\s*:\s*(.*)$/
 
-function extractSequenceMessages(src: string): string[] {
-  const msgs: string[] = []
-  for (const line of src.split('\n')) {
-    const m = SEQ_MSG_RE.exec(line)
-    if (m) msgs.push(m[4].trim())
-  }
-  return msgs
+/** 消息行（含原文，供删除消息加回渲染） */
+interface SeqMsgRow {
+  msg: string
+  line: string
 }
 
-/** 简单 LCS 文本序列 diff（按序标记增删改） */
+export function extractSequenceMessages(src: string): string[] {
+  return extractSequenceRows(src).map((r) => r.msg)
+}
+
+function extractSequenceRows(src: string): SeqMsgRow[] {
+  const rows: SeqMsgRow[] = []
+  for (const line of src.split('\n')) {
+    const m = SEQ_MSG_RE.exec(line)
+    if (m) rows.push({ msg: m[4].trim(), line })
+  }
+  return rows
+}
+
+/** 简单 LCS 文本序列 diff（按序标记增删；M16：去掉 mod 配对——修改视为删+增二元） */
 function diffTextSeq(oldSeq: string[], newSeq: string[]): {
   add: string[]
   del: string[]
   mod: MermaidMod[]
-  messages: Array<{ kind: 'add' | 'mod'; text: string }>
+  messages: Array<{ kind: 'add' | 'del'; text: string }>
 } {
   const n = oldSeq.length
   const m = newSeq.length
@@ -145,8 +153,7 @@ function diffTextSeq(oldSeq: string[], newSeq: string[]): {
         oldSeq[i] === newSeq[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
   const add: string[] = []
   const del: string[] = []
-  const mod: MermaidMod[] = []
-  const messages: Array<{ kind: 'add' | 'mod'; text: string }> = []
+  const messages: Array<{ kind: 'add' | 'del'; text: string }> = []
   let i = 0
   let j = 0
   while (i < n && j < m) {
@@ -155,40 +162,38 @@ function diffTextSeq(oldSeq: string[], newSeq: string[]): {
       j++
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
       del.push(oldSeq[i])
+      messages.push({ kind: 'del', text: oldSeq[i] })
       i++
     } else {
-      // 尝试与后续 del 配对为 mod（同位置修改）
-      if (i < n && oldSeq[i] !== newSeq[j]) {
-        mod.push({ id: `s${i}`, old: oldSeq[i], new: newSeq[j] })
-        messages.push({ kind: 'mod', text: newSeq[j] })
-        i++
-        j++
-      } else {
-        add.push(newSeq[j])
-        messages.push({ kind: 'add', text: newSeq[j] })
-        j++
-      }
+      add.push(newSeq[j])
+      messages.push({ kind: 'add', text: newSeq[j] })
+      j++
     }
   }
-  while (i < n) del.push(oldSeq[i++])
-  while (j < m) {
-    add.push(newSeq[j])
-    messages.push({ kind: 'add', text: newSeq[j] })
-    j++
+  while (i < n) {
+    del.push(oldSeq[i])
+    messages.push({ kind: 'del', text: oldSeq[i] })
+    i++
   }
-  return { add, del, mod, messages }
+  return { add, del, mod: [], messages }
 }
 
 function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
-  const oldMsgs = extractSequenceMessages(oldSrc)
-  const newMsgs = extractSequenceMessages(newSrc)
-  const r = diffTextSeq(oldMsgs, newMsgs)
+  const oldRows = extractSequenceRows(oldSrc)
+  const newRows = extractSequenceRows(newSrc)
+  const r = diffTextSeq(
+    oldRows.map((x) => x.msg),
+    newRows.map((x) => x.msg)
+  )
+  // M16：删除消息按原行加回底部（红标），否则二元渲染下看不到被删消息
+  const delLines = new Set(oldRows.filter((x) => r.del.includes(x.msg)).map((x) => x.line))
+  const merged = newSrc + (delLines.size ? '\n' + [...delLines].join('\n') : '')
   return {
     type: 'sequence',
     add: r.add,
     del: r.del,
     mod: r.mod,
-    merged: newSrc, // 新源码原样（删除消息无法加回，进批注卡）
+    merged,
     messages: r.messages,
   }
 }
@@ -202,7 +207,7 @@ interface StNodeInfo {
   line: string
 }
 
-function extractStates(src: string): Map<string, StNodeInfo> {
+export function extractStates(src: string): Map<string, StNodeInfo> {
   const states = new Map<string, StNodeInfo>()
   for (const line of src.split('\n')) {
     const m = ST_RE.exec(line)
@@ -217,9 +222,9 @@ function diffState(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
-  for (const [id, info] of newStates) {
+  for (const [id] of newStates) {
     if (!oldStates.has(id)) add.push(id)
-    else if (oldStates.get(id)!.label !== info.label) mod.push({ id, old: oldStates.get(id)!.label, new: info.label })
+    // M16：同 id 标签变化不再标注（二元增删语义）
   }
   for (const id of oldStates.keys()) if (!newStates.has(id)) del.push(id)
   const merged = mergeState(newSrc, oldStates, { add, del, mod })

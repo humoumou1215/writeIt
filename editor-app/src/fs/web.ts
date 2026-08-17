@@ -169,4 +169,8 @@ export const webFs: FileSystem = {
     for (const p of parts) cur = await cur.getDirectoryHandle(p)
     await cur.removeEntry(name, { recursive: true })
   },
+
+  async revealInExplorer() {
+    throw new Error('该功能仅在桌面应用中可用')
+  },
 }

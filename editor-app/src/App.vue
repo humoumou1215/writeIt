@@ -7,6 +7,7 @@ import { isEditableFile, type FsEntry } from './fs/types'
 import { git, isGitAvailable } from './git'
 import { applyGitMark, clearGitMark } from './git/mark'
 import GitPanel from './components/GitPanel.vue'
+import SearchPanel from './components/SearchPanel.vue'
 import TabContextMenu from './components/TabContextMenu.vue'
 import MenuIcon, { type MenuIconSet } from './components/MenuIcon.vue'
 import GradientDefs from './components/GradientDefs.vue'
@@ -37,17 +38,22 @@ import NewInput from './components/NewInput.vue'
 import TabBar from './components/TabBar.vue'
 import EditorPane from './components/EditorPane.vue'
 import AnnotationDrawer from './components/AnnotationDrawer.vue'
+import OutlinePanel from './components/OutlinePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ExportModal from './components/ExportModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import TemplatePicker from './components/TemplatePicker.vue'
 
+const wsTopbarEl = ref<HTMLElement | null>(null)
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   applyTheme(settings.theme)
   state.fsName = fs.kind
   await refreshTree()
+  // 顶部栏槽位：Crepe topbar 由 manager 移入此槽（横贯整行）
+  void import('./editor/manager').then((m) => { if (wsTopbarEl.value) m.bindTopbarSlot(wsTopbarEl.value) })
   // M4：启动即扫描模板注册表（斜杠菜单「模板」组 / 基于模板新建依赖）
   void import('./template/service').then((m) => m.templateService.ready())
   // 性能：后台预热 esbuild-wasm（模板 TS 转译），避免首次 suggest 加载卡顿
@@ -97,6 +103,7 @@ const shortcutActions: Record<string, () => void> = {
   gitDiff: () => {
     void openActiveGitDiff()
   },
+  search: () => toggleSearch(),
   settings: () => {
     state.settingsOpen = !state.settingsOpen
   },
@@ -147,6 +154,19 @@ function onGitIcon() {
   state.gitPanel.tab = 'git'
 }
 
+// M15：全局搜索 —— 图标/快捷键打开侧栏搜索面板（已打开则再次触发收起）
+function onSearchIcon() {
+  if (state.gitPanel.tab === 'search' && !state.sidebarCollapsed) {
+    state.sidebarCollapsed = true
+    return
+  }
+  if (state.sidebarCollapsed) state.sidebarCollapsed = false
+  state.gitPanel.tab = 'search'
+}
+function toggleSearch() {
+  onSearchIcon()
+}
+
 // M11d：标签右键菜单动作
 function onTabMenuAction(action: string, tabId: string) {
   const tab = state.tabs.find((t) => t.id === tabId)
@@ -155,6 +175,12 @@ function onTabMenuAction(action: string, tabId: string) {
     void import('./editor/manager').then((m) =>
       m.openGitDiff(tab.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
     )
+  } else if (action === 'revealInExplorer') {
+    revealPathInExplorer(tab.path)
+  } else if (action === 'closeOthers') {
+    void import('./editor/manager').then((m) => m.closeOtherTabs(tabId))
+  } else if (action === 'closeAll') {
+    void import('./editor/manager').then((m) => m.closeAllTabs())
   } else if (action === 'close') {
     void import('./editor/manager').then((m) => m.closeTab(tabId))
   }
@@ -229,7 +255,21 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
     case 'delete':
       await removeNode(path, kind)
       break
+    case 'revealInExplorer':
+      revealPathInExplorer(path)
+      break
   }
+}
+
+// ---------- 在系统文件管理器中显示（文件树 / 标签页右键菜单） ----------
+function revealPathInExplorer(path: string) {
+  if (fs.kind !== 'tauri') {
+    toast('该功能仅在桌面应用中可用', 'info')
+    return
+  }
+  fs.revealInExplorer(path).catch((e: unknown) => {
+    toast((e as Error)?.message || '打开文件管理器失败', 'error')
+  })
 }
 
 // ---------- 基于模板新建（TemplatePicker 回调） ----------
@@ -337,6 +377,14 @@ function onTreeRootDrop(e: DragEvent) {
         </button>
         <button
           class="icon-btn"
+          :class="{ active: state.gitPanel.tab === 'search' }"
+          :title="`全局搜索（${settings.shortcuts.search || 'Ctrl+Shift+F'}）`"
+          @click="onSearchIcon"
+        >
+          <MenuIcon name="search" :set="settings.iconSet" />
+        </button>
+        <button
+          class="icon-btn"
           :title="`设置（${settings.shortcuts.settings || 'Ctrl+,'}）`"
           @click="openSettings('general')"
         >
@@ -421,31 +469,38 @@ function onTreeRootDrop(e: DragEvent) {
           <p v-if="!state.tree.length" class="empty">空目录</p>
         </div>
         <GitPanel v-show="state.gitPanel.tab === 'git'" />
+        <SearchPanel v-show="state.gitPanel.tab === 'search'" />
       </div>
 
       <div class="resizer" title="拖拽调整宽度" @mousedown="startResize"></div>
       </div>
 
-      <!-- 主区域：标签栏 + 工作区（编辑器 + 批注栏同层，批注栏不压住编辑区） -->
+      <!-- 主区域：标签栏 + 工作区（顶部栏横贯整行；大纲与正文/批注位于其下） -->
       <main class="main">
         <TabBar />
-        <div class="workspace" @click="onWorkspaceClick">
-          <div class="editor-area">
-            <EditorPane
-              v-for="tab in state.tabs"
-              :key="tab.id"
-              :tab-id="tab.id"
-              :visible="tab.id === state.activeTabId"
-            />
-            <div v-if="!state.tabs.length" class="welcome">
-              <h2>WriteIt</h2>
-              <p>从左侧文件树打开一个文件，或新建文件开始编辑。</p>
-              <p class="hint">
-                快捷键：Ctrl+S 保存 · Ctrl+O 打开目录 · Ctrl+B 收纳侧边栏 · 更多在设置中查看
-              </p>
+        <div class="workspace">
+          <!-- 顶部栏槽位：Crepe 当前活动标签的 topbar 被移入此处横贯整行；
+               大纲收纳按钮由 manager 以原生 .top-bar-item 注入 topbar 内部 -->
+          <div class="ws-topbar" ref="wsTopbarEl"></div>
+          <div class="ws-body" @click="onWorkspaceClick">
+            <OutlinePanel />
+            <div class="editor-area">
+              <EditorPane
+                v-for="tab in state.tabs"
+                :key="tab.id"
+                :tab-id="tab.id"
+                :visible="tab.id === state.activeTabId"
+              />
+              <div v-if="!state.tabs.length" class="welcome">
+                <h2>WriteIt</h2>
+                <p>从左侧文件树打开一个文件，或新建文件开始编辑。</p>
+                <p class="hint">
+                  快捷键：Ctrl+S 保存 · Ctrl+O 打开目录 · Ctrl+B 收纳侧边栏 · 更多在设置中查看
+                </p>
+              </div>
             </div>
+            <AnnotationDrawer />
           </div>
-          <AnnotationDrawer />
         </div>
       </main>
     </div>
@@ -707,8 +762,34 @@ function onTreeRootDrop(e: DragEvent) {
   min-width: 0;
   min-height: 0;
 }
-/* 工作区：编辑器与批注栏同层（批注栏占独立一列，不覆盖/压住编辑内容） */
+/* 工作区：顶部栏横贯整行；大纲/编辑器/批注栏位于其下（同层 flex，互不覆盖） */
 .workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ws-topbar {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  background: var(--chrome-background);
+  border-bottom: 1px solid var(--chrome-border-light);
+  min-height: 0;
+  /* 独立层级：让其内下拉等浮层浮于正文之上（不裁剪、不被正文遮盖） */
+  position: relative;
+  z-index: 30;
+  /* 移入的 Crepe topbar 归位样式（其自身主题背景/边框会被覆盖） */
+  :deep(.milkdown-top-bar) {
+    position: static;
+    flex: 1;
+    border: none;
+    box-shadow: none;
+    background: var(--chrome-background);
+    height: auto;
+  }
+}
+.ws-body {
   flex: 1;
   display: flex;
   min-height: 0;
@@ -820,5 +901,24 @@ function onTreeRootDrop(e: DragEvent) {
     opacity: 1;
     transform: translateY(0);
   }
+}
+</style>
+
+<style>
+/* 搜索结果高亮（编辑器内，非 scoped：编辑器 DOM 不在组件模板内） */
+.milkdown .search-hit-highlight {
+  background: color-mix(in srgb, var(--crepe-color-primary, var(--chrome-primary)) 34%, transparent);
+  color: var(--crepe-color-on-background, inherit);
+  border-radius: 3px;
+  padding: 0 1px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition: background 0.25s ease;
+}
+/* 原子节点（嵌入卡片）内命中：整卡淡色高亮 + 左侧强调条 */
+.milkdown .search-hit-highlight-node {
+  background: color-mix(in srgb, var(--crepe-color-primary, var(--chrome-primary)) 14%, transparent);
+  border-radius: 8px;
+  box-shadow: inset 3px 0 0 var(--crepe-color-primary, var(--chrome-primary));
 }
 </style>

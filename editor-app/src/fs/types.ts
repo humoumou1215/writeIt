@@ -28,6 +28,8 @@ export interface FileSystem {
   createDir(path: string): Promise<void>
   rename(oldPath: string, newPath: string): Promise<void>
   remove(path: string): Promise<void>
+  /** 在系统文件管理器中显示该路径（文件 → 所在目录并选中；目录 → 父级中选中）。不受支持的宿主抛错 */
+  revealInExplorer(path: string): Promise<void>
 }
 
 export function isEditableFile(name: string): boolean {

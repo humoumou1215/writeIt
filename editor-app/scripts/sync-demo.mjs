@@ -19,7 +19,7 @@ if (!existsSync(ROOT)) {
 
 const esc = (s) => s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
 
-/** 递归收集 文件 + 目录（排除 .gitkeep，目录含空目录） */
+/** 递归收集 文件 + 目录（排除 .gitkeep 与 .git：目录含空目录；.git 为仓库内部数据不入 mock） */
 function walk(dir) {
   const files = []
   const dirs = []
@@ -27,6 +27,7 @@ function walk(dir) {
     const p = join(dir, entry)
     const rel = relative(ROOT, p).split(sep).join('/')
     if (statSync(p).isDirectory()) {
+      if (entry === '.git') continue // git 内部目录
       dirs.push(rel)
       const sub = walk(p)
       files.push(...sub.files)

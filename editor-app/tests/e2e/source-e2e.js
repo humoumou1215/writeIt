@@ -24,7 +24,7 @@ const { chromium } = require('playwright');
     return !!md && md.style.display === 'none';
   });
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.evaluate(() => {
     const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');
     fs.files['笔记/源码测试.md'] = '# 源码测试\n\n第一段内容。\n';

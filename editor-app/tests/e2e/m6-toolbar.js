@@ -6,7 +6,7 @@ const { chromium } = require('playwright');
   page.on('console', (m) => { const t = m.text(); if (m.type() === 'error' || m.type() === 'warning' || t.includes('[card]')) console.log(m.type().toUpperCase() + ':', t.slice(0, 300)); });
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
   await page.evaluate(() => {
     const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');

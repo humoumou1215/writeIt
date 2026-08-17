@@ -45,4 +45,8 @@ export const devFs: FileSystem = {
   remove(path) {
     return call<void>('remove', { path })
   },
+
+  revealInExplorer() {
+    return Promise.reject(new Error('该功能仅在桌面应用中可用'))
+  },
 }

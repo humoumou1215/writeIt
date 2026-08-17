@@ -2,6 +2,7 @@
 // 每个打开的标签持有独立的 Crepe 实例（保留各自的撤销历史/光标/滚动位置），
 // 切标签只切换容器可见性；关闭标签才销毁实例。
 // 数据流：文件内容只从 getMarkdown() 出来、经 replaceAll() 进去，不旁路 DOM。
+import { reactive, watch } from 'vue'
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { replaceAll } from '@milkdown/kit/utils'
@@ -29,7 +30,7 @@ import {
 import { initRefTooltip } from './ref/ref-tooltip'
 import { baseName } from '../fs/types'
 import { state, nextTabId, toast, confirmDialog } from '../state/store'
-import { settings } from '../state/settings'
+import { settings, saveSettings } from '../state/settings'
 import type { Tab, ViewMode } from '../state/store'
 import { git, type DiffBase } from '../git'
 import { featureConfigs } from './features'
@@ -44,6 +45,8 @@ import { validatePlugin, validateConfigCtx, clearValidationTimer } from '../vali
 import { annotationPlugin, annotationConfigCtx } from '../annotations'
 import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
 import { getRuntimeAnnotations, clearAnnotations } from '../annotations/service'
+import { outlinePlugin, outlineStore, clearOutline } from './outline'
+import { searchHighlightPlugin, setSearchHighlight, setSearchHighlightNode } from './search-highlight'
 
 interface Instance {
   crepe: Crepe
@@ -52,6 +55,8 @@ interface Instance {
   suppressing: boolean
   /** M7：源码模式 textarea（懒创建；源码编辑不经过 ProseMirror doc） */
   srcTa: HTMLTextAreaElement | null
+  /** M16：Crepe topbar 元素与原生位置（移入工作区顶行槽位后，可随时归还） */
+  topbar: null | { el: HTMLElement; parent: HTMLElement; next: Node | null }
 }
 
 const instances = new Map<string, Instance>()
@@ -188,6 +193,7 @@ async function setViewMode(tabId: string, mode: ViewMode): Promise<void> {
       viewEl?.focus()
     })
   }
+  syncActiveTopbar()
 }
 
 export async function toggleSourceMode(tabId: string): Promise<void> {
@@ -496,6 +502,8 @@ export async function scrollToPos(tabId: string, pos: number): Promise<void> {
   const inst = instances.get(tabId)
   if (!inst) return
   await new Promise((r) => setTimeout(r, 120))
+  // 目标标题停在视口顶部附近（小偏移，滚动充分，不留下方大片空白）
+  const TOP_OFFSET = 10
   try {
     await inst.crepe.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx)
@@ -508,13 +516,31 @@ export async function scrollToPos(tabId: string, pos: number): Promise<void> {
         const elRect = el.getBoundingClientRect()
         const paneRect = pane.getBoundingClientRect()
         const target =
-          pane.scrollTop + (elRect.top - paneRect.top) - pane.clientHeight * 0.15
+          pane.scrollTop + (elRect.top - paneRect.top) - TOP_OFFSET
         pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
       }
     })
   } catch {
     /* 编辑器已销毁 */
   }
+  // 保险：动画结束后复查——若目标仍明显偏离（大表格/嵌入块撑高导致位移/滚动被打断），补一次精确定位
+  setTimeout(() => {
+    const cur = instances.get(tabId)
+    if (!cur) return
+    void cur.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const dom = view.domAtPos(Math.min(pos, view.state.doc.content.size))
+      const el = (dom.node as HTMLElement)?.closest?.('td, th, p, li, h1, h2, h3, h4, pre') ?? (dom.node as HTMLElement)
+      const pane = cur.el.classList.contains('editor-pane')
+        ? cur.el
+        : (cur.el.querySelector('.editor-pane') as HTMLElement | null)
+      if (!pane || !el) return
+      const off = el.getBoundingClientRect().top - pane.getBoundingClientRect().top
+      if (off > 48 || off < -4) {
+        pane.scrollTo({ top: pane.scrollTop + off - TOP_OFFSET, behavior: 'smooth' })
+      }
+    })
+  }, 460)
 }
 
 // M5：手动重新校验活动标签（面板 ⟳ 按钮）
@@ -904,7 +930,7 @@ async function scrollToHeading(fragment: string) {
       if (pane && titleDOM) {
         const paneRect = pane.getBoundingClientRect()
         const titleRect = titleDOM.getBoundingClientRect()
-        const target = pane.scrollTop + (titleRect.top - paneRect.top) - pane.clientHeight * 0.15
+        const target = pane.scrollTop + (titleRect.top - paneRect.top) - 10
         pane.scrollTo({ top: Math.max(0, target), behavior: 'smooth' })
       } else {
         titleDOM?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -942,19 +968,34 @@ async function scrollToHeading(fragment: string) {
   })
 }
 
-// M15：搜索结果点击 → 打开文件并滚动到匹配处
+// M15：搜索结果跳转 → 打开文件并滚动到匹配处
 // 参数为文件路径（与搜索结果一致）；内部确保标签打开/激活后再定位。
-// 定位策略：先在 ProseMirror doc 的文本节点中找「匹配行文本」，找不到再退化找关键词本身。
-// （原始文件偏移与渲染后 doc 偏移不一致，行文本/关键词定位最稳）
+// 定位策略（优先级）：
+//  ① 第 occurrence 次关键词出现（调用方按源文件扫描顺序累计，能精确对应点击的命中行）
+//  ② 匹配行全文（行文本在渲染 doc 中完整出现时最准）
+//  ③ 关键词首次出现
+// 定位成功后给命中词加临时高亮（search-hit-highlight，编辑自动清除）。
+export interface SearchJumpOptions {
+  /** 该命中在源文件中是关键词的第几次出现（0 起；与搜索结果产生时的统计一致） */
+  occurrence?: number
+  /** 大小写敏感（与搜索结果选项一致，保证出现序号对齐） */
+  caseSensitive?: boolean
+  /** 命中关键词前 12 字符（行内上下文，纠偏定位） */
+  before?: string
+  /** 命中关键词后 12 字符（行内上下文，纠偏定位） */
+  after?: string
+}
+
 export async function scrollToSearchMatch(
   path: string,
   lineText: string,
-  needle: string
-): Promise<void> {
+  needle: string,
+  opts: SearchJumpOptions = {}
+): Promise<number | null> {
   // 未打开则打开（已打开则激活）
   if (!state.tabs.find((t) => t.path === path)) await openTab(path)
   const tab = state.tabs.find((t) => t.path === path)
-  if (!tab || tab.viewMode === 'diff') return
+  if (!tab || tab.viewMode === 'diff') return null
   // 源码模式下先切回所见即所得（用户要看到渲染位置）
   if (tab.viewMode === 'source') await setViewMode(tab.id, 'wysiwyg')
   if (state.activeTabId !== tab.id) {
@@ -968,34 +1009,132 @@ export async function scrollToSearchMatch(
       inst = instances.get(tab.id)
     }
   }
-  if (!inst) return
-  try {
-    const pos = await inst.crepe.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      let found = -1
-      const lineNorm = lineText.trim()
-      const needleNorm = needle.trim().toLowerCase()
-      view.state.doc.descendants((node, pos) => {
-        if (found >= 0 || !node.isText) return true
-        const text = node.text ?? ''
-        // ① 整行文本包含 → 最精确
-        let idx = lineNorm && text.includes(lineNorm) ? text.indexOf(lineNorm) : -1
-        // ② 退化：行内关键词（忽略大小写）
-        if (idx < 0 && needleNorm) {
-          idx = text.toLowerCase().indexOf(needleNorm)
+  if (!inst) return null
+
+  const lineNorm = lineText.trim()
+  const needleStr = needle.trim()
+  const needleNorm = opts.caseSensitive ? needleStr : needleStr.toLowerCase()
+  const targetOcc = opts.occurrence ?? 0
+  const before = (opts.before ?? '').trim()
+  const after = (opts.after ?? '').trim()
+
+  // 编辑器异步加载内容（defaultValue 注入）可能晚于实例创建：doc 为空时重试（最多 ~2.4s）
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const found = await inst.crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        if (!view.state.doc.textContent.trim()) return { kind: 'none', pos: -2, from: -1, to: -1 } // 尚未就绪
+        let linePos = -1
+        // 把文档展平成「文本流」：普通文本节点精确到 pos；原子节点（嵌入卡片等）
+        // 内部的文本不可按 pos 寻址，挂在节点起点位置上（全局第 N 次出现仍准确）。
+        interface Seg {
+          kind: 'text' | 'node'
+          /** 文本流中的字符偏移范围 [start, end) */
+          start: number
+          end: number
+          /** 命中字符在流中的全局偏移（定位用） */
+          hitOff: number
+          /** 文本节点 → 精确偏移；节点 → 起点 */
+          pos: number
+          /** 节点区间（node 级 decoration 用） */
+          from: number
+          to: number
         }
-        if (idx >= 0) {
-          found = pos + idx
-          return false
+        const segs: Seg[] = []
+        let flow = ''
+        view.state.doc.descendants((node, pos) => {
+          if (node.isText) {
+            const text = node.text ?? ''
+            if (text) {
+              flow += text
+              segs.push({ kind: 'text', start: flow.length - text.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
+            }
+            if (linePos < 0 && lineNorm && text.includes(lineNorm)) {
+              linePos = pos + text.indexOf(lineNorm)
+            }
+            return true
+          }
+          // 非文本节点：只对「原子/容器」补一段流（避免与子文本重复计数）
+          if (!node.isText && node.type.isLeaf) {
+            const t = node.textContent
+            if (t) {
+              flow += t
+              segs.push({ kind: 'node', start: flow.length - t.length, end: flow.length, hitOff: 0, pos, from: pos, to: pos + node.nodeSize })
+            }
+            return false
+          }
+          return true
+        })
+        const needleLen = Math.max(needleStr.length, 1)
+        // 全局第 N 次出现（大小写一致规则）
+        const flowNorm = opts.caseSensitive ? flow : flow.toLowerCase()
+        const qn = opts.caseSensitive ? needleStr : needleNorm
+        const hits: Array<{ seg: Seg; off: number; ctxBefore: string; ctxAfter: string }> = []
+        let i = flowNorm.indexOf(qn)
+        while (i >= 0) {
+          const seg = segs.find((s) => i >= s.start && i < s.end)
+          if (seg) {
+            hits.push({
+              seg,
+              off: i,
+              ctxBefore: flow.slice(Math.max(0, i - 12), i),
+              ctxAfter: flow.slice(i + needleLen, i + needleLen + 12),
+            })
+          }
+          i = flowNorm.indexOf(qn, i + needleLen)
         }
-        return true
+        // 顺序保底 + 上下文纠偏打分
+        let bestScore = -Infinity
+        let bestHit: (typeof hits)[number] | null = null
+        for (let k = 0; k < hits.length; k++) {
+          const h = hits[k]
+          let score = 0
+          if (k === targetOcc) score += 100
+          if (before && h.ctxBefore.includes(before)) score += 40
+          if (after && h.ctxAfter.includes(after)) score += 40
+          if (before && h.ctxBefore.endsWith(before.slice(-8))) score += 15
+          if (after && h.ctxAfter.startsWith(after.slice(0, 8))) score += 15
+          if (score > bestScore) {
+            bestScore = score
+            bestHit = h
+          }
+        }
+        if (bestHit) {
+          const seg = bestHit.seg
+          const offInSeg = bestHit.off - seg.start
+          if (seg.kind === 'text') {
+            return { kind: 'inline', pos: seg.pos + offInSeg, from: seg.pos + offInSeg, to: seg.pos + offInSeg + needleLen }
+          }
+          return { kind: 'node', pos: seg.pos, from: seg.from, to: seg.to }
+        }
+        if (linePos >= 0) return { kind: 'inline', pos: linePos, from: linePos, to: linePos + needleLen }
+        return { kind: 'none', pos: -1, from: -1, to: -1 }
       })
-      return found
-    })
-    if (pos >= 0) await scrollToPos(tab.id, pos)
-  } catch {
-    /* 编辑器已销毁 */
+      const f = found as { kind: string; pos: number; from: number; to: number }
+      if (f.kind === 'none') {
+        if (f.pos === -2) {
+          // 编辑器内容尚未就绪 → 稍后重试
+          await new Promise((r) => setTimeout(r, 150))
+          continue
+        }
+        return null
+      }
+      if (f.pos >= 0) {
+        const f = found as { kind: 'inline' | 'node'; pos: number; from: number; to: number }
+        await scrollToPos(tab.id, f.pos)
+        if (f.kind === 'inline') {
+          setSearchHighlight(inst.crepe.editor, f.from, f.to)
+        } else {
+          setSearchHighlightNode(inst.crepe.editor, f.from, f.to)
+        }
+        return f.pos
+      }
+      return null
+    } catch {
+      return null // 编辑器已销毁
+    }
   }
+  return null
 }
 
 // ---------- 打开 / 激活 ----------
@@ -1040,6 +1179,7 @@ export function activateTab(id: string) {
   // M6：批注卡上下文跟随活动标签（切标签后 Ctrl+R/批注卡作用于当前编辑器）
   const inst0 = instances.get(id)
   if (inst0) setAnnotationCardContext(id, inst0.crepe.editor)
+  syncActiveTopbar()
   // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）
   requestAnimationFrame(() => {
     const inst = instances.get(id)
@@ -1051,6 +1191,104 @@ export function activateTab(id: string) {
     const viewEl = inst?.el.querySelector('.ProseMirror') as HTMLElement | null
     viewEl?.focus()
   })
+}
+
+// ---------- M16：顶部栏槽位（Crepe topbar 横贯整行，大纲/正文都在其下） ----------
+let topbarSlot: HTMLElement | null = null
+/** 当前在槽位中的 topbar（来自某活动标签的编辑器） */
+let slotBar: { inst: Instance; el: HTMLElement; host: HTMLElement } | null = null
+
+// ---------- 原生 topbar 按钮：大纲收纳开关（注入 crepe top-bar-inner，成为真正的 top-bar-item） ----------
+/** 在 topbar 的 .top-bar-inner 最前面注入原生 `.top-bar-item` 按钮（存量样式/悬停/active 自动生效） */
+function ensureOutlineToggle(bar: HTMLElement): void {
+  const inner = bar.querySelector('.top-bar-inner')
+  if (!inner) return
+  let btn = inner.querySelector<HTMLElement>('.writeit-outline-toggle')
+  if (!btn) {
+    btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'top-bar-item writeit-outline-toggle'
+    // 与存量按钮一致的 24px 描边图标（chevron：收起指向左 / 展开指向右，active 时 180° 旋转）
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>'
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      toggleOutlineFromTopbar()
+    })
+    inner.insertBefore(btn, inner.firstChild)
+  }
+  syncOutlineToggleState(btn)
+}
+
+/** 大纲开关状态同步（active 类 = 主题主色 + 旋转，与存量 .top-bar-item.active 一致） */
+function syncOutlineToggleState(btn: HTMLElement): void {
+  const open = settings.outlineOpen
+  btn.title = open ? '收起大纲' : '展开大纲'
+  btn.classList.toggle('active', open)
+}
+
+function toggleOutlineFromTopbar(): void {
+  settings.outlineOpen = !settings.outlineOpen
+  saveSettings()
+}
+
+// 其他入口（面板边缘按钮等）改了 outlineOpen → 同步 topbar 按钮状态
+watch(
+  () => settings.outlineOpen,
+  () => {
+    const btn = topbarSlot?.querySelector<HTMLElement>('.writeit-outline-toggle')
+    if (btn) syncOutlineToggleState(btn)
+  }
+)
+
+/** App 挂载后把顶行槽位交给 manager 接管 */
+export function bindTopbarSlot(el: HTMLElement): void {
+  topbarSlot = el
+  syncActiveTopbar()
+}
+
+/** 活动标签的 topbar 移入槽位；上一个标签的 topbar 归还原处。源码/diff 模式隐藏整行。 */
+export function syncActiveTopbar(): void {
+  const slot = topbarSlot
+  if (!slot) return
+  // ① 归还槽位中的旧 topbar
+  if (slotBar) {
+    const prev = slotBar
+    slotBar = null
+    prev.host.remove()
+    if (prev.inst.topbar?.parent) {
+      prev.inst.topbar.parent.insertBefore(prev.el, prev.inst.topbar.next)
+    }
+  }
+  // ② 当前活动标签的 topbar 进槽位（仅所见即所得模式）
+  const tabId = state.activeTabId
+  const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
+  const inst = tabId ? instances.get(tabId) : undefined
+  if (!tab || !inst?.topbar?.parent || tab.viewMode !== 'wysiwyg') {
+    slot.style.display = 'none'
+    return
+  }
+  // 用带 milkdown 类的宿主包裹：让 crepe 主题的 `.milkdown ...` 后代选择器与 CSS 变量继续生效
+  const host = document.createElement('div')
+  host.className = 'ws-topbar-host milkdown'
+  host.appendChild(inst.topbar.el)
+  slot.style.display = 'flex'
+  slot.appendChild(host)
+  slotBar = { inst, el: inst.topbar.el, host }
+  // ③ 原生注入大纲收纳按钮（作为 topbar 第一个 .top-bar-item）
+  ensureOutlineToggle(inst.topbar.el)
+}
+
+/** 销毁前把仍在槽位中的 topbar 归还（避免随容器移除而丢失） */
+function releaseSlotBar(tabId: string): void {
+  if (slotBar && slotBar.inst && instances.get(tabId) === slotBar.inst) {
+    const prev = slotBar
+    slotBar = null
+    prev.host.remove()
+    if (prev.inst.topbar?.parent) {
+      prev.inst.topbar.parent.insertBefore(prev.el, prev.inst.topbar.next)
+    }
+  }
 }
 
 // ---------- 挂载 / 销毁（由 EditorPane.vue 调用） ----------
@@ -1127,6 +1365,15 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   crepe.editor.use(annotationPlugin)
   // P1：校验插件（编辑防抖监听 + validate 命令；引擎 validateEditor 由 config 注入）
   crepe.editor.use(validatePlugin)
+  // 大纲：提取标题 + 光标小节实时追踪 → outlineStore(tabId)
+  crepe.editor.use(
+    outlinePlugin((snap) => {
+      outlineStore.tabs[tabId] = snap
+      outlineStore.version++
+    })
+  )
+  // 搜索结果高亮（跳转定位后高亮命中词；编辑自动清除）
+  crepe.editor.use(searchHighlightPlugin())
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
     // M7：Ctrl+E 让位给源码模式切换——inline-code 快捷键改绑 Ctrl+Shift+E
@@ -1152,8 +1399,15 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
   void validateEditor(crepe.editor, tabId, { silent: true })
 
-  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null }
+  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null, topbar: null }
   instances.set(tabId, inst)
+  // M16：记录 topbar 原生位置（随后移入工作区顶行槽位；可归还）
+  const topbarEl = container.querySelector('.milkdown-top-bar') as HTMLElement | null
+  if (topbarEl && topbarEl.parentElement) {
+    inst.topbar = { el: topbarEl, parent: topbarEl.parentElement, next: topbarEl.nextSibling }
+  }
+  // 活动标签的 topbar 进槽位
+  syncActiveTopbar()
   // M14：编辑器挂载完成 → 通知批注抽屉刷新（切标签后避免残留上一个标签的批注）
   notifyEditorMounted(tabId)
   // §6.7：真实用户输入（键盘/粘贴/IME）→ 记录时间戳。
@@ -1194,9 +1448,12 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 export function unmountEditor(tabId: string) {
   const inst = instances.get(tabId)
   if (!inst) return
+  // M16：若该标签的 topbar 仍占用顶行槽位，先归还原处再销毁
+  releaseSlotBar(tabId)
   inst.crepe.destroy().catch(() => undefined)
   inst.el.remove()
   instances.delete(tabId)
+  clearOutline(tabId)
 }
 
 // ---------- 保存 ----------
@@ -1417,11 +1674,27 @@ export async function closeTab(tabId: string): Promise<void> {
       if (nextInst) setAnnotationCardContext(next.id, nextInst.crepe.editor)
     }
   }
+  syncActiveTopbar()
 }
 
 function confirmDiscard(tab: Tab): Promise<boolean> {
   // 循环依赖规避：由组件层实现确认框
   return import('../components/confirm').then((m) => m.confirmCloseTab(tab))
+}
+
+/** 关闭除指定标签外的所有标签（未保存的逐个确认；取消的跳过） */
+export async function closeOtherTabs(keepTabId: string): Promise<void> {
+  const others = state.tabs.filter((t) => t.id !== keepTabId)
+  for (const tab of others) {
+    await closeTab(tab.id)
+  }
+}
+
+/** 关闭全部标签（未保存的逐个确认；取消的跳过） */
+export async function closeAllTabs(): Promise<void> {
+  for (const tab of [...state.tabs]) {
+    await closeTab(tab.id)
+  }
 }
 
 // ---------- 文件树联动 ----------

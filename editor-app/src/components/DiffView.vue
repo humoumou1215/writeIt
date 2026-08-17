@@ -53,8 +53,10 @@ function renderWords(line: DiffLine) {
 
 // ---------- hunk 折叠 ----------
 // 预处理：hunk.lines 中连续 ctx 段超过阈值 → 折叠中间
-const FOLD_THRESHOLD = 10
-const FOLD_KEEP = 4
+// M16：unified diff 使用 -U3 上下文，单 hunk 内 ctx 段最多 6 行 → 阈值 10 永不触发（死功能）；
+//   改为 3：同一 hunk 内被两次修改夹住的 ctx 段（>3 行）即可折叠
+const FOLD_THRESHOLD = 3
+const FOLD_KEEP = 2
 
 interface FoldedSegment {
   kind: 'ctx-run' | 'line'

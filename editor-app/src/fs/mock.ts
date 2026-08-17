@@ -316,9 +316,11 @@ interface MockData {
   fileHash?: Record<string, string>
 }
 
-const SEED_VERSION = 8
+const SEED_VERSION = 9
 
 /**
+ * 版本 9：内容源切换为独立内容库（sync-demo 路径改为 /Users/huyongsheng/project/消金业务合作平台），
+ * 并清除资料内混入的 .git 内部数据（.file 计数 160→47 干净化）。
  * 版本 8：接口文档模板 export.ts 改为「对外版本」过滤（去掉内部评估信息/字段数据来源/变更记录）。
  * 版本 7：接口文档模板新增 export.ts（M10 导出自定义示例）。
  * 版本 6：新增「xxljob」模板（一文件一任务）+ 4 合规样例 + 1 违规样例。
@@ -600,6 +602,10 @@ export const mockFs: FileSystem = {
       throw new Error(`不存在: ${path}`)
     }
     persist(data)
+  },
+
+  async revealInExplorer() {
+    throw new Error('该功能仅在桌面应用中可用')
   },
 }
 

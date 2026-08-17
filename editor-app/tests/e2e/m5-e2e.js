@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
 
   const seed = async (kind) => {
-    await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(1200);
     await page.evaluate((k) => {
       const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}');

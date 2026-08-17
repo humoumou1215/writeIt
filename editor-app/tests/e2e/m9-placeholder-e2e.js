@@ -8,7 +8,7 @@ const check = (n, ok) => { ok ? pass++ : fail++; console.log(`${ok ? 'âœ…' : 'â
   const page = await browser.newPage()
   page.on('pageerror', (e) => console.log('  [PAGEERR]', e.message.slice(0, 200)))
   page.on('console', (m) => { if (m.type() === 'error') console.log(`  [${m.type()}]`, m.text().slice(0, 200)) })
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 })
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 })
   await page.waitForTimeout(3000)
 
   const treeClick = async (path) => {

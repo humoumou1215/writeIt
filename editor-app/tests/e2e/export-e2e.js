@@ -18,7 +18,7 @@ const { chromium } = require('playwright');
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
 
   // ---------- 0：无活动标签时导出 → 失败提示（页面初始无标签） ----------

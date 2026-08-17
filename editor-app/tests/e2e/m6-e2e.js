@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
   const page = await browser.newPage({ viewport: { width: 1400, height: 700 } });
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2000);
   // 1. 持久化批注 round-trip（产品路径格式：&quot; 转义）
   const note = JSON.stringify([{ a: '我', c: '这里需要补充说明', t: Date.now() - 60000, r: 0 }]).replace(/"/g, '&quot;');

@@ -41,6 +41,7 @@ function close() {
         <template v-if="state.contextMenu.kind === 'file'">
           <button v-if="canOpen" class="menu-item" @click="run('open')">打开</button>
           <button v-if="canOpen" class="menu-item" @click="run('gitDiff')">Git 改动</button>
+          <button class="menu-item" title="打开文件所在目录并选中该文件" @click="run('revealInExplorer')">在文件管理器中显示</button>
           <button class="menu-item" @click="run('rename')">重命名</button>
           <button class="menu-item danger" @click="run('delete')">删除</button>
         </template>
@@ -48,6 +49,7 @@ function close() {
           <button class="menu-item" @click="run('newFile')">新建文件</button>
           <button class="menu-item" @click="run('newFromTemplate')">基于模板新建…</button>
           <button class="menu-item" @click="run('newDir')">新建文件夹</button>
+          <button class="menu-item" title="在父级目录中选中该文件夹" @click="run('revealInExplorer')">在文件管理器中显示</button>
           <button class="menu-item" @click="run('rename')">重命名</button>
           <button class="menu-item danger" @click="run('delete')">删除</button>
         </template>

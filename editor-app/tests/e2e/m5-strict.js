@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
   const page = await browser.newPage({ viewport: { width: 1280, height: 700 } });
   let pass = 0, fail = 0;
   const ok = (name, cond) => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}`); };
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(1500);
   // 模板 rules mode 改 strict + 周报无版本章节（制造 error）
   await page.evaluate(() => {

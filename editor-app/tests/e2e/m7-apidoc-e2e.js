@@ -8,7 +8,7 @@ const check = (n, ok) => { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   const page = await browser.newPage()
   page.on('pageerror', (e) => console.log('  [PAGEERR]', e.message.slice(0, 200)))
   page.on('console', (m) => { if (m.type() === 'error') console.log(`  [${m.type()}]`, m.text().slice(0, 200)) })
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 })
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 })
   await page.waitForTimeout(3000)
 
   // 树点击 helper：dispatchEvent click（绕遮挡/actionability）+ 等子节点

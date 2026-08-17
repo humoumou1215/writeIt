@@ -8,7 +8,7 @@ function check(name, ok) { ok ? pass++ : fail++; console.log(`${ok ? '✅' : '�
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.log('PAGEERROR:', e.message.slice(0, 180)));
   page.on('console', (m) => { if (m.type() === 'error') console.log('ERR:', m.text().slice(0, 180)); });
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   // ---- 1. 打开引用演示：对象引用自动消歧 ----

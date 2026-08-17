@@ -1,13 +1,13 @@
 # 文件系统抽象
 
-> 核心代码：`editor-app/src/fs/`（types.ts / index.ts / mock.ts / web.ts / tauri.ts）。
-> 设计目标：**同一套接口，三种宿主实现**，应用代码不感知底层。
+> 核心代码：`editor-app/src/fs/`（types.ts / index.ts / dev.ts / mock.ts / web.ts / tauri.ts）+ `vite-plugins/dev-repo.ts`（真实仓库模式中间件）。
+> 设计目标：**同一套接口，四种宿主实现**，应用代码不感知底层。
 
 ## 1. 接口定义（`types.ts`）
 
 ```ts
 export interface FileSystem {
-  readonly kind: 'mock' | 'web' | 'tauri'
+  readonly kind: 'mock' | 'web' | 'tauri' | 'dev'
   readonly rootName: string
   openDirectory(): Promise<boolean>   // 返回 false = 用户取消
   readTree(showAll: boolean): Promise<FsEntry[]>
@@ -31,6 +31,7 @@ export interface FileSystem {
 | `mock` | 浏览器 Demo（默认） | localStorage | 内置示例工作区 + 全局模板，**开箱即用**；`SEED_VERSION` 版本化迁移 |
 | `web` | Chrome/Edge 调试 | File System Access API | 可打开真实目录；权限由浏览器管理 |
 | `tauri` | 打包桌面应用 | Rust 命令 | 完整 Node/Rust 文件能力；git 用户名支持 |
+| `dev` | vite dev 真实仓库调试（默认） | Node 中间件（`vite-plugins/dev-repo.ts`） | 真实读取内容库 + 真实 git CLI；**git 面板/文件内容均为真实数据** |
 
 ### mock（`mock.ts`）
 
@@ -53,10 +54,17 @@ export interface FileSystem {
 - 路径安全：Rust 侧 `resolve()` 把相对路径 join 到根目录并校验 `starts_with(root)`，防越界。
 - `git_user_name`：目录含 `.git` 时执行 `git config user.name`（批注评论作者，见 [批注与评论](annotation.md)）。
 
+### dev（`dev.ts`，真实仓库模式）
+
+- 浏览器沙箱无法读本地文件 / 执行 git CLI；由 **Vite dev server（Node 进程）** 代劳：`vite-plugins/dev-repo.ts` 注册 `/__repo/fs/*`、`/__repo/git/*` 中间件。
+- fs 走 `node:fs/promises` 直读内容库（防 `..` 越界、`.git` 目录不展示）；git 走 `child_process` 执行真实 git CLI（命令参数与 `src-tauri/src/lib.rs` 一致）。
+- 内容库根目录：环境变量 `WRITEIT_DEV_REPO` 覆盖，默认 `/Users/huyongsheng/project/消金业务合作平台`（独立 git 仓库）。
+- 切换开关：vite dev **默认真实仓库**；设置页「数据源」或 URL `?backend=mock|dev` 切换（`src/dev-repo.ts`，localStorage 记忆）。
+
 ## 3. 切换逻辑（`index.ts`）
 
 ```ts
-let backend = isTauri() ? tauriFs : mockFs
+let backend = isTauri() ? tauriFs : isDevRepoMode() ? devFs : mockFs
 export const fs = new Proxy({} as FileSystem, {
   get: (_, prop) => { const v = backend[prop]; return typeof v === 'function' ? v.bind(backend) : v }
 })

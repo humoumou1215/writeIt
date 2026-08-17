@@ -31,6 +31,7 @@ function onContextMenu(e: MouseEvent, id: string) {
       class="tab"
       :class="{ active: tab.id === state.activeTabId }"
       @click="activateTab(tab.id)"
+      @dblclick="closeTab(tab.id)"
       @auxclick="onMiddleClick($event, tab.id)"
       :title="tab.path"
       @contextmenu="onContextMenu($event, tab.id)"
@@ -39,8 +40,9 @@ function onContextMenu(e: MouseEvent, id: string) {
       <span class="tab-name">{{ tab.name }}</span>
       <button
         class="close"
-        title="关闭 (中键也可)"
+        title="关闭 (中键/双击也可)"
         @click.stop="closeTab(tab.id)"
+        @dblclick.stop
       >
         ×
       </button>

@@ -10,6 +10,7 @@ import {
   formatCombo,
 } from '../state/settings'
 import { fs } from '../fs'
+import { backendChoice, setBackendChoice } from '../dev-repo'
 import { refreshTree, openDirectory } from '../editor/manager'
 import { state, toast } from '../state/store'
 import MenuIcon from './MenuIcon.vue'
@@ -25,11 +26,21 @@ const tab = ref<'general' | 'shortcuts'>(props.initialTab ?? 'general')
 const recording = ref<string | null>(null)
 const recordEl = ref<HTMLInputElement | null>(null)
 
+/** M15：切换数据源（真实仓库 / Mock 演示）。对 dev server 立即重载生效 */
+function onDataSource(kind: 'dev' | 'mock') {
+  setBackendChoice(kind)
+  toast(kind === 'dev' ? '已切换到真实仓库（重载中…）' : '已切换到 Mock 演示（重载中…）', 'info')
+  window.location.reload()
+}
+
 // ---------- 常规页 ----------
 function onThemeChange() {
   applyTheme(settings.theme)
   saveSettings()
 }
+
+// 数据源当前选择（设置页展示）
+const ds = backendChoice()
 function onTemplateDirChange() {
   saveSettings()
   // 重新扫描模板注册表（已打开的编辑器菜单不刷新，重开标签生效）
@@ -182,13 +193,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span class="badge">{{ fs.kind }}</span>
           </div>
 
+          <!-- M15：数据源切换（Mock 演示 / 真实仓库），仅 vite dev 演示态 -->
+          <div v-if="fs.kind === 'dev' || fs.kind === 'mock'" class="row ds-options">
+            <span>数据源</span>
+            <span class="ds-radios">
+              <label title="内容库 + 真实 git CLI（Vite Node 中间件直连）">
+                <input type="radio" name="ds" :checked="ds === 'dev'" @change="onDataSource('dev')" /> 真实仓库
+              </label>
+              <label title="内置 Git演示 假仓库（改内容不落盘）">
+                <input type="radio" name="ds" :checked="ds === 'mock'" @change="onDataSource('mock')" /> Mock 演示
+              </label>
+            </span>
+          </div>
+          <p v-if="fs.kind === 'dev' || fs.kind === 'mock'" class="hint">
+            vite dev 默认<b>真实仓库</b>（消金业务合作平台，走 Vite Node 中间件）；Mock 演示为内置示例数据。切换后自动重载。
+          </p>
+
           <template v-if="fs.kind === 'mock'">
             <button class="btn full" @click="onRefreshMock">🔄 刷新 Mock 示例数据</button>
             <p class="hint">
               浏览器模拟文件系统（Demo），修改保存在 localStorage。点击按钮可从最新 demo 示例重新同步本地缓存：示例文件内容更新、被删除的示例文件恢复；你自己新建的文件保留。
             </p>
           </template>
-          <template v-else>
+          <template v-else-if="fs.kind === 'tauri' || fs.kind === 'web'">
             <button class="btn full" @click="openLocalDir">📂 打开本地目录…</button>
             <p class="hint">
               {{
@@ -328,6 +355,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
 }
 .icon-preview-row {
   align-items: flex-start;
+}
+.ds-options {
+  align-items: flex-start;
+}
+.ds-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--chrome-on-background);
+}
+.ds-radios label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 .icon-preview-row > span:first-child {
   padding-top: 4px;

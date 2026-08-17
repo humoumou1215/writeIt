@@ -84,7 +84,7 @@ const tauriBackend: GitBackend = {
   },
 }
 
-// ---------- 后端选择（跟随 fs：tauri / 浏览器 mock / dev 真实仓库 / web 真实目录禁用） ----------
+// ---------- 后端选择（跟随 fs：tauri / dev 默认真实仓库 / mock 显式 / web 真实目录禁用） ----------
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window

@@ -7,6 +7,7 @@
 import type { Connect, Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { execFile as execFileCb } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { promises as fs, statSync } from 'node:fs'
 import path from 'node:path'
@@ -268,6 +269,23 @@ function extractHunkPatch(diffText: string, idx: number): string | null {
   return out.join('\n') + '\n'
 }
 
+/** 用 stdin 管道喂补丁给 git apply（execFile 的 input 会挂起，改用 spawn） */
+function applyPatch(patch: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['apply', '--reverse', '--unidiff-zero', '-'], { cwd: REPO_ROOT })
+    let errBuf = Buffer.alloc(0)
+    child.stderr.on('data', (d: Buffer) => { errBuf = Buffer.concat([errBuf, d]) })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(errBuf.toString('utf8').trim() || `git apply 退出码 ${code}`))
+    })
+    child.stdin.on('error', () => {}) // 防 EPIPE
+    child.stdin.write(patch)
+    child.stdin.end()
+  })
+}
+
 // ---------- 中间件 ----------
 
 async function handleFs(req: IncomingMessage, res: ServerResponse, action: string) {
@@ -466,13 +484,8 @@ async function handleGit(req: IncomingMessage, res: ServerResponse, action: stri
         const text = (await git(['diff', '--no-color', '-U0', 'HEAD', '--', path_])).toString('utf8')
         const patch = extractHunkPatch(text, idx)
         if (!patch) throw new Error('hunk 不存在或文件无改动')
-        try {
-          await execFile('git', ['apply', '--reverse', '--unidiff-zero', '-'], {
-            cwd: REPO_ROOT, input: patch, maxBuffer: 64 << 20,
-          })
-        } catch (e) {
-          throw new Error(((e as { stderr?: Buffer }).stderr?.toString('utf8') || 'git apply 失败').trim())
-        }
+        // 与 Rust 侧一致：spawn + stdin 管道写补丁（execFile 的 input 在部分 Node 版本会挂起）
+        await applyPatch(patch)
         send(res, { ok: true })
         return
       }

@@ -13,7 +13,7 @@ const { chromium } = require('playwright');
     if (m.text().includes('[M7]')) console.log('LOG:', m.text().slice(0, 130));
   });
 
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto('http://localhost:5173/?backend=mock', { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   // 等待文件树就绪（首次渲染 / HMR 重载时序兜底）

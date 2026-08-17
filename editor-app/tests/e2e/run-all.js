@@ -30,6 +30,7 @@ const SUITES = [
   'export-e2e',     // M10 导出：默认 PDF/DOCX/MD + 设置导出页签 + export.ts 自定义
   'git-m11a-e2e',   // M11 Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程）
   'git-m11a-smoke', // M11 浏览器降级：Git 图标灰置 + toast + 面板错误提示
+  'search-e2e',     // 全局搜索面板：全文搜索/跳转/快捷键/收起
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 

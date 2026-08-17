@@ -173,6 +173,56 @@ fn remove(state: State<'_, AppState>, path: String) -> Result<(), String> {
   }
 }
 
+/// 在系统文件管理器中显示路径：文件 → 打开所在目录并选中；目录 → 在父级中选中
+#[tauri::command]
+fn reveal_in_explorer(state: State<AppState>, path: String) -> Result<(), String> {
+  let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
+  let full = resolve(&root, &path)?;
+  if !full.exists() {
+    return Err("路径不存在".into());
+  }
+  show_in_folder(&full)
+}
+
+/// 平台相关：用系统文件管理器显示并选中目标
+fn show_in_folder(path: &Path) -> Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    // explorer /select,<path>：打开所在目录并选中文件/文件夹
+    std::process::Command::new("explorer")
+      .arg(format!("/select,{}", path.display()))
+      .spawn()
+      .map_err(|e| format!("打开文件管理器失败: {e}"))?;
+  }
+  #[cfg(target_os = "macos")]
+  {
+    // open -R <path>：在 Finder 中显示并选中
+    std::process::Command::new("open")
+      .arg("-R")
+      .arg(path)
+      .spawn()
+      .map_err(|e| format!("打开访达失败: {e}"))?;
+  }
+  #[cfg(target_os = "linux")]
+  {
+    // Linux 无统一的「选中」方式：目录直接打开；文件打开所在目录
+    let dir = if path.is_dir() {
+      path.to_path_buf()
+    } else {
+      path.parent().unwrap_or(path).to_path_buf()
+    };
+    std::process::Command::new("xdg-open")
+      .arg(dir)
+      .spawn()
+      .map_err(|e| format!("打开文件管理器失败: {e}"))?;
+  }
+  #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+  {
+    return Err("当前平台暂不支持".into());
+  }
+  Ok(())
+}
+
 // ---------- 导出（保存对话框给的绝对路径，不走 resolve） ----------
 
 #[tauri::command]
@@ -1103,6 +1153,7 @@ pub fn run() {
       create_dir,
       rename,
       remove,
+      reveal_in_explorer,
       save_binary,
       git_user_name,
       git_repo_info,
