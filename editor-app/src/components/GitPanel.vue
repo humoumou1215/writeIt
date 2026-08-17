@@ -1,27 +1,102 @@
 <script setup lang="ts">
-// Git 面板（M11a）：仓库状态条 + 分支 / 工作区 / 历史 三区块
+// Git 面板（M11a / M15）：仓库状态条 + 工作区 / 分支 / 历史 三区块
+//  M15：区块顺序调整为 工作区→分支→历史；三区可折叠收纳（localStorage 记忆）；
+//       分支支持搜索过滤（大仓库）；工作区/提交变更列表树形化（GitChangeTree）；
+//       历史区渲染提交图（buildGraph：分叉/合并线）；打开 diff 联动主文件树 reveal 定位。
 //  - 工作区文件点击 → 编辑区 diff（工作区 vs HEAD）
-//  - 提交点击 → 展开变更文件列表 → 点文件 diff（commit vs 父提交）
+//  - 提交点击 → 展开变更文件树 → 点文件 diff（commit vs 父提交）
 //  - Shift+点击 → 范围对比（a..b）；顶部范围条 ✕ 清除
-//  - 分支点击 → 过滤历史（v1 仅查看，切换 v1.5）
+//  - 分支点击 → 过滤历史；⇄ = 切换分支（危险确认）
 import { onMounted, ref, computed, watch } from 'vue'
 import { state, toast } from '../state/store'
 import { git, isGitAvailable } from '../git'
-import type { GitCommit, GitFileStatus } from '../git'
+import type { GitCommit } from '../git'
+import { buildGraph } from '../git/graph'
+import { buildChangeTree, type GitChangeNode } from '../git/change-tree'
+import { applyGitMark, clearGitMark } from '../git/mark'
 import { openGitDiff } from '../editor/manager'
-import { baseName } from '../fs/types'
+import { revealInTree } from '../state/treeOps'
 import { settings } from '../state/settings'
 import MenuIcon from './MenuIcon.vue'
+import GitChangeTree from './GitChangeTree.vue'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
-const expandedCommit = ref<string | null>(null)
+
+// ---------- 区块折叠（localStorage 记忆） ----------
+const SECTIONS_KEY = 'writeit.gitPanel.sections.v1'
+const DEFAULT_SECTIONS = { worktree: false, branches: false, history: false }
+function loadSections(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SECTIONS_KEY)
+    if (raw) {
+      const v = JSON.parse(raw)
+      return { ...DEFAULT_SECTIONS, ...v }
+    }
+  } catch {
+    /* 忽略损坏数据 */
+  }
+  return { ...DEFAULT_SECTIONS }
+}
+const sectionCollapsed = ref<Record<string, boolean>>(loadSections())
+function toggleSection(name: string) {
+  sectionCollapsed.value = { ...sectionCollapsed.value, [name]: !sectionCollapsed.value[name] }
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sectionCollapsed.value))
+  } catch {
+    /* 忽略 */
+  }
+}
+
+// ---------- 分支搜索 ----------
+const branchQuery = ref('')
+const filteredBranches = computed(() => {
+  const q = branchQuery.value.trim().toLowerCase()
+  if (!q) return state.gitPanel.branches
+  return state.gitPanel.branches.filter((b) => b.name.toLowerCase().includes(q))
+})
+
+// ---------- 变更树（工作区 / 提交 files） ----------
+const wsTree = computed(() => buildChangeTree(state.gitPanel.status))
+const cmTree = computed(() => buildChangeTree(state.gitPanel.commitFiles))
+/** 折叠的目录路径集合（空 = 全部展开） */
+const wsCollapsed = ref(new Set<string>())
+const cmCollapsed = ref(new Set<string>())
+function onWsNode(n: GitChangeNode) {
+  if (n.kind !== 'file') return
+  void openGitDiff(n.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+  revealInTree(n.path, 8000)
+}
+function onCmNode(n: GitChangeNode) {
+  if (n.kind !== 'file') return
+  const g = state.gitPanel
+  if (g.range) {
+    // 范围对比：a..b
+    void openGitDiff(n.path, {
+      from: g.range.a,
+      to: g.range.b,
+      label: `${g.range.a.slice(0, 7)}..${g.range.b.slice(0, 7)}`,
+    })
+    revealInTree(n.path, 8000)
+    return
+  }
+  const sha = g.selectedCommit
+  if (!sha) return
+  // commit vs 父提交（首个提交的父 = --root，git 自动处理）
+  void openGitDiff(n.path, {
+    from: `${sha}^`,
+    to: sha,
+    label: `${sha.slice(0, 7)} ↔ 父提交`,
+  })
+  revealInTree(n.path, 8000)
+}
 
 // ---------- 加载 ----------
 async function loadAll() {
   if (!isGitAvailable()) {
     error.value = 'Git 功能在当前模式不可用（桌面应用或演示模式可用）'
     state.gitPanel.repo = null
+    clearGitMark()
     return
   }
   loading.value = true
@@ -38,6 +113,7 @@ async function loadAll() {
       g.selectedCommit = null
       g.commitFiles = []
       g.range = null
+      clearGitMark()
       return
     }
     const [branches, status, log] = await Promise.all([
@@ -48,12 +124,18 @@ async function loadAll() {
     g.branches = branches
     g.status = status
     g.log = log
+    // 主文件树角标数据
+    applyGitMark(status)
+    // 展开状态重置（默认全展开）
+    wsCollapsed.value = new Set()
+    cmCollapsed.value = new Set()
     // 默认展开 HEAD
     if (log.length > 0 && g.selectedCommit === null) {
       await selectCommit(log[0])
     }
   } catch (e) {
     error.value = (e as Error).message
+    clearGitMark()
   } finally {
     loading.value = false
   }
@@ -70,6 +152,7 @@ async function selectCommit(c: GitCommit) {
   }
   g.selectedCommit = c.hash
   g.commitFiles = []
+  cmCollapsed.value = new Set()
   try {
     const show = await git.showCommit(c.hash)
     g.commitFiles = show.files
@@ -102,31 +185,8 @@ function onCommitClick(c: GitCommit, e: MouseEvent) {
   void selectCommit(c)
 }
 
-// ---------- 打开 diff ----------
-function onWorktreeFile(f: GitFileStatus) {
-  void openGitDiff(f.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
-}
-
-function onCommitFile(path: string) {
-  const g = state.gitPanel
-  if (g.range) {
-    // 范围对比：a..b
-    void openGitDiff(path, {
-      from: g.range.a,
-      to: g.range.b,
-      label: `${g.range.a.slice(0, 7)}..${g.range.b.slice(0, 7)}`,
-    })
-    return
-  }
-  const sha = g.selectedCommit
-  if (!sha) return
-  // commit vs 父提交（首个提交的父 = --root，git 自动处理）
-  void openGitDiff(path, {
-    from: `${sha}^`,
-    to: sha,
-    label: `${sha.slice(0, 7)} ↔ 父提交`,
-  })
-}
+// ---------- 提交图 ----------
+const graphRows = computed(() => buildGraph(state.gitPanel.log))
 
 // ---------- 分支 ----------
 async function onBranchClick(name: string) {
@@ -165,19 +225,7 @@ function relTime(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString()
 }
 
-const STATUS_META: Record<string, { label: string; cls: string }> = {
-  M: { label: 'M', cls: 'st-m' },
-  A: { label: 'A', cls: 'st-a' },
-  D: { label: 'D', cls: 'st-d' },
-  '?': { label: '?', cls: 'st-u' },
-  U: { label: 'U', cls: 'st-u' },
-  R: { label: 'R', cls: 'st-r' },
-  C: { label: 'C', cls: 'st-r' },
-}
-
 const uncommittedCount = computed(() => state.gitPanel.status.length)
-const commitFileMeta = (st: string) => STATUS_META[st] ?? { label: st, cls: 'st-m' }
-const fileBase = (p: string) => baseName(p.replace(/ → .*$/, ''))
 
 onMounted(() => {
   void loadAll()
@@ -218,93 +266,122 @@ defineExpose({ loadAll })
       <button class="mini" title="清除范围选择" @click="state.gitPanel.range = null">✕</button>
     </div>
 
-    <!-- 分支区 -->
-    <div v-if="state.gitPanel.repo?.isRepo" class="section">
-      <div class="section-title">分支</div>
-      <div
-        v-for="b in state.gitPanel.branches"
-        :key="b.name"
-        class="branch"
-        :class="{ current: b.isCurrent, filtered: state.gitPanel.branchFilter === b.name }"
-        :title="b.remote ? `上游: ${b.remote}${b.aheadBehind ? ' ' + b.aheadBehind : ''}` : ''"
-        @click="onBranchClick(b.name)"
-      >
-        <span class="branch-icon">{{ b.isCurrent ? '●' : b.name.startsWith('origin/') ? '⚑' : '○' }}</span>
-        <span class="branch-name">{{ b.name }}</span>
-        <span v-if="b.isCurrent" class="cur-tag">当前</span>
-        <button
-          v-if="!b.isCurrent && !b.name.startsWith('origin/')"
-          class="branch-switch"
-          title="切换到该分支"
-          @click.stop="onBranchSwitch(b.name)"
-        >
-          ⇄
-        </button>
-      </div>
-    </div>
-
-    <!-- 工作区 -->
-    <div v-if="state.gitPanel.repo?.isRepo" class="section">
-      <div class="section-title">工作区</div>
-      <div v-if="!state.gitPanel.status.length" class="section-empty">无未提交改动</div>
-      <div
-        v-for="f in state.gitPanel.status"
-        :key="f.path"
-        class="ws-file"
-        :title="`${f.status === '?' ? '未跟踪' : '已跟踪'} · ${f.added >= 0 ? '+' + f.added + ' −' + f.deleted : ''}`"
-        @click="onWorktreeFile(f)"
-      >
-        <span class="st" :class="commitFileMeta(f.status).cls">{{ commitFileMeta(f.status).label }}</span>
-        <span class="ws-path">{{ fileBase(f.path) }}</span>
-        <span v-if="f.added >= 0" class="ws-stats">
-          <span class="stat-add">+{{ f.added }}</span>
-          <span class="stat-del">−{{ f.deleted }}</span>
-        </span>
-      </div>
-    </div>
-
-    <!-- 历史 -->
-    <div v-if="state.gitPanel.repo?.isRepo" class="section">
-      <div class="section-title">
-        历史
-        <span v-if="state.gitPanel.branchFilter" class="filter-tag">
-          {{ state.gitPanel.branchFilter }}
-          <button class="mini" title="清除分支过滤" @click="onBranchClick(state.gitPanel.branchFilter)">✕</button>
-        </span>
-      </div>
-      <div
-        v-for="c in state.gitPanel.log"
-        :key="c.hash"
-        class="commit"
-        :class="{ expanded: state.gitPanel.selectedCommit === c.hash }"
-        @click="onCommitClick(c, $event)"
-      >
-        <div class="commit-row">
-          <span class="commit-icon">🔒</span>
-          <span class="commit-msg">{{ c.message }}</span>
-          <span class="commit-date">{{ relTime(c.date) }}</span>
+    <template v-if="state.gitPanel.repo?.isRepo">
+      <!-- ===== 工作区（M15：树形 + 目录聚合） ===== -->
+      <div class="section">
+        <div class="section-title" @click="toggleSection('worktree')">
+          <span class="chev" :class="{ open: !sectionCollapsed.worktree }">▸</span>
+          工作区
+          <span v-if="!sectionCollapsed.worktree && uncommittedCount" class="sec-count">· {{ uncommittedCount }}</span>
         </div>
-        <div class="commit-sub">{{ c.hash.slice(0, 7) }} · {{ c.author }}</div>
-        <!-- 变更文件列表 -->
-        <div v-if="state.gitPanel.selectedCommit === c.hash" class="commit-files">
-          <div v-if="!state.gitPanel.commitFiles.length" class="section-empty">无文件变更</div>
+        <div v-if="!sectionCollapsed.worktree">
+          <div v-if="!state.gitPanel.status.length" class="section-empty">无未提交改动</div>
+          <GitChangeTree
+            v-for="n in wsTree"
+            :key="n.path"
+            :node="n"
+            :depth="0"
+            :collapsed="wsCollapsed"
+            @open="onWsNode"
+          />
+        </div>
+      </div>
+
+      <!-- ===== 分支（M15：搜索过滤） ===== -->
+      <div class="section">
+        <div class="section-title" @click="toggleSection('branches')">
+          <span class="chev" :class="{ open: !sectionCollapsed.branches }">▸</span>
+          分支
+          <span v-if="!sectionCollapsed.branches" class="sec-count">· {{ state.gitPanel.branches.length }}</span>
+        </div>
+        <div v-if="!sectionCollapsed.branches">
+          <div class="branch-search">
+            <input
+              v-model="branchQuery"
+              class="search-input"
+              type="text"
+              placeholder="搜索分支…"
+              spellcheck="false"
+              @click.stop
+              @keydown.esc.prevent="branchQuery = ''"
+            />
+          </div>
+          <div v-if="!filteredBranches.length" class="section-empty">无匹配分支</div>
           <div
-            v-for="f in state.gitPanel.commitFiles"
-            :key="f.path"
-            class="ws-file"
-            @click.stop="onCommitFile(f.path)"
+            v-for="b in filteredBranches"
+            :key="b.name"
+            class="branch"
+            :class="{ current: b.isCurrent, filtered: state.gitPanel.branchFilter === b.name }"
+            :title="b.remote ? `上游: ${b.remote}${b.aheadBehind ? ' ' + b.aheadBehind : ''}` : ''"
+            @click="onBranchClick(b.name)"
           >
-            <span class="st" :class="commitFileMeta(f.status).cls">{{ commitFileMeta(f.status).label }}</span>
-            <span class="ws-path">{{ f.path }}</span>
-            <span v-if="f.added >= 0" class="ws-stats">
-              <span class="stat-add">+{{ f.added }}</span>
-              <span class="stat-del">−{{ f.deleted }}</span>
-            </span>
+            <span class="branch-icon">{{ b.isCurrent ? '●' : b.name.startsWith('origin/') ? '⚑' : '○' }}</span>
+            <span class="branch-name">{{ b.name }}</span>
+            <span v-if="b.isCurrent" class="cur-tag">当前</span>
+            <button
+              v-if="!b.isCurrent && !b.name.startsWith('origin/')"
+              class="branch-switch"
+              title="切换到该分支"
+              @click.stop="onBranchSwitch(b.name)"
+            >
+              ⇄
+            </button>
           </div>
         </div>
       </div>
-      <div v-if="!state.gitPanel.log.length" class="section-empty">暂无提交</div>
-    </div>
+
+      <!-- ===== 历史（M15：提交图 + 变更文件树） ===== -->
+      <div class="section">
+        <div class="section-title" @click="toggleSection('history')">
+          <span class="chev" :class="{ open: !sectionCollapsed.history }">▸</span>
+          历史
+          <span v-if="!sectionCollapsed.history" class="sec-count">· {{ state.gitPanel.log.length }}</span>
+          <span v-if="state.gitPanel.branchFilter" class="filter-tag" @click.stop>
+            {{ state.gitPanel.branchFilter }}
+            <button class="mini" title="清除分支过滤" @click="onBranchClick(state.gitPanel.branchFilter!)">✕</button>
+          </span>
+        </div>
+        <div v-if="!sectionCollapsed.history">
+          <div v-if="!state.gitPanel.log.length" class="section-empty">暂无提交</div>
+          <div
+            v-for="(c, ci) in state.gitPanel.log"
+            :key="c.hash"
+            class="commit"
+            :class="{ expanded: state.gitPanel.selectedCommit === c.hash }"
+          >
+            <div
+              class="commit-row"
+              @click="onCommitClick(c, $event)"
+            >
+              <span class="graph" aria-hidden="true">
+                <template v-for="(ch, gi) in graphRows[ci]" :key="gi">{{ ch }}</template>
+                <span v-if="!graphRows[ci]">o</span>
+              </span>
+              <div class="commit-main">
+                <div class="commit-msg-row">
+                  <span class="commit-msg" :class="{ merge: c.parents.length > 1 }">{{ c.message }}</span>
+                  <span class="commit-date">{{ relTime(c.date) }}</span>
+                </div>
+                <div class="commit-sub">{{ c.hash.slice(0, 7) }} · {{ c.author }}</div>
+              </div>
+            </div>
+            <!-- 变更文件树 -->
+            <div v-if="state.gitPanel.selectedCommit === c.hash" class="commit-files" @click.stop>
+              <div v-if="!state.gitPanel.commitFiles.length" class="section-empty">无文件变更</div>
+              <GitChangeTree
+                v-for="n in cmTree"
+                :key="n.path"
+                :node="n"
+                :depth="0"
+                :collapsed="cmCollapsed"
+                @open="onCmNode"
+              />
+            </div>
+          </div>
+          <div class="history-hint">Shift+点击两个提交 = 范围对比</div>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -376,16 +453,35 @@ defineExpose({ loadAll })
   color: var(--chrome-on-background);
 }
 .section {
-  margin-bottom: 10px;
+  margin-bottom: 4px;
 }
 .section-title {
   font-size: 11px;
   font-weight: 600;
   color: var(--chrome-on-surface-variant);
-  padding: 4px 8px;
+  padding: 7px 8px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  cursor: pointer;
+  border-radius: 6px;
+  user-select: none;
+}
+.section-title:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
+}
+.chev {
+  font-size: 9px;
+  transition: transform 0.12s;
+  color: var(--chrome-on-surface-variant);
+}
+.chev.open {
+  transform: rotate(90deg);
+}
+.sec-count {
+  font-weight: 400;
+  color: var(--chrome-on-surface-variant);
 }
 .filter-tag {
   display: inline-flex;
@@ -397,10 +493,32 @@ defineExpose({ loadAll })
   font-weight: 400;
   color: var(--chrome-primary);
 }
+.filter-tag .mini {
+  padding: 0 3px;
+}
 .section-empty {
   padding: 6px 10px;
   color: var(--chrome-on-surface-variant);
   font-size: 12px;
+}
+/* ---- 分支 ---- */
+.branch-search {
+  padding: 0 8px 6px;
+}
+.search-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-background);
+  color: var(--chrome-on-background);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+  font-family: inherit;
+  outline: none;
+}
+.search-input:focus {
+  border-color: var(--chrome-primary);
 }
 .branch {
   display: flex;
@@ -452,91 +570,56 @@ defineExpose({ loadAll })
   background: var(--chrome-selected);
   color: var(--chrome-primary);
 }
-.ws-file {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.ws-file:hover {
-  background: var(--chrome-hover);
-}
-.st {
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-.st-m {
-  background: #f59f00;
-  color: #fff;
-}
-.st-a {
-  background: #2e7d32;
-  color: #fff;
-}
-.st-d {
-  background: var(--chrome-error, #ba1a1a);
-  color: #fff;
-}
-.st-u {
-  background: #6c757d;
-  color: #fff;
-}
-.st-r {
-  background: #7b5cd6;
-  color: #fff;
-}
-.ws-path {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.ws-stats {
-  font-size: 11px;
-  flex-shrink: 0;
-  display: flex;
-  gap: 5px;
-}
-.stat-add {
-  color: #2e7d32;
-}
-.stat-del {
-  color: var(--chrome-error, #ba1a1a);
-}
+/* ---- 历史 + 提交图 ---- */
 .commit {
   border-radius: 8px;
-  padding: 5px 8px;
-  cursor: pointer;
-}
-.commit:hover {
-  background: var(--chrome-hover);
-}
-.commit.expanded {
-  background: var(--chrome-selected);
 }
 .commit-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  border-radius: 8px;
 }
-.commit-icon {
+.commit-row:hover {
+  background: var(--chrome-hover);
+}
+.commit-row.expanded {
+  background: var(--chrome-selected);
+}
+.commit.expanded .commit-row {
+  background: var(--chrome-selected);
+}
+.graph {
+  font-family: ui-monospace, Consolas, Menlo, monospace;
   font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--chrome-primary);
+  flex-shrink: 0;
+  white-space: pre;
+  user-select: none;
+}
+.commit-main {
+  flex: 1;
+  min-width: 0;
+}
+.commit-msg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .commit-msg {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
+}
+.commit-msg.merge {
+  color: var(--chrome-primary);
+  font-weight: 600;
 }
 .commit-date {
   color: var(--chrome-on-surface-variant);
@@ -546,11 +629,17 @@ defineExpose({ loadAll })
 .commit-sub {
   font-size: 10.5px;
   color: var(--chrome-on-surface-variant);
-  padding-left: 20px;
+  font-family: ui-monospace, Consolas, monospace;
 }
 .commit-files {
-  margin-top: 4px;
-  border-top: 1px dashed var(--chrome-border);
-  padding-top: 4px;
+  margin: 0 4px 6px 26px;
+  border-left: 1px dashed var(--chrome-border);
+  padding-left: 6px;
+}
+.history-hint {
+  padding: 4px 10px 8px;
+  font-size: 10.5px;
+  color: var(--chrome-on-surface-variant);
+  opacity: 0.7;
 }
 </style>

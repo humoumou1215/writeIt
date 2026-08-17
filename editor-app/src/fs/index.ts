@@ -1,8 +1,15 @@
+// 文件系统抽象 —— 同一套接口，三种宿主实现：
+//   mock    → 浏览器内置演示（Vite 调试 / Demo，数据来自内容库 sync）
+//   web     → File System Access API（浏览器点「打开目录」）
+//   tauri   → Rust 命令（打包后的独立应用）
+//   dev     → Vite Node 中间件（?repo=1 真实仓库模式：真实读取内容库）
 import type { FileSystem } from './types'
 import { mockFs } from './mock'
 import { webFs } from './web'
 import { tauriFs } from './tauri'
+import { devFs } from './dev'
 import { disableGitForRealDir } from '../git'
+import { isDevRepoMode } from '../dev-repo'
 
 export type { FileSystem, FsEntry, FsBackendKind } from './types'
 export { isEditableFile, joinPath, dirName, baseName } from './types'
@@ -13,8 +20,8 @@ function isTauri(): boolean {
 
 // 可切换的文件系统代理：
 //   Tauri 环境 → tauri 实现
-//   浏览器     → 默认 mock（Demo 开箱即用），点「打开目录」时切到 web 实现
-let backend: FileSystem = isTauri() ? tauriFs : mockFs
+//   浏览器     → 默认 mock（Demo 开箱即用）；openDirectory 时切到 web；?repo=1 时切到 dev（真实仓库）
+let backend: FileSystem = isTauri() ? tauriFs : isDevRepoMode() ? devFs : mockFs
 
 export const fs = new Proxy({} as FileSystem, {
   get: (_target, prop: string | symbol) => {

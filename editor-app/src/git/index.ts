@@ -11,6 +11,8 @@ import type {
   GitShowCommit,
 } from './types'
 import { mockGit, resetMockGit } from './mock'
+import { devGit } from './dev'
+import { isDevRepoMode } from '../dev-repo'
 
 export type {
   GitRepoInfo,
@@ -82,18 +84,19 @@ const tauriBackend: GitBackend = {
   },
 }
 
-// ---------- 后端选择（跟随 fs：tauri / 浏览器 mock / web 真实目录禁用） ----------
+// ---------- 后端选择（跟随 fs：tauri / 浏览器 mock / dev 真实仓库 / web 真实目录禁用） ----------
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
-let backend: GitBackend | null = isTauri() ? tauriBackend : mockGit
+let backend: GitBackend | null = isTauri() ? tauriBackend : isDevRepoMode() ? devGit : mockGit
 
-/** 当前 git 后端类型：'tauri' | 'mock' | null（不可用） */
-export function gitBackendKind(): 'tauri' | 'mock' | null {
+/** 当前 git 后端类型：'tauri' | 'mock' | 'dev' | null（不可用） */
+export function gitBackendKind(): 'tauri' | 'mock' | 'dev' | null {
   if (backend === tauriBackend) return 'tauri'
   if (backend === mockGit) return 'mock'
+  if (backend === devGit) return 'dev'
   return null
 }
 

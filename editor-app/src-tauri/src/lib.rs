@@ -222,6 +222,8 @@ pub struct GitFileStatus {
 #[serde(rename_all = "camelCase")]
 pub struct GitCommit {
   pub hash: String,
+  /// 父提交 hash（空格分隔，M15：提交图画分叉/合并线；首提交为空）
+  pub parents: Vec<String>,
   pub author: String,
   pub date: i64,
   pub message: String,
@@ -416,7 +418,7 @@ fn git_log(state: State<AppState>, limit: Option<i64>, branch: Option<String>) -
   let root = git_root(&state)?;
   let n = limit.unwrap_or(50).clamp(1, 500);
   let n_str = n.to_string();
-  let mut args = vec!["log", "-n", n_str.as_str(), "--format=%H%x1f%an%x1f%at%x1f%s%x1e"];
+  let mut args = vec!["log", "-n", n_str.as_str(), "--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1e"];
   if let Some(b) = &branch {
     args.push(b.as_str());
   }
@@ -428,14 +430,15 @@ fn git_log(state: State<AppState>, limit: Option<i64>, branch: Option<String>) -
   let mut commits = Vec::new();
   for rec in text.split('\u{1e}') {
     let parts: Vec<&str> = rec.split('\u{1f}').collect();
-    if parts.len() < 4 || parts[0].is_empty() {
+    if parts.len() < 5 || parts[0].is_empty() {
       continue;
     }
     commits.push(GitCommit {
       hash: parts[0].to_string(),
-      author: parts[1].to_string(),
-      date: parts[2].trim().parse().unwrap_or(0),
-      message: parts[3].to_string(),
+      parents: parts[1].split_whitespace().map(|s| s.to_string()).collect(),
+      author: parts[2].to_string(),
+      date: parts[3].trim().parse().unwrap_or(0),
+      message: parts[4].to_string(),
     });
   }
   Ok(commits)

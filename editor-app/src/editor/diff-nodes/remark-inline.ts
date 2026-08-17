@@ -119,7 +119,20 @@ function splitAndMerge(
   startIdx: number
 ): { nodes: MdNode[]; consumed: number } | null {
   const parts = splitDiffInline(text)
-  if (!parts || !parts.some((p) => p.type !== 'text')) return null
+  if (!parts) {
+    // 无完整标记：仍可能以未闭合 {++/{-- 开头并在后续节点闭合
+    // （remark-ref 先拆出 fileRef："{++- 参见 " + fileRef + "++}"）→ 兜底合并，修复花括号泄漏
+    const om = lastUnclosedOpen(text)
+    if (om) {
+      const r = mergeForward(om.open, text, children, startIdx + 1, om.idx)
+      if (r) {
+        // 注意：consumed 需包含当前 text 节点（+1），否则闭合文本节点会被 walker 重复处理 → 遗留 "++}"
+        return { nodes: r.nodes, consumed: 1 + r.consumed }
+      }
+    }
+    return null
+  }
+  if (!parts.some((p) => p.type !== 'text')) return null
   const nodes: MdNode[] = []
   let consumed = 1 // 当前 text 节点
   for (const part of parts) {

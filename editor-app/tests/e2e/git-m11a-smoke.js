@@ -43,7 +43,7 @@ const { chromium } = require('playwright');
   check('示例仓库分支 main', badge.includes('main'));
   check('分支区含 feature/图表优化', await page.locator('.branch', { hasText: 'feature/图表优化' }).count() === 1);
   check('工作区 3 文件（README/需求表/会议纪要）', await page.locator('.section', { hasText: '工作区' }).locator('.ws-file').count() === 3);
-  check('历史 2 提交', await page.locator('.commit').count() === 2);
+  check('历史 4 提交（含分叉/合并演示）', await page.locator('.commit').count() === 4);
   check('HEAD 提交展开', await page.locator('.commit.expanded').count() === 1);
   await page.screenshot({ path: '/tmp/m12-git-panel.png' });
 

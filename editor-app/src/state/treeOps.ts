@@ -144,8 +144,9 @@ export function endDrag() {
 
 let revealTimer: ReturnType<typeof setTimeout> | null = null
 
-/** 在文件树中定位并高亮一个文件：展开祖先链 + 高亮 + 滚动到可视区 */
-export function revealInTree(path: string) {
+/** 在文件树中定位并高亮一个文件：展开祖先链 + 高亮 + 滚动到可视区
+ *  durationMs：高亮保持时长（默认 2400；GitPanel 打开 diff 时用长值，切回文件树仍可见） */
+export function revealInTree(path: string, durationMs = 2400) {
   if (!path) return
   // 展开所有祖先目录
   const parts = path.split('/')
@@ -159,7 +160,7 @@ export function revealInTree(path: string) {
   if (revealTimer) clearTimeout(revealTimer)
   revealTimer = setTimeout(() => {
     state.revealPath = null
-  }, 2400)
+  }, durationMs)
 }
 
 export function toggleExpand(path: string) {

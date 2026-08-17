@@ -21,6 +21,8 @@ export interface GitFileStatus {
 
 export interface GitCommit {
   hash: string
+  /** M15：父提交 hash 列表（提交图画分叉/合并线；首提交为空） */
+  parents: string[]
   author: string
   date: number
   message: string

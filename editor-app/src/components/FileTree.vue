@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, watch } from 'vue'
 import type { FsEntry } from '../fs/types'
 import { isEditableFile } from '../fs/types'
 import { state, toast } from '../state/store'
 import { settings } from '../state/settings'
-import { openTab } from '../editor/manager'
+import { openTab, openGitDiff } from '../editor/manager'
 import {
   toggleExpand,
   isExpanded,
@@ -33,18 +33,42 @@ const inputEl = ref<HTMLInputElement | null>(null)
 const isRenaming = () =>
   state.editing?.mode === 'rename' && state.editing.path === props.node.path
 
-onMounted(async () => {
-  if (isRenaming()) {
-    await nextTick()
-    inputEl.value?.focus()
-    inputEl.value?.select()
-  }
+/** 进入重命名时聚焦输入框并全选当前名字（组件常驻，onMounted 不会重跑 → 用 watch） */
+async function focusAndSelectRenameInput() {
+  await nextTick()
+  const el = inputEl.value
+  if (!el) return
+  el.focus()
+  el.select()
+}
+
+onMounted(() => {
+  // 组件首次挂载即处于重命名状态（理论上极少）也全选
+  if (isRenaming()) void focusAndSelectRenameInput()
+})
+
+watch(isRenaming, (renaming) => {
+  if (renaming) void focusAndSelectRenameInput()
 })
 
 function open() {
   if (props.node.kind === 'dir') toggleExpand(props.node.path)
   else if (isEditableFile(props.node.name)) openTab(props.node.path)
   else toast(`「${props.node.name}」仅展示，暂不支持打开编辑`, 'info')
+}
+
+// ---------- M15：git 角标 + 快捷进 diff ----------
+const STATUS_LABEL: Record<string, string> = {
+  M: '已修改', A: '已新增', D: '已删除', '?': '未跟踪', U: '未合并', R: '已重命名', C: '已复制',
+}
+const DOT_CLS: Record<string, string> = {
+  M: 'dot-m', A: 'dot-a', D: 'dot-d', '?': 'dot-u', U: 'dot-u', R: 'dot-r', C: 'dot-r',
+}
+const dotCls = (st: string) => DOT_CLS[st] ?? 'dot-u'
+const statusName = (st: string) => STATUS_LABEL[st] ?? '改动'
+/** 有改动文件行尾的「查看 Git 改动」按钮（单击行为保持正常打开编辑，不劫持） */
+function openGitTreeDiff(path: string) {
+  void openGitDiff(path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
 }
 
 function onContextMenu(e: MouseEvent) {
@@ -158,6 +182,19 @@ const dropVisual = () => {
           :size="15"
         />
       </span>
+      <!-- M15：git 角标（文件=工作区状态；目录=聚合状态） -->
+      <span
+        v-if="node.kind === 'file' && state.gitMark.files[node.path]"
+        class="git-dot"
+        :class="dotCls(state.gitMark.files[node.path].status)"
+        :title="`${statusName(state.gitMark.files[node.path].status)} · 工作区改动，点击行尾 Git 图标查看 diff`"
+      ></span>
+      <span
+        v-else-if="node.kind === 'dir' && state.gitMark.dirs[node.path]"
+        class="git-dot"
+        :class="dotCls(state.gitMark.dirs[node.path])"
+        :title="`${statusName(state.gitMark.dirs[node.path])} · 目录内有改动`"
+      ></span>
       <input
         v-if="isRenaming()"
         ref="inputEl"
@@ -177,6 +214,14 @@ const dropVisual = () => {
         {{ node.name }}
       </span>
       <span class="actions">
+        <button
+          v-if="node.kind === 'file' && state.gitMark.files[node.path]"
+          class="mini git-diff-btn"
+          title="查看 Git 改动（工作区 vs HEAD）"
+          @click.stop="openGitTreeDiff(node.path)"
+        >
+          <MenuIcon name="git" :set="settings.iconSet" :size="12" />
+        </button>
         <button
           v-if="node.kind === 'dir'"
           class="mini"
@@ -312,6 +357,31 @@ const dropVisual = () => {
 }
 .icon .mi {
   flex-shrink: 0;
+}
+/* M15：git 状态角标（文件/目录） */
+.git-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.git-dot.dot-m {
+  background: #f59f00;
+}
+.git-dot.dot-a {
+  background: #2e7d32;
+}
+.git-dot.dot-d {
+  background: var(--chrome-error, #ba1a1a);
+}
+.git-dot.dot-u {
+  background: #6c757d;
+}
+.git-dot.dot-r {
+  background: #7b5cd6;
+}
+.git-diff-btn {
+  color: var(--chrome-primary) !important;
 }
 .name {
   font-size: 13px;

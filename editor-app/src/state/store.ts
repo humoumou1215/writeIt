@@ -121,6 +121,9 @@ export const state = reactive({
     version: 0,
   } as GitPanelState,
 
+  /** M15：主文件树 git 角标（工作区改动）。files: path→状态；dirs: 目录路径→聚合状态（仅含有改动子级的目录） */
+  gitMark: { files: {} as Record<string, GitFileStatus>, dirs: {} as Record<string, string> },
+
   settingsOpen: false,
   /** 导出弹窗（图标列 📤 独立入口） */
   exportOpen: false,

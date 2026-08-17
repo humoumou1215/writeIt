@@ -1,5 +1,5 @@
-// sync-demo.mjs —— demo/消金业务合作 目录 → src/fs/mock-samples.generated.ts
-// demo 是唯一源：mock 浏览器演示数据跟随 demo。predev/prebuild 自动执行。
+// sync-demo.mjs —— 消金业务合作平台内容库 → src/fs/mock-samples.generated.ts
+// 内容库（独立 git 仓库 `/Users/huyongsheng/project/消金业务合作平台`）是唯一源：mock 浏览器演示数据跟随内容库。predev/prebuild 自动执行。
 // 用法：node scripts/sync-demo.mjs          （生成）
 //       node scripts/sync-demo.mjs --check  （校验：有差异则 exit 1，供 CI）
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -7,7 +7,7 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
-const ROOT = join(__dirname, '../../demo/消金业务合作')
+const ROOT = '/Users/huyongsheng/project/消金业务合作平台'
 const OUT = join(__dirname, '../src/fs/mock-samples.generated.ts')
 
 const esc = (s) => s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')

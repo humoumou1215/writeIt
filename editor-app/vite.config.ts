@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import devRepo from './vite-plugins/dev-repo'
 
 // Tauri 要求固定 dev 端口（与 tauri.conf.json 的 devUrl 一致）
 const PORT = 5173
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), devRepo()],
   clearScreen: false,
   // 导出 PDF 的内置中文字体（.otf，Vite 默认 asset 列表不含 otf）
   assetsInclude: ['**/*.otf'],

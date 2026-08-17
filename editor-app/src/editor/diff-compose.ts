@@ -184,6 +184,8 @@ function handleSeg(
     for (const a of visible) {
       // M14b：嵌入行原样输出（不包 {++..++}，否则 remark-ref 整段匹配失败 → 退化为文件链接）
       if (EMBED_RE.test(a.text)) {
+        // Milkdown 单换行=hardbreak（WYSIWYG 往返）→ 嵌入行必须前后独立成段
+        if (out.length && out[out.length - 1] !== '') out.push('')
         out.push(a.text)
         out.push('')
       } else {
@@ -216,6 +218,7 @@ function handleSeg(
     // M14b：嵌入改行原样输出新行（旧版本不再需要，卡片展示当前内容）
     if (EMBED_RE.test(del.text) || EMBED_RE.test(add.text)) {
       if (add.text) {
+        if (out.length && out[out.length - 1] !== '') out.push('')
         out.push(add.text)
         out.push('')
       }
@@ -349,8 +352,14 @@ function processHunk(ctx: ComposeCtx, hunk: DiffHunk) {
         continue
       }
       ctx.out.push(line.text)
-      // 嵌入引用需独立成段（remark-ref 整段匹配）→ 补空行
-      if (/^\s*!\[\[/.test(line.text)) ctx.out.push('')
+      // 嵌入引用需独立成段（remark-ref 整段匹配）→ 前后补空行（Milkdown 单换行=hardbreak）
+      if (/^\s*!\[\[/.test(line.text)) {
+        if (ctx.out.length >= 2 && ctx.out[ctx.out.length - 2] !== '') {
+          // 前一行可能是被标记的段落行 → 在嵌入行前补空行（在后一行补空行保持对仗）
+          ctx.out.splice(ctx.out.length - 1, 0, '')
+        }
+        ctx.out.push('')
+      }
       i++
     } else {
       // del/add 段

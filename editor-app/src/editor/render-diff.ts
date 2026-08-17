@@ -63,9 +63,11 @@ async function mountRenderCrepe(
       ctx.set(refConfigCtx.key, refCfg)
       registerRefStringify(ctx)
     })
-    crepe.editor.use(refPlugin)
-    // M13：diff 节点（{-- --}/{++ ++}/::: diff-*）
+    // 先注册 remarkDiffInline 再注册 remark-ref：保证 {++..++}/{--..--} 先拆分成 diff 节点，
+    // 否则 [[path#frag]] / ![[path]] 会先被 remark-ref 拆成 fileRef/fileBlock，
+    // 把标记拆成孤立文本 → 花括号泄漏 / 嵌入退化为文件链接
     crepe.editor.use(diffPlugin)
+    crepe.editor.use(refPlugin)
     await crepe.create()
     // [调试] schema 检查
     try {

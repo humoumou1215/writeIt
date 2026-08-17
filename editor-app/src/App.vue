@@ -4,7 +4,8 @@ import { state, toast } from './state/store'
 import { settings, applyTheme, saveSettings, SHORTCUT_DEFS, comboMatches } from './state/settings'
 import { fs } from './fs'
 import { isEditableFile, type FsEntry } from './fs/types'
-import { isGitAvailable } from './git'
+import { git, isGitAvailable } from './git'
+import { applyGitMark, clearGitMark } from './git/mark'
 import GitPanel from './components/GitPanel.vue'
 import TabContextMenu from './components/TabContextMenu.vue'
 import MenuIcon, { type MenuIconSet } from './components/MenuIcon.vue'
@@ -52,6 +53,12 @@ onMounted(async () => {
   // 性能：后台预热 esbuild-wasm（模板 TS 转译），避免首次 suggest 加载卡顿
   void import('./template/ts-loader').then((m) => m.warmupTsLoader())
   ensureAutoSaveLoop()
+  // M15：启动即拉取工作区 git 状态 → 主文件树角标（失败静默：非 git 仓库忽略）
+  if (isGitAvailable()) {
+    git.status()
+      .then((s) => applyGitMark(s))
+      .catch(() => clearGitMark())
+  }
   window.addEventListener('keydown', onKeydown)
   // 点击按钮后 blur，避免空格/回车再次激活按钮（编辑器里按空格是输入）
   document.addEventListener('click', onDocClick)

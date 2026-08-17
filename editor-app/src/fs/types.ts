@@ -1,7 +1,8 @@
-// 文件系统抽象 —— 同一套接口，三种宿主实现：
+// 文件系统抽象 —— 同一套接口，四种宿主实现：
 //   mock  → 浏览器内 localStorage 模拟（Vite 调试 / Demo）
 //   web   → File System Access API（Chrome 直接打开真实目录）
 //   tauri → Rust 命令（打包后的独立应用）
+//   dev   → Vite Node 中间件（?repo=1 真实仓库模式：真实目录 + 真实 git）
 
 export interface FsEntry {
   name: string
@@ -11,7 +12,7 @@ export interface FsEntry {
   children?: FsEntry[]
 }
 
-export type FsBackendKind = 'mock' | 'web' | 'tauri'
+export type FsBackendKind = 'mock' | 'web' | 'tauri' | 'dev'
 
 export interface FileSystem {
   readonly kind: FsBackendKind

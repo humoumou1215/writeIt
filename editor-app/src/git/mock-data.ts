@@ -1203,8 +1203,34 @@ export const DEMO_STATUS: GitFileStatus[] = [
 ]
 
 export const DEMO_LOG: GitCommit[] = [
-  { hash: '1e7728bb136ba3bf7ab287f07399c7f7bea1b63f', author: 'Alice', date: Math.floor(Date.now() / 1000) - 86400 * 2, message: '优化流程图与需求清单' },
-  { hash: '', author: 'Bob', date: Math.floor(Date.now() / 1000) - 86400 * 5, message: '初始提交：演示笔记骨架' },
+  {
+    hash: '1e7728bb136ba3bf7ab287f07399c7f7bea1b63f',
+    parents: ['0fa9c81177aa44bb55cc66dd77ee88ff9900aa11', '4d2e1f9ab8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3'],
+    author: 'Alice',
+    date: Math.floor(Date.now() / 1000) - 86400 * 2,
+    message: '优化流程图与需求清单（合并 feature/图表优化）',
+  },
+  {
+    hash: '0fa9c81177aa44bb55cc66dd77ee88ff9900aa11',
+    parents: ['c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7'],
+    author: 'Bob',
+    date: Math.floor(Date.now() / 1000) - 86400 * 4,
+    message: '补充需求表与会议纪要',
+  },
+  {
+    hash: '4d2e1f9ab8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3',
+    parents: ['c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7'],
+    author: 'Carol',
+    date: Math.floor(Date.now() / 1000) - 86400 * 3,
+    message: '图表优化：mermaid 节点级标注',
+  },
+  {
+    hash: 'c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7',
+    parents: [],
+    author: 'Bob',
+    date: Math.floor(Date.now() / 1000) - 86400 * 6,
+    message: '初始提交：演示笔记骨架',
+  },
 ]
 
 export const DEMO_SHOW_COMMIT = {
