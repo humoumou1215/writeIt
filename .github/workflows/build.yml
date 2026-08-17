@@ -109,21 +109,15 @@ jobs:
           path: editor-app/writeit_*_portable.zip
           if-no-files-found: error
 
-      # ---- macOS：压缩 .app（除 DMG 外的绿色版），随 DMG 一起上传 ----
-      - name: Create macOS .app zip
-        if: runner.os == 'macOS'
-        run: |
-          app_path=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "writeit-macos-${{ matrix.arch }}.app.zip"
-
-      - name: Upload macOS bundles (.app + DMG)
+      # ---- macOS：只上传 DMG ----
+      # .app 已完整包含在 DMG 内；不再另传 .app.zip 绿色版（否则同一 App 两种格式
+      # 进同一 artifact，体积几乎翻倍；需要绿色版可自行解包 DMG 内的 .app）。
+      - name: Upload macOS DMG
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: writeit-macos-${{ matrix.arch }}
-          path: |
-            editor-app/src-tauri/target/release/bundle/dmg/*.dmg
-            editor-app/writeit-macos-${{ matrix.arch }}.app.zip
+          path: editor-app/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
   # 推送 v* 标签时发布 GitHub Release。

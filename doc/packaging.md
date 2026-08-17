@@ -30,6 +30,7 @@ npm run tauri build -- --bundles nsis
 ```bash
 npm run tauri build -- --bundles app,dmg
 # 产物: src-tauri/target/release/bundle/macos/*.app、bundle/dmg/*.dmg
+# CI 只上传 DMG（.app 完整包含在 DMG 内；不再另发 .app.zip，避免产物体积翻倍）
 ```
 
 ### Linux（开发验证用）
@@ -62,8 +63,8 @@ npm run tauri build -- --bundles appimage
 | 平台 | Runner | 产物 |
 |---|---|---|
 | Windows | `windows-latest` | NSIS 安装包 + 便携 zip |
-| macOS Intel | `macos-13` | .app + DMG |
-| macOS Apple Silicon | `macos-14` | .app + DMG |
+| macOS Intel | `macos-15-intel` | DMG |
+| macOS Apple Silicon | `macos-14` | DMG |
 
 - 产物上传 Artifacts；
 - 推送 `v*` 标签时自动发布 GitHub Release（含全部平台产物）。
