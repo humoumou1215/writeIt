@@ -347,7 +347,7 @@ fn no_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-  no_console(std::process::Command::new("git"))
+  no_console(&mut std::process::Command::new("git"))
     .args(args)
     .current_dir(root)
     .output()
@@ -1117,7 +1117,7 @@ fn git_discard_hunk(
   let text = String::from_utf8_lossy(&out.stdout);
   let patch = extract_hunk_patch(&text, hunk_index).ok_or("hunk 不存在或文件无改动")?;
   use std::io::Write;
-  let mut child = no_console(std::process::Command::new("git"))
+  let mut child = no_console(&mut std::process::Command::new("git"))
     .args(["apply", "--reverse", "--unidiff-zero", "-"])
     .current_dir(&root)
     .stdin(std::process::Stdio::piped())
@@ -1193,7 +1193,7 @@ fn git_user_name(state: State<AppState>) -> Option<String> {
   if !has_git {
     return None;
   }
-  let out = no_console(std::process::Command::new("git"))
+  let out = no_console(&mut std::process::Command::new("git"))
     .args(["config", "user.name"])
     .current_dir(&root)
     .output()
