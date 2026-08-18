@@ -1,0 +1,94 @@
+/* ===== 引用/被引用 底部展示区（非编辑） ===== */
+.refs-footer {
+  margin: 28px 8px 8px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--chrome-surface-low, #f5f5f5), transparent 40%);
+  border: 1px dashed var(--chrome-border, rgba(0, 0, 0, 0.12));
+  user-select: none;
+  cursor: default;
+}
+
+.refs-footer-status {
+  min-height: 12px;
+  font-size: 11px;
+  color: var(--chrome-on-surface-variant, #888);
+  opacity: 0;
+}
+.refs-footer-status.refs-footer-loading,
+.refs-footer-status:not(:empty) {
+  opacity: 1;
+  animation: refs-pulse 1.2s ease-in-out infinite;
+}
+
+.refs-footer-section + .refs-footer-section {
+  margin-top: 12px;
+}
+
+.refs-footer-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--chrome-on-surface-variant, #666);
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.refs-footer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.refs-footer-empty {
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant, #999);
+}
+
+.refs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 6px 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--chrome-border, rgba(0, 0, 0, 0.12));
+  background: color-mix(in srgb, var(--chrome-surface, #fff), transparent 8%);
+  color: var(--chrome-on-surface, #222);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.refs-chip:hover {
+  background: var(--chrome-surface, #fff);
+  box-shadow: var(--chrome-shadow-1, 0 1px 4px rgba(0, 0, 0, 0.12));
+}
+
+.refs-chip-kind {
+  font-size: 10px;
+  color: var(--chrome-on-surface-variant, #888);
+  background: color-mix(in srgb, var(--chrome-border, rgba(0, 0, 0, 0.12)), transparent 40%);
+  border-radius: 999px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+}
+
+.refs-chip-embed {
+  border-color: color-mix(in srgb, var(--chrome-primary, #4f6ef7), transparent 55%);
+}
+.refs-chip-embed .refs-chip-kind {
+  color: var(--chrome-primary, #4f6ef7);
+  background: color-mix(in srgb, var(--chrome-primary, #4f6ef7), transparent 88%);
+}
+.refs-chip-object .refs-chip-kind {
+  color: #9a6b00;
+  background: color-mix(in srgb, #b8860b, transparent 88%);
+}
+
+@keyframes refs-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}

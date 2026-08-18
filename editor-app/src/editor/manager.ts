@@ -28,6 +28,7 @@ import {
   resolveRefPath,
 } from './ref/app-plugin'
 import { initRefTooltip } from './ref/ref-tooltip'
+import { createRefFooter, type RefFooterHandle } from './references'
 import { baseName } from '../fs/types'
 import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings, saveSettings } from '../state/settings'
@@ -61,6 +62,8 @@ interface Instance {
   srcTa: HTMLTextAreaElement | null
   /** M16：Crepe topbar 元素与原生位置（移入工作区顶行槽位后，可随时归还） */
   topbar: null | { el: HTMLElement; parent: HTMLElement; next: Node | null }
+  /** 引用/被引用 底部展示区（非编辑） */
+  refsFooter: null | RefFooterHandle
 }
 
 const instances = new Map<string, Instance>()
@@ -198,6 +201,7 @@ async function setViewMode(tabId: string, mode: ViewMode): Promise<void> {
     })
   }
   syncActiveTopbar()
+  syncRefsFooterVisibility(tabId)
 }
 
 export async function toggleSourceMode(tabId: string): Promise<void> {
@@ -1358,6 +1362,8 @@ export function activateTab(id: string) {
   const inst0 = instances.get(id)
   if (inst0) setAnnotationCardContext(id, inst0.crepe.editor)
   syncActiveTopbar()
+  // 引用底部展示区：切到该标签时重扫反向引用（其它标签可能新增了对它的引用）
+  scheduleRefsFooterRefresh(id)
   // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）
   requestAnimationFrame(() => {
     const inst = instances.get(id)
@@ -1469,6 +1475,63 @@ function releaseSlotBar(tabId: string): void {
   }
 }
 
+// ---------- 引用/被引用 底部展示区 ----------
+
+/** 构建工作区扫描的实时内容覆盖：已打开标签用编辑器实时 markdown（含未保存引用） */
+function buildScanLive(): Map<string, string> {
+  const live = new Map<string, string>()
+  for (const t of state.tabs) {
+    const inst = instances.get(t.id)
+    if (inst) {
+      try {
+        // 源码模式：textarea 内容更接近最新（doc 可能未同步）
+        if (t.viewMode === 'source' && inst.srcTa) live.set(t.path, inst.srcTa.value)
+        else live.set(t.path, inst.crepe.getMarkdown())
+      } catch {
+        /* 编辑器可能未就绪 */
+      }
+    }
+  }
+  return live
+}
+
+/** 渲染某标签的引用底部展示区（含异步反向引用扫描） */
+async function refreshRefsFooter(tabId: string): Promise<void> {
+  const inst = instances.get(tabId)
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (!inst || !tab || !inst.refsFooter) return
+  await inst.refsFooter.render(tab.path, inst.crepe.editor, { live: buildScanLive() })
+}
+
+/** 刷新所有已挂载标签的引用底部展示区（编辑/切换/保存后） */
+function refreshAllRefsFooters(): void {
+  for (const t of state.tabs) {
+    if (instances.get(t.id)?.refsFooter) void refreshRefsFooter(t.id)
+  }
+}
+
+/** 底部展示区防抖刷新（编辑时避免高频工作区扫描） */
+const refsFooterTimers = new Map<string, ReturnType<typeof setTimeout>>()
+function scheduleRefsFooterRefresh(tabId: string): void {
+  const prev = refsFooterTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  refsFooterTimers.set(
+    tabId,
+    setTimeout(() => {
+      refsFooterTimers.delete(tabId)
+      void refreshRefsFooter(tabId)
+    }, 900)
+  )
+}
+
+/** 切换视图时同步底部展示区可见性（仅所见即所得展示） */
+function syncRefsFooterVisibility(tabId: string): void {
+  const inst = instances.get(tabId)
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (!inst?.refsFooter) return
+  inst.refsFooter.setVisible(tab?.viewMode === 'wysiwyg')
+}
+
 // ---------- 挂载 / 销毁（由 EditorPane.vue 调用） ----------
 
 export async function mountEditor(tabId: string, container: HTMLDivElement): Promise<void> {
@@ -1563,6 +1626,16 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)
 
+  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null, topbar: null, refsFooter: null }
+  instances.set(tabId, inst)
+
+  // 引用/被引用 底部展示区（非编辑）：置于正文（.milkdown）之后，随文档滚动
+  inst.refsFooter = createRefFooter(container, (path) => {
+    void openTab(path)
+  })
+  syncRefsFooterVisibility(tabId)
+  void refreshRefsFooter(tabId)
+
   // 两段式解析：异步物化引用（容错：失败不影响编辑器）
   void resolveRefs(crepe.editor).then(() => {
     // §6.7：物化完成后建立初始块快照（此后嵌入编辑通过双条件脏检测识别）
@@ -1574,11 +1647,11 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     }
   })
   void refreshBrokenState(crepe.editor)
+  // 引用底部展示区：物化完成后重扫（应用链引用）/断链态稳定后刷新可见性
+  void refreshRefsFooter(tabId)
   // M5：打开文档时异步校验（hint/strict 均由 rules.ts 声明；失败降级不中断）
   void validateEditor(crepe.editor, tabId, { silent: true })
 
-  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null, topbar: null }
-  instances.set(tabId, inst)
   // M16：记录 topbar 原生位置（随后移入工作区顶行槽位；可归还）
   const topbarEl = container.querySelector('.milkdown-top-bar') as HTMLElement | null
   if (topbarEl && topbarEl.parentElement) {
@@ -1608,6 +1681,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       t.lastModified = Date.now()
       // §6.7：块编辑 → 源文件标签联动刷新（防抖）
       if (blockDirty) scheduleExternalSync(tabId)
+      // 引用底部展示区：文档变更后防抖刷新（向外引用更新 + 反向引用重扫）
+      scheduleRefsFooterRefresh(tabId)
       // M5：编辑防抖实时校验 → 已由 validatePlugin 的 $prose 监听接管（manager 不再调度）
     })
   })
@@ -1628,6 +1703,7 @@ export function unmountEditor(tabId: string) {
   if (!inst) return
   // M16：若该标签的 topbar 仍占用顶行槽位，先归还原处再销毁
   releaseSlotBar(tabId)
+  inst.refsFooter?.dispose()
   inst.crepe.destroy().catch(() => undefined)
   inst.el.remove()
   instances.delete(tabId)
@@ -1816,6 +1892,8 @@ export async function saveTab(tabId: string): Promise<boolean> {
   cacheRefFileContent(tab.path, md)
   const refreshed = await broadcastBlockRefresh(tab.path, tabId, instances)
   syncBlockSnapshots(refreshed)
+  // 保存后：磁盘 + 各打开标签内容可能变化 → 重扫所有引用底部展示区（反向引用随之更新）
+  refreshAllRefsFooters()
   return true
 }
 
