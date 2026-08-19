@@ -1,10 +1,25 @@
-// E2E 回归汇总：依次执行全部正式套件（需 dev server :5173 + playwright）
+// E2E 回归汇总：依次执行全部正式套件（需 dev server :5173 + ego-lite）
 // 用法：npm run test:e2e
+// 浏览器驱动：ego-browser nodejs（【禁止 playwright】），每个套件文件是纯 ego-lite 脚本，
+// 由本运行器 pipe 进 ego-browser 的 stdin 执行；共享辅助库经环境变量 EGOLITE_LIB 注入。
 // app-e2e 最后跑（会清空 demo-shots/）
 const { spawn } = require('node:child_process')
+const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
+const { homedir } = require('node:os')
 
 const here = __dirname
+// ego-browser 可执行文件：优先环境变量，其次 ~/.local/bin（ego lite 安装默认位置），最后 PATH
+const EGO = process.env.EGO_BROWSER_BIN || join(homedir(), '.local/bin/ego-browser')
+// 释放所有遗留 task space（防内存堆积；每个 <- 测试遗留的未关闭空间）
+function cleanupSpaces() {
+  try {
+    const { spawnSync } = require('node:child_process')
+    const script = readFileSync(join(here, '_cleanup-spaces.ego.js'), 'utf8')
+    spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000 })
+  } catch (e) { /* 清理失败不影响结果 */ }
+}
+
 const SUITES = [
   'ref-e2e',      // M1 引用语法与节点
   'menu-e2e',     // M2 触发菜单
@@ -36,12 +51,18 @@ const SUITES = [
 
 function run(name) {
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [join(here, `${name}.js`)], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    // 拼接：注入 __EGO_DIR → _egolite-lib.js 源码 → 用例源码
+    const body =
+      `const __EGO_DIR = ${JSON.stringify(here)}\n` +
+      readFileSync(join(here, '_egolite-lib.js'), 'utf8') + '\n' +
+      readFileSync(join(here, `${name}.js`), 'utf8')
+    const p = spawn(EGO, ['nodejs'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
     let out = ''
     p.stdout.on('data', (d) => (out += d))
     p.stderr.on('data', (d) => (out += d))
+    p.stdin.end(body)
     p.on('close', (code) => resolve({ name, code, out }))
   })
 }
@@ -75,6 +96,8 @@ for (const r of results) {
   console.log(`${ok ? '✅' : '❌'} ${r.name}: ${r.summary}`)
 }
 console.log(fail === 0 ? '\n全部通过 🎉' : `\n${fail} 个套件未通过 ❌`)
+console.log('\n释放遗留 task space…')
+cleanupSpaces()
 process.exit(fail === 0 ? 0 : 1)
 }
 void main()

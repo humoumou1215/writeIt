@@ -1,17 +1,24 @@
-// M13：渲染模式——单 Crepe 渲染「组合 md」（替代 M11c 的双 Crepe + DOM 提取）
-// 流程：composeDiff（hunks+words → 组合 md + 批注卡）→ 单 readonly Crepe（+ diff 节点插件）直接渲染
+// M17：渲染模式——单 Crepe 渲染「新文档 + 结构级 diff 装饰」（替代 M13 的组合 md 注入管线）
+// 流程：patchMermaidFences（fence 节点级合并）→ 单 readonly Crepe（+ diff 装饰插件）渲染
+//   → 用 parserCtx 解析旧文档 → computeDocDiff → 构建 DecorationSet → dispatch 注入
+//   → 渲染后 DOM 标注（mermaid 节点/嵌入徽标）
 // 降级链：Crepe 失败/渲染异常 → 双栏全文对比（renderSplitFallback）
 import { Crepe } from '@milkdown/crepe'
-import { editorViewCtx } from '@milkdown/kit/core'
+import { editorViewCtx, parserCtx } from '@milkdown/kit/core'
+import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
+import { DecorationSet } from '@milkdown/kit/prose/view'
+import { $prose } from '@milkdown/kit/utils'
 import { refPlugin, refConfigCtx, type RefConfig } from './ref'
 import { resolveRefs } from './ref/resolve'
 import { registerRefStringify } from './ref/stringify'
 import { featureConfigs } from './features'
-import { diffPlugin } from './diff-nodes'
-import { composeDiff, type DiffNote } from './diff-compose'
+import { buildDiffDecorations, patchMermaidFences, type DiffNote } from './diff-deco'
 import type { MermaidNodeDiff } from './mermaid-diff'
 import { extractFlowchartNodes, extractSequenceMessages, extractStates } from './mermaid-diff'
 import type { DiffHunk } from '../git/types'
+import './diff.css'
+
+export type { DiffNote } from './diff-deco'
 
 export interface RenderDiffOptions {
   oldMd: string
@@ -19,7 +26,7 @@ export interface RenderDiffOptions {
   hunks: DiffHunk[]
   refCfg: RefConfig
   path: string
-  /** M16b：当前 diff 的对比基准（工作区 from=null to=HEAD；提交对比 from=sha^ to=sha）——嵌入摘要用它计算源文件改动 */
+  /** 当前 diff 的对比基准（工作区 from=null to=HEAD；提交对比 from=sha^ to=sha）——嵌入摘要用它计算源文件改动 */
   from: string | null
   to: string
   baseLabel: string
@@ -34,11 +41,40 @@ export interface RenderDiffResult {
   handle: RenderDiffHandle
   notes: DiffNote[]
   mermaid: MermaidNodeDiff[]
-  /** M14：渲染 Crepe 实例（批注抽屉定位/连线用；调用方负责 register/destroy） */
+  /** 渲染 Crepe 实例（批注抽屉定位/连线用；调用方负责 register/destroy） */
   crepe: Crepe
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// ---------- diff 装饰插件：meta 注入预构建的 DecorationSet ----------
+
+/** 插件 key：transaction meta 携带构建好的 DecorationSet（构建于 doc 就绪后） */
+const diffDecoKey = new PluginKey<DecorationSet>('writeit-diff-deco')
+
+function diffDecoPlugin() {
+  return $prose(
+    () =>
+      new Plugin<DecorationSet>({
+        key: diffDecoKey,
+        state: {
+          init: () => DecorationSet.empty,
+          apply(tr, old) {
+            const set = tr.getMeta(diffDecoKey)
+            if (set) return set
+            if (!tr.docChanged) return old
+            // 文档后续变化（嵌入物化等）→ 位置映射跟随
+            return old.map(tr.mapping, tr.doc)
+          },
+        },
+        props: {
+          decorations(state) {
+            return diffDecoKey.getState(state) ?? DecorationSet.empty
+          },
+        },
+      })
+  )
+}
 
 /** 等待 mermaid 预览渲染（renderPreview 异步） */
 async function waitForRender(host: HTMLElement, waitMs = 2500): Promise<boolean> {
@@ -53,11 +89,17 @@ async function waitForRender(host: HTMLElement, waitMs = 2500): Promise<boolean>
   return false
 }
 
+interface MountResult {
+  crepe: Crepe
+  notes: DiffNote[]
+}
+
 async function mountRenderCrepe(
   container: HTMLElement,
   md: string,
-  refCfg: RefConfig
-): Promise<Crepe | null> {
+  refCfg: RefConfig,
+  oldMd?: string
+): Promise<MountResult | null> {
   try {
     const crepe = new Crepe({
       root: container,
@@ -68,23 +110,31 @@ async function mountRenderCrepe(
       ctx.set(refConfigCtx.key, refCfg)
       registerRefStringify(ctx)
     })
-    // 先注册 remarkDiffInline 再注册 remark-ref：保证 {++..++}/{--..--} 先拆分成 diff 节点，
-    // 否则 [[path#frag]] / ![[path]] 会先被 remark-ref 拆成 fileRef/fileBlock，
-    // 把标记拆成孤立文本 → 花括号泄漏 / 嵌入退化为文件链接
-    crepe.editor.use(diffPlugin)
+    // 先用 remark-ref 解析（[[path#frag]] / ![[path]] → fileRef / fileBlock），
+    // diff 装饰插件全程无标记语法，不再需要 marker 先行拆分
     crepe.editor.use(refPlugin)
+    crepe.editor.use(diffDecoPlugin())
     await crepe.create()
-    // [调试] schema 检查
-    try {
-      crepe.editor.action((ctx) => {
-        const nodes = Object.keys(ctx.get(editorViewCtx).state.schema.nodes)
-        const names: string[] = []
-        ctx.get(editorViewCtx).state.doc.descendants((n) => { names.push(n.type.name); return true })
-        console.log('[render-diff] doc nodes:', names.filter((n, i) => names.indexOf(n) === i).join(','))
-        console.log('[render-diff] schema has diff:', ['diffContainer', 'diffDel', 'diffIns'].filter((n) => nodes.includes(n)).join(',') || 'NONE')
-      })
-    } catch (e) {
-      console.log('[render-diff] schema check err:', (e as Error).message)
+    // 结构级 diff：解析旧文档 → 构建装饰 → 注入（doc 坐标即渲染坐标，无需再映射）
+    const notes: DiffNote[] = []
+    if (oldMd) {
+      try {
+        const ok = await crepe.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const parser = ctx.get(parserCtx)
+          const oldDoc = parser(oldMd)
+          const newDoc = view.state.doc
+          if (!oldDoc) return false
+          const { decorations, notes: ns } = buildDiffDecorations(oldDoc, newDoc)
+          notes.push(...ns)
+          const tr = view.state.tr.setMeta(diffDecoKey, DecorationSet.create(newDoc, decorations))
+          view.dispatch(tr)
+          return true
+        })
+        if (!ok) console.warn('[render-diff] 旧文档解析失败，跳过 diff 标注')
+      } catch (e) {
+        console.warn('[render-diff] diff 装饰构建失败（文档继续渲染，无标注）:', e)
+      }
     }
     crepe.setReadonly(true)
     try {
@@ -92,7 +142,7 @@ async function mountRenderCrepe(
     } catch {
       /* 物化失败不影响渲染 */
     }
-    return crepe
+    return { crepe, notes }
   } catch (e) {
     console.warn('[render-diff] Crepe 挂载失败:', e, (e as Error).stack)
     return null
@@ -157,9 +207,9 @@ function applyMermaidAnnotations(target: HTMLElement, mermaidList: MermaidNodeDi
   }
 }
 
-/** M14/M16：嵌入块源文件有未提交改动 → 卡片角标 + 内嵌改动摘要；
- *  ① 嵌入行本身是本次改动的增/删/改 → 卡片头部徽标（新增引用/移除引用/引用变更）
- *  ② 源文件有未提交改动（v16：修复无扩展名路径匹配失败的旧 bug）→ 「内容有改动」角标 + 底部源文件改动摘要
+/** 嵌入块源文件有未提交改动 → 卡片角标 + 内嵌改动摘要；
+ *  ① 嵌入行本身是本次改动的增/删/改 → 卡片头部徽标（新增引用/移除引用）
+ *  ② 源文件有未提交改动 → 「内容有改动」角标 + 底部源文件改动摘要
  */
 const EMBED_LINE_RE = /^\s*!\[\[([^\]]+)\]\]\s*$/
 
@@ -169,7 +219,7 @@ interface EmbedChange {
 }
 
 /** 从 hunks 收集嵌入引用行的变化（path 保持源码形式，无扩展名）。
- *  M16：二元语义——删除的引用由组合器输出缩略红行（见 diff-compose），不挂卡片徽标；
+ *  M16：二元语义——删除的引用由装饰层输出红色占位行，不挂卡片徽标；
  *  此处只统计新增引用（挂卡片绿徽标）。 */
 function collectEmbedChanges(hunks: DiffHunk[]): EmbedChange[] {
   const addSet = new Set<string>()
@@ -325,8 +375,8 @@ interface DiffBaseRef {
   label: string
 }
 
-/** M14/M16：嵌入块源文件在对比范围内有改动 → 卡片角标 + 内嵌改动摘要；
- *  ① 引用行本身是本次改动（新增引用）→ 卡片头部绿徽标（删除由组合器输出缩略红行）
+/** 嵌入块源文件在对比范围内有改动 → 卡片角标 + 内嵌改动摘要；
+ *  ① 引用行本身是本次改动（新增引用）→ 卡片头部绿徽标（删除由装饰层输出红色占位行）
  *  ② 源文件在 from..to 有改动（工作区 / commit 对比统一）→ 「内容有改动」角标 + 底部源文件改动摘要 */
 async function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined, base: DiffBaseRef) {
   const embeds = collectEmbedChanges(hunks ?? [])
@@ -360,25 +410,70 @@ async function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | 
   )
 }
 
-/** 渲染单 Crepe 组合 md 到 target。返回句柄 + 批注卡 + mermaid 变更（调用方负责 destroy） */
+/** 在渲染 doc 中按类型/路径给 -1 位置的 note 定位（mermaid → 按序 code_block；引用 → file_block 按 path） */
+function locateNotesByDoc(crepe: Crepe, notes: DiffNote[]) {
+  const mermaidNotes = notes.filter((n) => n.kind === 'mermaid')
+  const embedNotes = notes.filter((n) => n.kind === 'block' && n.text.startsWith('移除了引用'))
+  if (!mermaidNotes.length && !embedNotes.length) return
+  try {
+    crepe.editor.action((ctx) => {
+      const doc = ctx.get(editorViewCtx).state.doc
+      const mermaidPositions: number[] = []
+      doc.descendants((n, pos) => {
+        if (n.type.name === 'code_block' && (n.attrs.language as string) === 'mermaid') mermaidPositions.push(pos)
+        return true
+      })
+      mermaidNotes.forEach((n, i) => {
+        if (mermaidPositions[i] !== undefined) {
+          n.from = mermaidPositions[i]
+          n.to = mermaidPositions[i] + 1
+        }
+      })
+      if (embedNotes.length) {
+        doc.descendants((n, pos) => {
+          if (n.type.name === 'file_block') {
+            const p = String(n.attrs.path ?? '')
+            const hit = embedNotes.find((no) => no.from < 0 && (no.del === p || no.anchor.includes(p)))
+            if (hit) {
+              hit.from = pos
+              hit.to = pos + 1
+            }
+          }
+          return true
+        })
+      }
+    })
+  } catch {
+    /* 编辑器已销毁 */
+  }
+}
+
+/** 渲染单 Crepe「新文档 + 结构级 diff 装饰」到 target。返回句柄 + 批注卡 + mermaid 变更（调用方负责 destroy） */
 export async function renderDiffToContainer(
   target: HTMLElement,
   opts: RenderDiffOptions
 ): Promise<RenderDiffResult | null> {
-  const { oldMd, newMd, hunks, refCfg, path, from, to, baseLabel, onFallback } = opts
+  const { oldMd, newMd, hunks, refCfg, from, to, baseLabel, onFallback } = opts
   const base = { from: from ?? null, to, label: baseLabel }
   let crepe: Crepe | null = null
   try {
-    const { composedMd, notes, mermaid } = composeDiff({ oldMd, newMd, hunks, path })
+    // 1) mermaid fence 节点级预合并（新源码为底 + 删除节点加回），其余照旧
+    const { md: patchedMd, mermaid, notes: mermaidNotes } = patchMermaidFences(oldMd, newMd)
 
     target.textContent = ''
-    crepe = await mountRenderCrepe(target, composedMd, refCfg)
-    if (!crepe) {
+    const mounted = await mountRenderCrepe(target, patchedMd, refCfg, oldMd)
+    if (!mounted) {
       onFallback?.('Crepe 渲染失败，降级为双栏全文对比')
       return null
     }
+    crepe = mounted.crepe
+    const notes = [...mounted.notes]
+    // 2) mermaid / 移除引用 note 的 -1 位置按 doc 定位
+    notes.push(...mermaidNotes)
+    locateNotesByDoc(crepe, notes)
+
     await waitForRender(target, 2500)
-    // mermaid 渲染完成 + 节点标注（异步）→ 立即 + 轮询补标
+    // 3) mermaid 渲染完成 + 节点标注（异步）→ 立即 + 轮询补标；嵌入徽标/摘要
     const annotateNow = () => {
       applyMermaidAnnotations(target, mermaid)
       void annotateEmbedDiffBadges(target, hunks, base)
@@ -429,8 +524,8 @@ export async function renderSplitFallback(
   }
   try {
     ;[oldCrepe, newCrepe] = await Promise.all([
-      mountRenderCrepe(oldLayer, oldMd, refCfg),
-      mountRenderCrepe(newLayer, newMd, refCfg),
+      mountRenderCrepe(oldLayer, oldMd, refCfg).then((r) => r?.crepe ?? null),
+      mountRenderCrepe(newLayer, newMd, refCfg).then((r) => r?.crepe ?? null),
     ])
     if (disposed) {
       cleanup()

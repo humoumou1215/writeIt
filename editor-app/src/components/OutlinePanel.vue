@@ -11,13 +11,15 @@ import type { OutlineItem } from '../editor/outline'
 import MenuIcon from './MenuIcon.vue'
 
 const open = ref(settings.outlineOpen)
-const width = ref(Math.max(140, Math.min(320, settings.outlineWidth)))
+const width = ref(Math.max(100, Math.min(640, settings.outlineWidth)))
+/** 自适应宽度：按最长标题自动调宽，上限 = 编辑器 1/3；手动拖拽时自动关闭 */
+const autoFit = ref(settings.outlineAutoFit)
 const listEl = ref<HTMLElement | null>(null)
 
 // ---------- 数据 ----------
 const activeTabId = computed(() => state.activeTabId)
 const tab = computed(() => state.tabs.find((t) => t.id === activeTabId.value))
-const showPanel = computed(() => !!activeTabId.value && tab.value?.viewMode !== 'diff')
+const showPanel = computed(() => !!activeTabId.value && tab.value?.viewMode === 'wysiwyg')
 
 const items = computed(() =>
   activeTabId.value ? (outlineStore.tabs[activeTabId.value]?.items ?? []) : []
@@ -143,16 +145,90 @@ async function go(item: OutlineItem) {
   await scrollToPos(tabId, item.pos)
 }
 
-// ---------- 折叠 ----------
+// ---------- 自适应宽度（按文字内容，上限 = 编辑器 1/3） ----------
+function editorThird(): number {
+  const ed = document.querySelector('.editor-area') as HTMLElement | null
+  return Math.max(Math.floor((ed?.clientWidth ?? 800) / 3), 120)
+}
+/** 测量最长标题行所需宽度（同帧内完成，不闪屏） */
+function applyAutoFit() {
+  if (!autoFit.value || !listEl.value) return
+  // 先把宽度放到上限再测量（同步读取强制重排，随后立即收敛，用户看不到中间态）
+  const max = editorThird()
+  width.value = Math.max(width.value, max)
+  let needed = 0
+  const rows = listEl.value.querySelectorAll<HTMLElement>('.ol-row')
+  rows.forEach((r) => {
+    needed = Math.max(needed, r.scrollWidth)
+  })
+  // 行宽 + 列表左右内边距(18) + 缓冲
+  const target = needed > 0 ? Math.min(Math.max(needed + 26, 120), max) : 120
+  width.value = target
+}
+function toggleAutoFit() {
+  autoFit.value = !autoFit.value
+  settings.outlineAutoFit = autoFit.value
+  saveSettings()
+  if (autoFit.value) requestAnimationFrame(applyAutoFit)
+}
+
+// ---------- 折叠 / 宽度 ----------
 function toggleOpen() {
   open.value = !open.value
   settings.outlineOpen = open.value
   saveSettings()
 }
+function saveWidth() {
+  settings.outlineWidth = width.value
+  saveSettings()
+}
+
+// ---------- 收纳按钮：点击 = 收纳；拖拽 = 调整宽度（可突破 1/3） ----------
+let dragStartX = 0
+let dragStartW = 0
+let isDragging = false
+function onToggleDown(e: PointerEvent) {
+  dragStartX = e.clientX
+  dragStartW = width.value
+  isDragging = false
+  const move = (ev: PointerEvent) => {
+    const dx = ev.clientX - dragStartX
+    if (!isDragging && Math.abs(dx) < 5) return
+    if (!isDragging) {
+      isDragging = true
+      // 手动拖拽 → 关闭自适应（允许突破 1/3）
+      if (autoFit.value) {
+        autoFit.value = false
+        settings.outlineAutoFit = false
+      }
+    }
+    // 手动上限：编辑器宽度的 60%（可突破 1/3 的自动上限）
+    const ed = document.querySelector('.editor-area') as HTMLElement | null
+    const maxW = Math.max(Math.floor((ed?.clientWidth ?? 800) * 0.6), 200)
+    width.value = Math.min(Math.max(dragStartW + dx, 100), maxW)
+    saveWidth()
+  }
+  const up = (ev: PointerEvent) => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    if (!isDragging && Math.abs(ev.clientX - dragStartX) < 5) {
+      // 未拖动 = 点击 → 直接收纳
+      toggleOpen()
+    }
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
 
 // ---------- 生命周期 ----------
 function onResize() {
   scheduleRebuild(150)
+  if (autoFit.value) requestAnimationFrame(applyAutoFit)
+}
+function scheduleFit() {
+  requestAnimationFrame(() => {
+    void nextTick(applyAutoFit)
+  })
 }
 onMounted(async () => {
   window.addEventListener('resize', onResize)
@@ -160,28 +236,48 @@ onMounted(async () => {
     m.onEditorMounted(() => scheduleRebuild(0))
   })
   scheduleRebuild(0)
+  scheduleFit()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   detachScroll()
 })
-watch(activeTabId, () => scheduleRebuild(0))
+watch(activeTabId, () => {
+  scheduleRebuild(0)
+  scheduleFit()
+})
 watch(
   () => outlineStore.version,
-  () => scheduleRebuild(0)
+  () => {
+    scheduleRebuild(0)
+    scheduleFit()
+  }
 )
 watch(showPanel, (v) => {
-  if (v) scheduleRebuild(0)
-  else markers.value = []
+  if (v) {
+    scheduleRebuild(0)
+    scheduleFit()
+  } else markers.value = []
 })
 watch(open, (v) => {
-  if (v) scheduleRebuild(60)
+  if (v) {
+    scheduleRebuild(60)
+    scheduleFit()
+  }
 })
 // 顶部栏开关按钮直接改 settings.outlineOpen → 面板本地状态跟随
 watch(
   () => settings.outlineOpen,
   (v) => {
     open.value = v
+  }
+)
+// 自适应开关被外部（如设置）修改时跟随
+watch(
+  () => settings.outlineAutoFit,
+  (v) => {
+    autoFit.value = v
+    if (v) requestAnimationFrame(applyAutoFit)
   }
 )
 </script>
@@ -193,15 +289,22 @@ watch(
     :class="{ open }"
     :style="{ width: open ? width + 'px' : '0px' }"
   >
-    <!-- 展开态：右缘收拢按钮（chevron 指向左） -->
-    <button
-      v-if="open"
-      class="op-toggle collapse"
-      title="收起大纲"
-      @click="toggleOpen"
-    >
-      <MenuIcon name="chevron" :set="settings.iconSet" :size="14" class="op-chev" />
-    </button>
+    <!-- 展开态：右缘按钮（点击=收纳，拖拽=调整宽度） + 自适应开关 -->
+    <template v-if="open">
+      <button
+        class="op-fit"
+        :class="{ on: autoFit }"
+        :title="autoFit ? '自适应宽度（≤ 编辑器 1/3）已开启，点击关闭' : '自适应宽度（按文字内容，≤ 编辑器 1/3）'"
+        @click="toggleAutoFit"
+      >A</button>
+      <button
+        class="op-toggle collapse"
+        :title="autoFit ? '点击收纳；拖拽调整宽度' : '点击收纳；拖拽调整宽度（可突破 1/3）'"
+        @pointerdown="onToggleDown"
+      >
+        <MenuIcon name="chevron" :set="settings.iconSet" :size="14" class="op-chev" />
+      </button>
+    </template>
 
     <!-- 折叠态：左缘展开按钮（chevron 指向右） -->
     <button
@@ -274,6 +377,37 @@ watch(
 .op-toggle.collapse {
   right: -1px;
 }
+/* 自适应宽度开关（A）：悬停浮现，位于收纳按钮上方 */
+.op-fit {
+  position: absolute;
+  right: -1px;
+  top: calc(50% - 38px);
+  width: 18px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--chrome-border-light);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--chrome-surface) 78%, transparent);
+  color: var(--chrome-on-surface-variant);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.18s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  z-index: 4;
+}
+.op-fit.on {
+  color: var(--chrome-primary);
+  border-color: var(--chrome-primary);
+}
+.op-fit:hover {
+  background: var(--chrome-hover);
+}
+.outline-panel:hover .op-fit,
+.op-fit:focus-visible {
+  opacity: 1;
+}
 .op-toggle.expand {
   left: 0;
   /* 收纳态要“看得见”：平时半透明可见，悬停全亮 */
@@ -303,6 +437,14 @@ watch(
   overflow-y: auto;
   overflow-x: hidden;
   padding: 10px 8px 14px;
+  /* 大纲内容从右到左透明度渐变：左缘 100% 不透明 → 右缘 0% 透明（仅内容，不遮收纳按钮） */
+  -webkit-mask-image: linear-gradient(to right, #000 0%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 0%, transparent 100%);
+  /* 可滚动但不显示滚动条（进度条） */
+  scrollbar-width: none;
+}
+.ol-list::-webkit-scrollbar {
+  display: none;
 }
 .ol-row {
   display: flex;

@@ -172,10 +172,13 @@ _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri）
 - `src/fs/`：FileSystem 抽象（mock/web/tauri 三实现）；`shouldShowInTree()` 控制树过滤（模板域文件始终显示）
 
 ### 测试（改代码后必跑）
-- 套件在 `editor-app/tests/e2e/`（真实 Chromium，需 dev server :5173；playwright 是 devDependency，首次 `npx playwright install chromium`）：
-  `ref-e2e`(15) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(6) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(20) / `app-e2e`(28，会清空 demo-shots/)
-- 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后跑）；单个：`node tests/e2e/<name>.js`，看末尾「结果: X 通过 / Y 失败」
-- 历史一次性调试脚本归档在 `tests/scratch/`（不维护，仅供查证）
+- **浏览器驱动唯一允许 ego-lite（ego-browser），【禁止 playwright】**。调试/回归全部走 `ego-browser nodejs`；不要在任何用例或脚本里 `require('playwright')`。
+- 套件在 `editor-app/tests/e2e/`（ego-lite 驱动真实 Chromium，需 dev server :5173；无额外依赖，不装 playwright）：
+  `ref-e2e`(16) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(5) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(28) / `m6d-e2e`(12) / `m6e-e2e`(19) / `source-e2e` / `drag-e2e` / `m7-apidoc-e2e`(8) / `xxljob-e2e`(8) / `m8-db-e2e`(10) / `m9-placeholder-e2e`(8) / `mermaid-zoom-e2e`(16) / `mermaid-ref-e2e`(26) / `export-e2e` / `git-m11a-e2e` / `git-m11a-smoke` / `search-e2e` / `app-e2e`(28，会清空 demo-shots/)
+- 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后跑）；单个：`node tests/e2e/_run-one.js <name>`，看末尾「结果: X 通过 / Y 失败」；共享辅助库在 `tests/e2e/_egolite-lib.js`（js/click/wait/组合键等辅助，运行器自动拼接注入）。
+- 组合键（Ctrl+E / Ctrl+S / Ctrl+Shift+F 等）要用 `L.press('Control+e')`，它走 CDP 发真实修饰符；裸 `pressKey('Control+e')` 会被当成单一键名（应用收不到 ctrlKey）。
+- 实体级下钻用 `ArrowRight`（文件级 `Enter` 现为直接插入链接）；跨套件用 `L.freshApp()` 重置 mock 避免残留串扰。
+- 历史一次性调试脚本已随 playwright 禁令移除（`tests/scratch/` 删除，git 历史可查）。
 - 每轮回归后 `npm run build` 验证
 
 ### 调试钩子（window 上，测试/排障用）

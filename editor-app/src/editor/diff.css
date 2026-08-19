@@ -1,0 +1,40 @@
+/* M17：diff 标注样式（结构级装饰：widget 与 inline/node 装饰复用类名，渲染层无标记语法） */
+
+/* 内联：删除红底划线 / 新增绿底 */
+.diff-del {
+  background: color-mix(in srgb, #c62828, transparent 78%);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.diff-ins {
+  background: color-mix(in srgb, #2e7d32, transparent 78%);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+/* 块级删除 widget（原位插回的红块） */
+.diff-del-block {
+  display: block;
+  margin: 4px 0;
+  padding: 2px 8px;
+  font-weight: 600;
+}
+
+/* 块级新增（整块绿底） */
+.diff-ins-block {
+  display: block;
+  border-radius: 6px;
+  box-shadow: inset 3px 0 0 #2e7d32;
+}
+
+/* 深色主题下标记更亮 */
+[data-theme-dark='true'] .diff-del,
+.theme-dark .diff-del {
+  background: color-mix(in srgb, #ef5350, transparent 70%);
+}
+[data-theme-dark='true'] .diff-ins,
+.theme-dark .diff-ins {
+  background: color-mix(in srgb, #66bb6a, transparent 70%);
+}

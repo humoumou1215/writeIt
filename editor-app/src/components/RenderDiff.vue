@@ -1,15 +1,14 @@
 <script setup lang="ts">
-// M13：渲染模式视图——单 Crepe 渲染组合 md（diff 标注内嵌）
+// M13：渲染模式视图——单 Crepe 渲染「新文档 + 结构级 diff 装饰」
 // M14：批注卡复用存量批注体系——notes → AnnotationService.setRuntimeAnnotations（抽屉展示/连线/定位）
-// 流程：loadRenderData 取新旧内容 → renderDiffToContainer（组合 + 渲染）→ 注册渲染实例 + 注入批注
+// M17：notes 自带精确 from/to 位置（构建装饰时记录），不再渲染后值匹配
+// 流程：loadRenderData 取新旧内容 → renderDiffToContainer（diff 装饰 + 渲染）→ 注册渲染实例 + 注入批注
 // 降级：渲染失败 → renderSplitFallback 双栏全文
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
 import type { Crepe } from '@milkdown/crepe'
-import { editorViewCtx } from '@milkdown/kit/core'
 import { state } from '../state/store'
 import { loadRenderData, registerRenderInstance } from '../editor/manager'
-import type { RenderDiffHandle, RenderDiffResult } from '../editor/render-diff'
-import type { DiffNote } from '../editor/diff-compose'
+import type { RenderDiffHandle, RenderDiffResult, DiffNote } from '../editor/render-diff'
 import { setRuntimeAnnotations, type Annotation } from '../annotations/service'
 
 const props = defineProps<{ tabId: string }>()
@@ -23,106 +22,24 @@ let handle: RenderDiffHandle | null = null
 let renderSeq = 0
 
 // ---------- M14：diff 批注注入（notes → Annotation[] → 存量抽屉） ----------
-
-/** 在渲染 doc 中定位每个 note 的锚点 pos：
- *  - diffIns/diffDel 按 value 精确匹配；新增 note 只匹配 diffIns、删除只匹配 diffDel（避免同名漂移）
- *  - 相同 value 的多个 note 按文档顺序分配不同 pos（used 去重，如两处「一→二」）
- *  - 新增/移除引用 note → 定位到 file_block 卡片节点（按 path 属性）
- *  - mermaid → code_block 语言 */
-function computeNotePositions(notes: DiffNote[], crepe: Crepe): Map<string, number> {
-  const positions = new Map<string, number>()
-  const used = new Set<number>()
-  try {
-    crepe.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      const doc = view.state.doc
-      const matchByValue = (needle: string, wantIns: boolean, wantDel: boolean): number => {
-        let pos = -1
-        doc.descendants((n, p) => {
-          if ((n.type.name === 'diffIns' && wantIns) || (n.type.name === 'diffDel' && wantDel)) {
-            if ((n.attrs.value as string) === needle && !used.has(p)) {
-              pos = p
-              return false
-            }
-          }
-          return true
-        })
-        if (pos >= 0) used.add(pos)
-        return pos
-      }
-      const matchFileBlock = (path: string): number => {
-        let pos = -1
-        doc.descendants((n, p) => {
-          if (n.type.name === 'file_block' && (n.attrs.path as string) === path) {
-            pos = p
-            return false
-          }
-          return true
-        })
-        return pos
-      }
-      for (const note of notes) {
-        if (note.kind === 'mermaid') {
-          let pos = -1
-          doc.descendants((n, p) => {
-            if (n.type.name === 'code_block' && (n.attrs.language as string) === 'mermaid') {
-              pos = p
-              return false
-            }
-            return true
-          })
-          positions.set(note.id, pos)
-          continue
-        }
-        // 引用增删卡 → 定位到 file_block 卡片
-        if (note.text.startsWith('新增了引用') || note.text.startsWith('移除了引用')) {
-          const path = ((note.add ?? note.del ?? '').replace(/^!\[\[/, '').replace(/\]\]$/, '')).trim()
-          let pos = -1
-          doc.descendants((n, p) => {
-            if (n.type.name === 'file_block' && (n.attrs.path as string) === path) {
-              pos = p
-              return false
-            }
-            return true
-          })
-          positions.set(note.id, pos)
-          continue
-        }
-        const needle = (note.anchor || note.add || note.del || '').split('\n')[0]
-        if (!needle.trim()) {
-          positions.set(note.id, -1)
-          continue
-        }
-        // 新增 note 匹配 diffIns；删除 note 匹配 diffDel；两者都有（词级改）→ 先匹配新增值
-        const wantIns = !note.del || !!note.add
-        const wantDel = !note.add || !!note.del
-        let pos = matchByValue(needle, wantIns, wantDel)
-        // 词级「修改A为B」：needle=新增值；若新增值也找不到再退回删除值节点
-        if (pos < 0 && note.add && note.del && note.anchor === note.del) {
-          pos = matchByValue(note.del, false, true)
-        }
-        positions.set(note.id, pos)
-      }
-    })
-  } catch {
-    /* 编辑器已销毁 */
-  }
-  return positions
-}
-
+// M17：note.from/to 为构建装饰时记录的精确 doc 位置，直接使用（缺失/越界 → 略过定位）
 function applyDiffNotes(result: RenderDiffResult) {
   registerRenderInstance(props.tabId, result.crepe)
-  const positions = computeNotePositions(result.notes, result.crepe)
-  const list: Annotation[] = result.notes.map((n, i) => ({
-    id: `diff-${props.tabId}-${i}`,
-    from: positions.get(n.id) ?? -1,
-    to: -1,
-    anchorText: n.text,
-    level: 'info',
-    thread: [{ id: `d${i}`, author: '', content: n.text, createdAt: 0, resolved: false }],
-    persist: false,
-    source: 'diff',
-  }))
+  const list: Annotation[] = result.notes
+    .map((n, i) => {
+      const from = n.from >= 0 ? n.from : -1
+      const to = n.to >= 0 ? Math.max(n.to, from + 1) : -1
+      return {
+        id: `diff-${props.tabId}-${i}`,
+        from,
+        to,
+        anchorText: n.text,
+        level: 'info',
+        thread: [{ id: `d${i}`, author: '', content: n.text, createdAt: 0, resolved: false }],
+        persist: false,
+        source: 'diff',
+      } as Annotation
+    })
   setRuntimeAnnotations(props.tabId, list)
 }
 

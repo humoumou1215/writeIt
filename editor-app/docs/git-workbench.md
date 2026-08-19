@@ -228,7 +228,7 @@ M11d  ✅ 还原（整文件 + 单 hunk，仅工作区 diff，危险确认 + 标
 - **DiffView.vue**：模式切换（渲染/文本，默认渲染 D4，Ctrl+Shift+R）+ 渲染模式分支
 - **`loadRenderData`**（manager.ts）：懒加载两版本内容（worktree → fs.readFile 新 / git.showFile 旧；commit/range → git.showFile 双侧）；`buildRenderRefCfg` 导出（渲染层引用 chip 打开复用 openRefTarget）
 - **Rust**：`git_show_file(path, rev)` 命令（rev: HEAD/sha/sha^）
-- **关键坑**：① 渲染 Crepe 缺 `registerRefStringify` → Cannot handle unknown node fileRef；② ProseMirror 虚拟光标/gapcursor 是首个子元素需过滤；③ 物化/行尾产生的空段落块需过滤（保持与 parseBlocks 块序一致）；④ `![[` 嵌入**必须独立成段**才是 fileBlock（remark-ref 整段匹配，段内 `![[` 按 file_ref）；⑤ watch 无 immediate → 重挂载不渲染；⑥ e2e 用 `Ctrl+Shift+R` 触发浏览器刷新 → 改点工具栏按钮；⑦ playwright `isVisible` 对 Crepe 元素不可靠 → boundingBox
+- **关键坑**：① 渲染 Crepe 缺 `registerRefStringify` → Cannot handle unknown node fileRef；② ProseMirror 虚拟光标/gapcursor 是首个子元素需过滤；③ 物化/行尾产生的空段落块需过滤（保持与 parseBlocks 块序一致）；④ `![[` 嵌入**必须独立成段**才是 fileBlock（remark-ref 整段匹配，段内 `![[` 按 file_ref）；⑤ watch 无 immediate → 重挂载不渲染；⑥ e2e 用 `Ctrl+Shift+R` 触发浏览器刷新 → 改点工具栏按钮；⑦ 历史 playwright `isVisible` 对 Crepe 元素不可靠 → boundingBox（注：项目现已全面改用 ego-lite，禁 playwright，此条为历史经验）
 - **测试**：git-m11a-e2e 扩展至 **49**（默认渲染模式、rd-same/rd-mod/rd-del、mermaid svg 渲染、嵌入卡片、修改对配对、降级链）；全量 24 套件全绿
 
 ### M11d 实现记录（还原/分支切换/标签右键/状态栏徽标，2026-08-15）
@@ -318,7 +318,7 @@ M11d  ✅ 还原（整文件 + 单 hunk，仅工作区 diff，危险确认 + 标
 2. `parse_porcelain` rename 双记录（`R old\0new\0`）→ 显示 `old → new`；untracked 行数 wc -l
 3. `git_show_commit` 用 diff-tree name-status + numstat 双通道（rename 路径 `old => new` 取 new）
 4. 测试坑：展开的 commit 中心点落在 commit-files 区（ws-file @click.stop 吞事件）→ 点 `.commit-row`；打开文件自动收纳侧边栏 → 点面板前先展开
-5. playwright `isVisible()` 对 Crepe `.milkdown` 返回 false 但 boundingBox 正常（元素实际可见）→ 断言用 boundingBox
+5. 历史经验：playwright `isVisible()` 对 Crepe `.milkdown` 返回 false 但 boundingBox 正常（元素实际可见）→ 断言用 boundingBox（注：项目现已改用 ego-lite，禁 playwright）
 
 ## 9. 测试计划
 

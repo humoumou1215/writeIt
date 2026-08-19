@@ -19,6 +19,7 @@
     "@floating-ui/dom": "^1.8.0",
     "@milkdown/crepe": "7.22.0",
     "@milkdown/kit": "7.22.0",
+    "@milkdown/plugin-diff": "7.22.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "docx": "^9.7.1",
@@ -33,7 +34,6 @@
     "@vitejs/plugin-vue": "^6.0.8",
     "jszip": "^3.10.1",
     "pdfjs-dist": "^6.2.108",
-    "playwright": "^1.62.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.6"
   }

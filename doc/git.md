@@ -1,10 +1,10 @@
-# Git 工作台（M11–M16）
+# Git 工作台（M11–M17）
 
-> ⚠️ **渲染边界裁决请优先读规范：`doc/git-diff-rules.md`（M16 抽象准则，8 条 / 总纲）**。本文件记录实现细节；遇到新边界案例先归因到准则再定实现。
+> ⚠️ **渲染边界裁决请优先读规范：`doc/git-diff-rules.md`（M16 抽象准则）**。M17 起渲染改走「文档结构级 diff + 装饰」（`editor/diff-deco.ts`），不再注入 `{--..--}` 标记；规则文书保留为**行为契约**（规则 1–8 的对外效果不变，语义边界大幅减少）。
 
-> 核心代码：`editor-app/src/git/`（mock 演示后端）+ `components/GitPanel.vue`（面板）+ `DiffView.vue` / `RenderDiff.vue`（diff 视图）+ `editor/diff-compose.ts`（组合器）+ `editor/mermaid-diff.ts`（mermaid 节点级）+ `src-tauri/src/lib.rs`（Rust git 命令）。
+> 核心代码：`editor-app/src/git/`（mock 演示后端）+ `components/GitPanel.vue`（面板）+ `DiffView.vue` / `RenderDiff.vue`（diff 视图）+ `editor/diff-deco.ts`（结构级 diff 核心）+ `editor/render-diff.ts`（渲染管线）+ `editor/mermaid-diff.ts`（mermaid 节点级）+ `src-tauri/src/lib.rs`（Rust git 命令）。
 > 设计文档：`editor-app/docs/git-workbench.md`（M11a–M15 完整实现记录）。
-> M15：变更文件树（GitChangeTree）+ 提交图 + 分支搜索；M16：表格分隔行抑制、嵌入引用徽标/源文件摘要、mermaid 边标签修复。
+> M15：变更文件树 + 提交图 + 分支搜索；M16：嵌入引用徽标/源文件摘要、mermaid 边标签修复；M17：弃用「markdown 字符串注入 marker」管线，改为文档结构级 diff + ProseMirror 装饰。
 > 业务仓库为真实 Git 仓库（vite dev 默认「消金业务合作平台」，Vite Node 中间件桥接 fs/git）。
 > 一句话：**仓库级 Git 工作台——侧边栏面板（分支/工作区/历史）+ 编辑区 diff 视图（文本/渲染双模式），渲染模式把 diff 变成看得懂的 Markdown 融合视图**。
 
@@ -31,33 +31,28 @@
 - **导航**：`F7` / `Shift+F7` 上一处/下一处改动，计数「n/N」；`Esc` 退出 diff。
 - **还原**：工具栏「还原…」（整文件）+ hunk 头部「↩ 还原此段」（仅工作区 diff；危险确认 → git checkout / git apply --reverse → 标签重载 → 面板刷新）。
 
-## 3. 渲染模式（默认，单 Crepe 组合 md）——核心差异化
+## 3. 渲染模式（默认，单 Crepe — 文档结构级 diff + 装饰）——核心差异化
 
-**目标**：mermaid 图、嵌入卡片、词级修改在渲染后的 Markdown 里一眼可见。替代早期「双 Crepe + DOM 提取融合」，改为**单 readonly Crepe 渲染一份组合 md**（diff 标记内嵌）。
+**目标**：mermaid 图、嵌入卡片、词级修改在渲染后的 Markdown 里一眼可见。
 
-### 组合规则（diff-compose.ts）
+**M17 重构**：旧管线把 `{--..--}`/`{++..++}` 标记直接注入 markdown 字符串（`diff-compose.ts`），为防 GFM 解析破坏堆了十几类语义边界正则（表格分隔行/列表引用标题 marker/元字符 LCS/栅栏漏斗/嵌入行/段落空行…），`remark-inline.ts` 还要反向合并被解析器拆散的标记，批注锚点靠渲染后值匹配猜位置——边界场景难以穷举。
+**新管线只做三件事**：
 
-| diff 行 | 组合 md | 渲染效果 |
+1. **结构级 diff**：用 `@milkdown/plugin-diff` 的 `computeDocDiff(oldDoc, newDoc)`（LCS + ChangeSet，字符级 token 含 mark 编码）对「新文档为底」的全文做 diff，得到精确 `fromB/toB`（渲染 doc 坐标）。
+2. **装饰**：新增范围 → `Decoration.inline`（`.diff-ins` 绿）/ 块级 `Decoration.node`（`.diff-ins-block`）；删除范围 → `Decoration.widget` 把旧文本原位插回（`.diff-del` 红划线；块级 `.diff-del-block`）。`buildDiffDecorations` 构建后经 transaction meta 注入。
+3. **批注卡位置直接记录**：note 自带精确 `from/to`，`RenderDiff.vue` 不再值匹配（规则 8 由数据结构保证）。
+
+语法外壳（列表/引用/标题/强调/链接、表格单元格、段落独立性）由 markdown 解析器天然处理——**此前十几条边界规则自然消失**。文本模式（`DiffView.vue`）不走此管线，仍用 Rust `--word-diff=porcelain` 的 words 逐行渲染，保持不变。
+
+保留的少量语义规则（合计 < 60 行，均有充分理由）：
+
+| 规则 | 位置 | 理由 |
 |---|---|---|
-| ctx 行 | 原样 | 正常 |
-| 纯 del 段 | 每行 `{--旧行--}`（表格行逐单元格） | 红底划线（span.diff-del） |
-| 纯 add 段 | 每行 `{++新行++}` | 绿底（span.diff-ins） |
-| 修改对（有共同前缀/后缀） | `{--删词--}{++增词++}` 行内 | 红底划线 + 绿底 |
-| 修改对（整行重写） | `{--旧行--}{++新行++}` | 同上 |
-| 表格修改对 | 单元格级 `\| {--旧--}{++新++} \|` | 单元格级标注 |
-| mermaid fence | 新源码 + 删除节点原行加回 | 渲染后 DOM 标注（见下） |
-| 嵌入 `![[path]]` | 原样（引用行增/删/改 → 卡片徽标；源文件工作区有改动 → 卡片角标 + 卡片内嵌源文件改动摘要） | 卡片 + 徽标/摘要 |
+| 表格分隔行（两侧都只含 `-`/`:`）跳过 | `diff-deco.ts isSepRowText` | 列宽对齐格式化的内容噪音 |
+| mermaid 栅栏走节点级 | `patchMermaidFences` 预合并源码 + `applyMermaidAnnotations` | 节点/消息级标注比文本标记更有意义 |
+| file_block 卡片不标文本；删除引用 → 红色占位行 | `diff-deco.ts` 语义规则 3 | 卡片本体由徽标系统表达 |
 
-- **M16 表格分隔行抑制**：GFM 表格分隔行（每格全为 `-` 与可选 `:`，如 `| --- | :---: |`）的变化几乎都是列宽对齐格式化（编辑器/格式化工具把 `---` 拉长，`---` 长度跟随列宽）。若被 `{--..--}`/`{++..++}` 包裹会使分隔行语法失效 → GFM 解析失败 → **整表退化为普通段落**。处理：分隔行永远原样输出新行，不标记、不产生批注卡（`isTableSepLine`）。
-- **M16b 词级 LCS 多点标记**：行含 markdown 元字符（`* _ \` []`）或单段合并会把格式符号包进标记产生乱码（如一行内两个修改点被 `splitCommon` 合并成含 `*` 的大段）→ 改用字符级 LCS（`lcsSegments`）生成多点 `{--..--}{++..++}`，符号随内容进原子标记节点，无乱码。
-- **M16b 列表/引用 marker 保留**：`markLine` 对列表项（`- / 1. `）与引用块（`> `）行只标记内容、marker 留在标记外（`- {++事项丙++}`）——否则 `{++- 事项丙++}` 失去列表语义被吞入上一行。
-- **M16c 标题 marker 保留 + 无共同内容拆双行 + 段落空行**：标题（`## `）marker 也保留在标记外（保持标题元素）；无共同前后缀的修改对拆为「旧行红 / 新行绿」两行而非行内 `{--旧--}{++新++}`（避免 `> 引用` 与 `## 标题` 拼进一行粘连）；纯新增的多行「段落行」之间补空行（避免硬化换行粘连）。
-- **M16b 多余行批注**：修改对尾部行数不对称的多余 del/add 行此前只输出标记不产批注卡（列表项新增无卡）→ 现在也生成「新增/删除了此段」卡；所有 note 的 anchor 改为精确查找串（表格行=首个变更单元格值），批注连线定位修复。
-
-- 标记语法 `{--..--}` / `{++..++}`（pandoc 风格）由 `diff-nodes/remark-inline.ts` 解析为 diffDel / diffIns 节点；转义 `\{--` 输出字面；**内容含 markdown 语法时跨节点合并**（如 `{++**词级**++}` 被强调拆开 → 按源码还原拼接）。
-- 表格行纯增删**逐单元格标记**（整行包标记会被 GFM 表格解析器吃掉）。
-
-### mermaid 节点级（渲染后 DOM 标注，不用 classDef 语法）
+### mermaid 节点级（渲染后 DOM 标注，不用 classDef 语法）### mermaid 节点级（渲染后 DOM 标注，不用 classDef 语法）
 
 - `mermaid-diff.ts` 解析 flowchart / sequence / stateDiagram：新增 / 删除 / 修改（标签变化）节点；合并源码 = **新版本源码 + 删除节点原定义行加回**（保留边，无标注语法侵入）。
 - **M16 边标签修复**：flowchart 边标签前缀剥离正则 `^\|\[[^|]*\]\|` 误匹配带方括号内容，真实语法 `A -->|label| B` 的 `|label|` 无法剥离 → 带标签边另一端的节点（如 `C -->|失败| E` 的 E）从未被提取 → 节点级 diff 静默失效。改为 `^\|[^|]*\|`。
@@ -149,10 +144,9 @@
 | `components/DiffView.vue` | diff 视图：工具栏 + 文本模式（分栏/统一/词级/折叠/导航/还原） |
 | `components/RenderDiff.vue` | 渲染模式：组合 md 渲染 + 批注注入 + 降级双栏 |
 | `components/AnnotationDrawer.vue` | 存量批注抽屉（diff 改动说明卡 + 连线/定位） |
-| `editor/diff-compose.ts` | diff → 组合 md（行级/词级/表格/嵌入/mermaid） |
-| `editor/diff-nodes/` | `{--..--}`/`{++..++}` 解析（remark-inline）+ diffDel/diffIns 节点 |
+| `editor/diff-deco.ts` | 结构级 diff 核心：computeDocDiff → 装饰 + 批注卡（含 mermaid fence 预合并、语义小规则） |
 | `editor/mermaid-diff.ts` | mermaid 节点级 diff（flowchart/sequence/state） |
-| `editor/render-diff.ts` | 单 Crepe 渲染组合 md + mermaid DOM 标注 + 嵌入角标 |
+| `editor/render-diff.ts` | 单 Crepe 渲染新 doc + diff 装饰注入 + mermaid DOM 标注 + 嵌入角标 + 降级双栏 |
 | `src-tauri/src/lib.rs` | Rust git 命令（面板/diff/还原/分支；M15：`git_log` 带 `%P` 父提交） |
 
 ## 7. 边界与降级

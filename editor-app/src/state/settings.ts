@@ -123,6 +123,8 @@ export interface AppSettings {
   outlineWidth: number
   /** 大纲面板是否展开 */
   outlineOpen: boolean
+  /** 大纲自适应宽度（按文字内容，上限 = 编辑器 1/3；手动拖拽时自动关闭） */
+  outlineAutoFit: boolean
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
 }
@@ -137,8 +139,9 @@ const defaultSettings: AppSettings = {
   templateDir: '',
   annotationUsername: '我',
   annotationDrawerWidth: 300,
-  outlineWidth: 56,
+  outlineWidth: 180,
   outlineOpen: true,
+  outlineAutoFit: true,
   shortcuts: { ...defaultShortcuts },
 }
 

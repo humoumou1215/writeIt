@@ -51,7 +51,7 @@ npm run tauri dev    # 需要 Rust 工具链（cargo）
 ```bash
 cd editor-app
 npm run build        # 前端产物（dist/）
-npm run test:e2e     # Playwright 端到端全量回归（需先启动 dev server :5173）
+npm run test:e2e     # ego-lite（ego-browser）端到端全量回归（需先启动 dev server :5173）
 npm run tauri build  # 打包桌面安装包（当前系统平台）
 ```
 
@@ -97,7 +97,7 @@ writeIt/
 │   │   ├── components/ #   FileTree / TabBar / EditorPane / GitPanel / DiffView / 抽屉…
 │   │   └── App.vue     #   布局：侧边栏 + 标签栏 + 编辑器 + 状态栏
 │   ├── src-tauri/      #   Rust 壳（文件系统 + git CLI 命令 / 窗口 / 打包配置）
-│   ├── tests/e2e/      #   Playwright 端到端回归套件
+│   ├── tests/e2e/      #   ego-lite 端到端回归套件（禁 playwright）
 │   └── docs/design.md  #   里程碑设计文档（M1-M14 完整实现记录）
 ├── demo/               # （已迁出）演示内容库 → /Users/huyongsheng/project/消金业务合作平台（独立 git 仓库）
 ├── raw/                # milkdown 官方源码语料（只读，供知识库引用）
@@ -125,6 +125,6 @@ writeIt/
 ## 六、给开发者
 
 - 开发前先读 [`editor-app/docs/design.md`](editor-app/docs/design.md)（§11 有里程碑状态与踩坑记录）。
-- 改代码后必跑回归：`npm run test:e2e`（25 个套件，需 dev server :5173），完成后 `npm run build` 验证。
+- 改代码后必跑回归：`npm run test:e2e`（ego-lite/ego-browser 驱动，需 dev server :5173；**本项目禁止 playwright**），完成后 `npm run build` 验证。
 - 与用户交流全程中文；重大改动先讨论方案再实现。
 - **禁止在浏览器包里嵌入 LLM API key**（BYOK / 后端代理）。

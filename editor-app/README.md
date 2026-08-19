@@ -80,7 +80,7 @@ editor-app/
 │   ├── src/lib.rs           # 文件系统 + git CLI 命令（git_repo_info / git_diff_file / …）
 │   ├── tauri.conf.json      # 窗口 / 打包配置（Windows NSIS + 便携版 / macOS .app + DMG）
 │   └── capabilities/        # 权限
-├── tests/e2e/               # Playwright 端到端回归（25 套件，npm run test:e2e）
+├── tests/e2e/               # ego-lite（ego-browser）端到端回归（禁 playwright，npm run test:e2e）
 └── vite.config.ts           # 固定端口 5173（Tauri 依赖）
 ```
 
