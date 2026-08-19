@@ -118,7 +118,7 @@ const activeIndex = computed(() => {
   if (pane!.scrollTop + pane!.clientHeight >= pane!.scrollHeight - 2) {
     return ms.length - 1
   }
-  const viewTop = pane!.scrollTop + 1
+  const viewTop = pane!.scrollTop + 16
   let idx = -1
   for (let i = 0; i < ms.length; i++) {
     if (ms[i].docTop <= viewTop) idx = i
@@ -155,14 +155,13 @@ function applyAutoFit() {
   if (!autoFit.value || !listEl.value) return
   // 先把宽度放到上限再测量（同步读取强制重排，随后立即收敛，用户看不到中间态）
   const max = editorThird()
-  width.value = Math.max(width.value, max)
   let needed = 0
   const rows = listEl.value.querySelectorAll<HTMLElement>('.ol-row')
   rows.forEach((r) => {
     needed = Math.max(needed, r.scrollWidth)
   })
-  // 行宽 + 列表左右内边距(18) + 缓冲
-  const target = needed > 0 ? Math.min(Math.max(needed + 26, 120), max) : 120
+  // 行宽 + 列表左右内边距(18)：刚好容纳文字，不额外加宽
+  const target = needed > 0 ? Math.min(Math.max(needed + 18, 120), max) : 120
   width.value = target
 }
 function toggleAutoFit() {
