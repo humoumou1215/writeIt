@@ -1,42 +1,99 @@
 name: Build & Release
 
-# 触发条件：
-#   - 推送 master 分支（仅构建 + 上传 Artifacts）
-#   - 推送 v* 标签（构建 + 自动发布 GitHub Release）
-#   - 手动触发（Actions 页面 Run workflow）
+# 触发条件：仅在推送 tag 时触发（不再监听分支 push）。
+# 通过不同的 tag 后缀控制打哪个平台的包：
+#   - vX.Y.Z-mac  → 仅 macOS（Intel + Apple Silicon 的 .app + DMG）
+#   - vX.Y.Z-win  → 仅 Windows（NSIS 安装包 + 免安装便携版）
+#   - vX.Y.Z  / vX.Y.Z-all → 两个平台都打（默认）
+# 发布 Release 时，-mac/-win 后缀会被剥离，使同一版本号的多平台产物
+# 合并到同一个 GitHub Release（如 v1.0.0-mac 与 v1.0.0-win 都归到 v1.0.0）。
 on:
   push:
-    branches: [master]
-    tags: ['v*']
+    tags:
+      - 'v*'
+
+# 也可在 Actions 页面手动触发（默认打两个平台），便于测试。
   workflow_dispatch:
+    inputs:
+      platform:
+        description: '要打的平台 (mac / win / all)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - mac
+          - win
 
 jobs:
+  # 根据 tag 后缀决定本次构建哪个平台，并输出对应的构建矩阵。
+  filter:
+    name: Resolve platforms from tag
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      release_tag: ${{ steps.set.outputs.release_tag }}
+    steps:
+      - name: Resolve target platforms
+        id: set
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          PLATFORM="${{ inputs.platform }}"
+
+          # 手动触发时用输入值；否则从 tag 后缀推断
+          if [ -n "$PLATFORM" ]; then
+            TARGET="$PLATFORM"
+          elif [[ "$TAG" == *-mac ]]; then
+            TARGET="mac"
+          elif [[ "$TAG" == *-win ]]; then
+            TARGET="win"
+          else
+            TARGET="all"
+          fi
+
+          case "$TARGET" in
+            mac)
+              echo "-> macOS only"
+              MATRIX='[
+                {"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},
+                {"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}
+              ]'
+              ;;
+            win)
+              echo "-> Windows only"
+              MATRIX='[
+                {"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"}
+              ]'
+              ;;
+            *)
+              echo "-> all platforms"
+              MATRIX='[
+                {"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"},
+                {"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},
+                {"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}
+              ]'
+              ;;
+          esac
+
+          # 剥离 -mac/-win 后缀作为 Release 的版本号（同一版本的多平台产物合并）
+          RELEASE_TAG="${TAG%-mac}"
+          RELEASE_TAG="${RELEASE_TAG%-win}"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG target=$TARGET release_tag=$RELEASE_TAG"
+
   build:
     name: Build (${{ matrix.os }} / ${{ matrix.arch }})
+    needs: filter
     runs-on: ${{ matrix.os }}
     strategy:
       # 一个平台失败不取消其他平台
       fail-fast: false
       matrix:
-        include:
-          # Windows x64：NSIS 安装包 + 免安装便携版（单 exe zip）
-          - os: windows-latest
-            arch: x64
-            timeout: 60
-            bundles: nsis
-          # macOS Intel (x64)：.app + DMG
-          # macos-13 已退役（2025-11）→ 用 macos-15-intel（GitHub 现役 Intel runner）
-          - os: macos-15-intel
-            arch: x64
-            timeout: 90
-            bundles: app,dmg
-          # macOS Apple Silicon (arm64)：.app + DMG
-          - os: macos-14
-            arch: arm64
-            timeout: 90
-            bundles: app,dmg
+        include: ${{ fromJSON(needs.filter.outputs.matrix) }}
     permissions:
-      # 发布 GitHub Release 需要 contents 写权限
+      # 上传 Artifacts 需要 contents 写权限
       contents: write
     defaults:
       run:
@@ -120,12 +177,12 @@ jobs:
           path: editor-app/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-  # 推送 v* 标签时发布 GitHub Release。
+  # 构建完成后统一发布 GitHub Release。
   # 独立 job 等所有平台构建完成后统一上传，避免多平台并发写 Release 冲突。
+  # 使用剥离后缀后的版本号作为 tag_name，使 -mac/-win 的多平台产物合并到同一 Release。
   release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [filter, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -142,5 +199,6 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.filter.outputs.release_tag }}
           files: release/*
           generate_release_notes: true
