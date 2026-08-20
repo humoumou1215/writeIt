@@ -54,24 +54,17 @@ jobs:
           case "$TARGET" in
             mac)
               echo "-> macOS only"
-              MATRIX='[
-                {"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},
-                {"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}
-              ]'
+              # 注意：GITHUB_OUTPUT 的键值必须单行写入（多行 JSON 会被拆行报 Invalid format），
+              # 因此矩阵采用单行紧凑 JSON，fromJSON 同样能正确解析。
+              MATRIX='[{"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},{"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}]'
               ;;
             win)
               echo "-> Windows only"
-              MATRIX='[
-                {"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"}
-              ]'
+              MATRIX='[{"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"}]'
               ;;
             *)
               echo "-> all platforms"
-              MATRIX='[
-                {"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"},
-                {"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},
-                {"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}
-              ]'
+              MATRIX='[{"os":"windows-latest","arch":"x64","timeout":60,"bundles":"nsis"},{"os":"macos-15-intel","arch":"x64","timeout":90,"bundles":"app,dmg"},{"os":"macos-14","arch":"arm64","timeout":90,"bundles":"app,dmg"}]'
               ;;
           esac
 
