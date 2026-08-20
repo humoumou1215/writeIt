@@ -173,9 +173,21 @@ fn remove(state: State<'_, AppState>, path: String) -> Result<(), String> {
   }
 }
 
+/// 应用可执行文件所在目录（桌面启动的默认/兜底工作目录）。
+/// 打包后 = 安装目录（可执行文件所在处）；开发期 = target/debug 之类。
+#[tauri::command]
+fn app_dir() -> String {
+  std::env::current_exe()
+    .ok()
+    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    .map(|p| p.to_string_lossy().to_string())
+    .unwrap_or_default()
+}
+
 /// 在系统文件管理器中显示路径：文件 → 打开所在目录并选中；目录 → 在父级中选中
 #[tauri::command]
 fn reveal_in_explorer(state: State<AppState>, path: String) -> Result<(), String> {
+
   let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
   let full = resolve(&root, &path)?;
   if !full.exists() {
@@ -188,9 +200,12 @@ fn reveal_in_explorer(state: State<AppState>, path: String) -> Result<(), String
 fn show_in_folder(path: &Path) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
-    // explorer /select,<path>：打开所在目录并选中文件/文件夹
+    // explorer /select,<path>：打开所在目录并选中文件/文件夹。
+    // 关键：路径必须统一为反斜杠 + 带引号——explorer 解析不了正斜杠（会静默回退到桌面），
+    // 且含空格的路径不整体加引号也会解析失败回退桌面。
+    let sel = path.display().to_string().replace('/', "\\");
     std::process::Command::new("explorer")
-      .arg(format!("/select,{}", path.display()))
+      .arg(format!("/select,\"{sel}\""))
       .spawn()
       .map_err(|e| format!("打开文件管理器失败: {e}"))?;
   }
@@ -1157,6 +1172,7 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .invoke_handler(tauri::generate_handler![
       set_root,
+      app_dir,
       read_tree,
       read_file,
       write_file,

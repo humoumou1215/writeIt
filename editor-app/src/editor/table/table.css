@@ -1,0 +1,46 @@
+/* 表格增强插件——按内容动态列宽
+ * 列宽按内容分配后写入表头 cell 的 data-colwidth，再由插件在 <table> 里注入 <colgroup><col style="width">。
+ * 这里提供布局规则（不内联改 table 属性，避免被 ProseMirror 视作意外变更而循环重渲染）：
+ *   - 只有被注入 <colgroup> 的表格才启用 fixed 布局，使列宽严格按内容比例生效（字多列更宽、减少折行）。
+ */
+.milkdown table:has(> colgroup) {
+  table-layout: fixed;
+  width: 100%;
+}
+/* 列宽自动变化平滑过渡 */
+.milkdown table:has(> colgroup) col {
+  transition: width 0.35s ease;
+}
+
+/* 悬浮「自动调整列宽」按钮（表右上角，hover 出现） */
+.tb-auto-width {
+  position: fixed;
+  z-index: 60;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--chrome-border, #ccc);
+  background: var(--chrome-surface, #fff);
+  color: var(--chrome-on-surface, #222);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  padding: 0;
+}
+.tb-auto-width:hover {
+  background: var(--chrome-selected, #e6f0ff);
+}
+
+/* 拖拽列宽的竖向指示条 */
+.tb-resize-handle {
+  position: fixed;
+  width: 2px;
+  background: var(--chrome-accent, #4a90d9);
+  z-index: 60;
+  pointer-events: none;
+  cursor: col-resize;
+}

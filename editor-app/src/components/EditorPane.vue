@@ -33,6 +33,8 @@ watch(
   }
 )
 
+/** 纯显示切换。滚动位置由 manager 在 activeTabId 切换点统一保存/恢复（见 manager.saveTabScroll），
+ *  此处只负责 display——Vue watcher 执行时 DOM 已更新，scrollTop 已被清 0，不能在这里保存。 */
 function applyDisplay() {
   if (!rootEl.value) return
   const showCrepe = props.visible && tab.value?.viewMode !== 'diff'

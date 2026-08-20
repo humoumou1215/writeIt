@@ -11,7 +11,7 @@ import { TextSelection, type EditorState, type PluginView } from '@milkdown/kit/
 import { editorCtx, parserCtx } from '@milkdown/kit/core'
 import { createApp, type App } from 'vue'
 
-import { materializeBlock } from '../resolve'
+import { resolveRefs } from '../resolve'
 import { refreshBrokenState } from '../app-plugin'
 import RefMenu from './RefMenu.vue'
 import { refConfigCtx, type RefConfig } from '../config'
@@ -110,8 +110,8 @@ function insertFileBlock(
     }
     return true
   })
-  // 新插入的块立即物化（异步，容错）
-  void materializeBlock(editor, blockPos >= 0 ? blockPos : pos, path, readonly)
+  // 新插入的块立即递归物化（异步，容错）：块内容里的嵌套嵌入也一并物化（B 嵌入 C 时 C 同步可见）
+  void resolveRefs(editor)
 }
 
 /** 插入 object_ref（[[path#object]]，resolvedText 待 resolve 阶段填充） */
@@ -487,7 +487,7 @@ class RefMenuView implements PluginView {
     }
     this.#view.dispatch(tr)
     if (mode !== 'link') {
-      void materializeBlock(this.#editor, from, path, mode === 'embed-ro')
+      void resolveRefs(this.#editor)
     }
   }
 

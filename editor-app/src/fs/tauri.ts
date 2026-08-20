@@ -18,8 +18,34 @@ export const tauriFs: FileSystem = {
     const dir = await open({ directory: true, title: '选择工作目录' })
     if (typeof dir !== 'string' || !dir) return false
     await (await core()).invoke('set_root', { path: dir })
+    currentRootPath = dir
     lastRootName = dir.split(/[\\/]/).filter(Boolean).pop() || '工作区'
     return true
+  },
+
+  async setRootFromPath(path: string) {
+    if (!path) return false
+    try {
+      await (await core()).invoke('set_root', { path })
+      currentRootPath = path
+      lastRootName = path.split(/[\\/]/).filter(Boolean).pop() || '工作区'
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  async appDir() {
+    try {
+      const dir = await (await core()).invoke<string>('app_dir')
+      return dir || null
+    } catch {
+      return null
+    }
+  },
+
+  rootPath() {
+    return currentRootPath
   },
 
   async readTree(showAll) {
@@ -56,3 +82,4 @@ export const tauriFs: FileSystem = {
 }
 
 let lastRootName = '工作区'
+let currentRootPath: string | null = null

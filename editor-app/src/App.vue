@@ -47,10 +47,48 @@ import TemplatePicker from './components/TemplatePicker.vue'
 
 const wsTopbarEl = ref<HTMLElement | null>(null)
 
+// 无系统标题栏（decorations:false）→ 是否需要自绘标题条
+const isTauri = fs.kind === 'tauri'
+
+// ---------- 启动恢复工作目录（桌面应用） ----------
+// 优先恢复「上次打开的目录」，无记录或目录已失效则回退到 app 可执行文件所在目录
+async function restoreRoot() {
+  if (typeof fs.setRootFromPath !== 'function') return
+  let ok = false
+  const last = settings.lastDir
+  if (last) ok = await fs.setRootFromPath(last)
+  if (!ok) {
+    const appDir = typeof fs.appDir === 'function' ? await fs.appDir() : null
+    if (appDir) ok = await fs.setRootFromPath(appDir)
+  }
+  if (ok && typeof fs.rootPath === 'function') {
+    settings.lastDir = fs.rootPath() ?? ''
+    saveSettings()
+  }
+}
+
+// ---------- 自绘窗口控制（最小化/最大化/关闭） ----------
+async function winMinimize() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().minimize()
+}
+async function winToggleMaximize() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const w = getCurrentWindow()
+  if (await w.isMaximized()) await w.unmaximize()
+  else await w.maximize()
+}
+async function winClose() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().close()
+}
+
 // ---------- 生命周期 ----------
 onMounted(async () => {
   applyTheme(settings.theme)
   state.fsName = fs.kind
+  // 桌面应用：启动即恢复上次打开目录（无则用 app 所在目录）
+  if (fs.kind === 'tauri') await restoreRoot()
   await refreshTree()
   // 顶部栏槽位：Crepe topbar 由 manager 移入此槽（横贯整行）
   void import('./editor/manager').then((m) => { if (wsTopbarEl.value) m.bindTopbarSlot(wsTopbarEl.value) })
@@ -352,6 +390,15 @@ function onTreeRootDrop(e: DragEvent) {
 
 <template>
   <div class="app">
+    <!-- 自绘标题条（无系统标题栏时的拖拽区 + 窗口控制） -->
+    <header v-if="isTauri" class="app-titlebar" data-tauri-drag-region>
+      <span class="tb-title" data-tauri-drag-region>WriteIt</span>
+      <div class="tb-controls">
+        <button class="tb-btn" title="最小化" @click="winMinimize"><span class="g">─</span></button>
+        <button class="tb-btn" title="最大化" @click="winToggleMaximize"><span class="g">▢</span></button>
+        <button class="tb-btn tb-close" title="关闭" @click="winClose"><span class="g">✕</span></button>
+      </div>
+    </header>
     <!-- 多彩渐变套的全局渐变定义（一次性） -->
     <GradientDefs />
     <!-- 主体：侧边栏 + 主区域 -->
@@ -555,6 +602,54 @@ function onTreeRootDrop(e: DragEvent) {
   flex-direction: column;
   background: var(--chrome-background);
   color: var(--chrome-on-background);
+}
+
+/* ===== 自绘标题条（无系统标题栏装饰） ===== */
+.app-titlebar {
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--chrome-background);
+  border-bottom: 1px solid var(--chrome-border-light);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tb-title {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--chrome-on-surface-variant);
+  padding-left: 10px;
+}
+.tb-controls {
+  display: flex;
+  height: 100%;
+}
+.tb-btn {
+  width: 44px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+.tb-btn:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
+}
+.tb-btn.tb-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+.g {
+  pointer-events: none;
+  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
 /* ===== 主体（侧边栏 + 主区域） ===== */

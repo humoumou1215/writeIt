@@ -22,6 +22,7 @@ function cleanupSpaces() {
 
 const SUITES = [
   'ref-e2e',      // M1 引用语法与节点
+  'nested-ref-e2e', // 多层块嵌入回归（递归物化 + 保存不写空）
   'menu-e2e',     // M2 触发菜单
   'm3-e2e',       // M3 文件树联动
   'm4-e2e',       // M4 模板机制
@@ -46,6 +47,8 @@ const SUITES = [
   'git-m11a-e2e',   // M11 Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程）
   'git-m11a-smoke', // M11 浏览器降级：Git 图标灰置 + toast + 面板错误提示
   'search-e2e',     // 全局搜索面板：全文搜索/跳转/快捷键/收起
+  'scroll-e2e',     // 切 tab 滚动位置保持（display:none 清 scrollTop → 切换点保存/恢复）
+  'table-enhance-e2e', // 表格增强：单元格换行 round-trip / Shift+Enter 新增行 / 动态列宽
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 

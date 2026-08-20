@@ -577,6 +577,37 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - **坑：setPointerCapture 会重定向后续 pointerup/click 到捕获元素** → pointerup.target 恒为 overlay，「点遮罩关闭」误判把图表上的任何点击都关掉（双击复位必触发关闭）→ 不用 capture，改 pointerdown 记录 downTarget + window 级 move/up 监听，关闭判定用 downTarget===overlay
 - 测试：mermaid-zoom-e2e 16/16（包裹/悬停显隐/打开/ESC/✕/遮罩关闭/滚轮缩放/双击复位/拖拽平移/拖拽不关闭），已注册 run-all
 
+### 多层块嵌入修复（2026-08-19）
+
+**问题**：`![[A]]` 块嵌入 `![[B]]` 再嵌入 `![[C]]` 时，打开 A 后 C 的内容为空；此时保存 A 会把 C 写空（数据丢失）。
+
+**根因（两处）**：
+1. **物化是单轮非递归的**（`resolveRefs` 只收集当前文档已有的 file_block 一次）：物化 B 后才把 C 的容器引入文档，但 C 从未被收集/物化 → 显示为空。
+2. **写回包含未物化空块**（`writeback.ts` 用 `doc.descendants` 收集所有嵌套 file_block）：C 未物化 → 内容为空 → 序列化为 `""` → 保存与源文件对比出差异 → 覆盖写空 C。
+
+**修复**（`src/editor/ref/`）：
+- `file_block` schema 新增 **`materialized: boolean`** attrs（默认 false，round-trip 安全：toMarkdown/parseMarkdown 不输出）。
+- `materializeBlock` 物化成功后 `setNodeMarkup` 标记 `materialized: true`。
+- `resolveRefs` 物化改为**多轮**：每轮只物化「未物化且未超深」的块，物化引入的嵌套块下一轮继续，直至没新块或达 `MAX_DEPTH`（仍为 3 层）。`collectBlocks` 返回 `materialized` 状态供过滤。
+- `collectBlockEntries`（写回/收集源路径）**只收集 `materialized=true` 的块**：未物化的空块（物化失败/断链/多层尚未展开）绝不参与写回，从根上杜绝「保存把 C 写空」。
+
+**连带修复**：`src/editor/table/column-width.ts` `appendTransaction` 的 `oldState.doc.nodeAt(pos)` 在多轮物化（程序化结构变化）下 pos 越界抛 `RangeError`（Position xxx outside of fragment）——该异常穿透 `materializeBlock`/`resolveRefs`，使 object_ref 消歧（step2）永不执行 → m4c 引用消歧全挂。加 `try{...}catch{oldNode=null}` 防御后恢复正常。
+
+**回归验证**：新增 `nested-ref-e2e`（16 断言，已注册 run-all）：
+- 打开 A → B、C 两层都物化显示（C 内容可见）；序列化只含顶层标记，不落盘嵌套物化内容
+- 保存 A → B、C 文件均不被写空；B 保留 `![[嵌套/C]]` 标记
+- 编辑 B 卡正文 → 保存 → 写回 B 文件且不动 C（物化块写回正常）
+- 5 层嵌套（A3→B3→C3→D3→E3）→ E3 超深截断（不物化），保存不写空 E3/C3
+
+相关回归：`ref-e2e` 16/16、`m4c-e2e` 5/5、`m3-e2e` 9/9（含断链点击可靠化 + 断言适配 README 内既有断链）、`table-enhance-e2e` 14/14、`m4b-e2e` 9/9、`m6d-e2e` 12/12 全绿；`npm run build` 通过。
+
+**补充（2026-08-19）：插入即递归物化 + 深度 10 层**
+
+- **问题**：在已打开的 A 中通过菜单插入 `![[B]]`（B 内嵌 C）时，只调用单次 `materializeBlock`（不递归）→ 内嵌 C 空白；关闭 A 重开（整文档走 `resolveRefs` 多轮）才显示。
+- **修复**：`menu/index.ts` 两处插入块（`insertFileBlock` 与 `RefMenuView` 的替换插入）由 `void materializeBlock(...)` 改为 `void resolveRefs(editor)` —— 复用多轮递归物化，插入后立即展开 B 及内嵌 C。`materializeBlock` 单块函数保留（仍被广播刷新等使用）。
+- **深度提升**：`MAX_DEPTH` 由 3 → 10（`resolveRefs` 多轮物化 `round < MAX_DEPTH`、`collectBlocks` walk 深度、超深 toast 三处同步生效）。支持 10 层块嵌入全层物化。
+- **回归**：`nested-ref-e2e` 重构覆盖三场景——①打开 3 层 A→B→C 物化 + 保存不写空；②插入宿主菜单插入 `![[B]]` 后立即见 B、C（无需关重开），宿主序列化含新标记；③10 层（`深/层1..层10`）打开后可见嵌套卡 9 张（层2..层10）、最深层 L10 内容物化可见、保存不写空最深层与层9 标记。16 断言全绿。
+
 ### 记录缺口 / 待办
 
 - 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）

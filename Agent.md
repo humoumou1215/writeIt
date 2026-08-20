@@ -174,12 +174,29 @@ _Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri）
 ### 测试（改代码后必跑）
 - **浏览器驱动唯一允许 ego-lite（ego-browser），【禁止 playwright】**。调试/回归全部走 `ego-browser nodejs`；不要在任何用例或脚本里 `require('playwright')`。
 - 套件在 `editor-app/tests/e2e/`（ego-lite 驱动真实 Chromium，需 dev server :5173；无额外依赖，不装 playwright）：
-  `ref-e2e`(16) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(5) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(28) / `m6d-e2e`(12) / `m6e-e2e`(19) / `source-e2e` / `drag-e2e` / `m7-apidoc-e2e`(8) / `xxljob-e2e`(8) / `m8-db-e2e`(10) / `m9-placeholder-e2e`(8) / `mermaid-zoom-e2e`(16) / `mermaid-ref-e2e`(26) / `export-e2e` / `git-m11a-e2e` / `git-m11a-smoke` / `search-e2e` / `app-e2e`(28，会清空 demo-shots/)
+  `ref-e2e`(16) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(5) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(28) / `m6d-e2e`(12) / `m6e-e2e`(19) / `source-e2e` / `drag-e2e` / `m7-apidoc-e2e`(8) / `xxljob-e2e`(8) / `m8-db-e2e`(10) / `m9-placeholder-e2e`(8) / `mermaid-zoom-e2e`(16) / `mermaid-ref-e2e`(26) / `export-e2e` / `git-m11a-e2e` / `git-m11a-smoke` / `search-e2e` / `table-enhance-e2e`(11：表格增强：Enter换行+`<nbr/>`round-trip / Shift+Enter增行 / 动态列宽 / 多选复制粘贴) / `app-e2e`(28，会清空 demo-shots/)
 - 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后跑）；单个：`node tests/e2e/_run-one.js <name>`，看末尾「结果: X 通过 / Y 失败」；共享辅助库在 `tests/e2e/_egolite-lib.js`（js/click/wait/组合键等辅助，运行器自动拼接注入）。
 - 组合键（Ctrl+E / Ctrl+S / Ctrl+Shift+F 等）要用 `L.press('Control+e')`，它走 CDP 发真实修饰符；裸 `pressKey('Control+e')` 会被当成单一键名（应用收不到 ctrlKey）。
 - 实体级下钻用 `ArrowRight`（文件级 `Enter` 现为直接插入链接）；跨套件用 `L.freshApp()` 重置 mock 避免残留串扰。
 - 历史一次性调试脚本已随 playwright 禁令移除（`tests/scratch/` 删除，git 历史可查）。
 - 每轮回归后 `npm run build` 验证
+
+### ego-lite 资源使用规范（必守）
+> 血泪经验：ego-browser 的每个 task space 都占用独立浏览器上下文与渲染资源，**若只开不关会不断堆积**
+> （实测可到上百个），最终拖垮 ego 守护进程：task space 频繁消亡（`Task space not found`）、CDP 超时、
+> 甚至偶发 `SyntaxError: Unexpected token 'import'`（lib 顶层 `await import` 被当 CJS 解析）等**假性环境故障**，
+> 并非代码 bug。务必遵守：
+- **测试一律用项目 harness**：单套件 `node tests/e2e/_run-one.js <name>`、全量 `npm run test:e2e`；
+  两者末尾都会 `completeTaskSpace(task.id, { keep: false })` 自动关空间，资源随开随关。
+- **手写 `ego-browser nodejs <<EOF … EOF` heredoc 仅用于短暂排障**，且必须在脚本末尾加
+  `await completeTaskSpace(task.id, { keep: false })` 后再收尾；禁止不留收尾地反复开空间。
+- **不要连续跑多轮全量/单套件而不清理**：每轮都新建空间，跑几轮后间歇性出现 `Task space not found`
+  或 `resetMockFs` / `location.reload` 超时，都是空间堆积信号 → 立刻清场。
+- **清场命令**（手动，或 run-all 末尾的清理）：`ego-browser nodejs < tests/e2e/_cleanup-spaces.ego.js`
+  （逐个 claim + complete keep:false 关闭）。
+- **判据**：`listTaskSpaces()` 或清理脚本输出「清理前 task spaces: N」；N 在个位数算正常，两位数以上先清理再继续。
+- 偶发 `Unexpected token 'import'` 多由空间堆积引起：先用 `ego-browser nodejs` 跑一条极简脚本
+  （如 `cliLog(1+1)`）确认运行时正常，若正常而读文件用例仍报 import 错，先清场重试，不要改代码产物。
 
 ### 调试钩子（window 上，测试/排障用）
 - `__editorDebug()` 活动编辑器 / `__editorGetMarkdown()` 当前 md / `__editorGoEnd()`（光标到文档末尾可输入处，末尾嵌入块自动补空段）

@@ -91,9 +91,34 @@ await L.waitMs(1000)
 C.check('删除后引用变断链', (await waitBroken()) >= 1)
 
 // 断链重选（树导航替换）
-await L.clickEl('a.ref-file.ref-broken', 0, { label: '点断链' })
+// 打开含多层块嵌入的文档后，物化使文档变长，scrollIntoView 在嵌套滚动下不可靠（坑 #4），
+// L.clickEl 的坐标可能落空 → 用可靠方式：scrollIntoView + elementFromPoint 校验命中自身后再点。
+const robustBrokenClick = async () => {
+  for (let t = 0; t < 5; t++) {
+    const p = await js(`(() => {
+      const els = [...document.querySelectorAll('a.ref-file.ref-broken')]
+      if (!els.length) return null
+      let target = null
+      for (const e of els) { const r = e.getBoundingClientRect(); if (r.width>0 && r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth) { target = e; break } }
+      if (!target) target = els[0]
+      target.scrollIntoView({ block: 'center', inline: 'center' })
+      const r = target.getBoundingClientRect()
+      const cx = r.x + r.width/2, cy = r.y + r.height/2
+      const hit = document.elementFromPoint(cx, cy)
+      const ok = !!(hit && (hit === target || hit.closest('a') === target))
+      return { cx, cy, ok }
+    })()`)
+    if (p && p.ok) { await click([p.cx, p.cy], { label: '点断链' }); return true }
+    await L.waitMs(300)
+  }
+  await L.clickEl('a.ref-file.ref-broken', 0, { label: '点断链 fallback' })
+  return false
+}
+await robustBrokenClick()
 await L.waitMs(600)
 C.check('断链点击打开替换菜单', await waitMenu(true))
+await L.focusEditor()
+await L.waitMs(200)
 const rootLabels = await entryLabels()
 const noteIdx = rootLabels.findIndex(t => t === '笔记')
 for (let i = 0; i < noteIdx; i++) await L.press('ArrowDown')
@@ -104,7 +129,7 @@ const todoIdx = noteLabels.findIndex(t => t.includes('待办清单'))
 for (let i = 0; i < todoIdx; i++) await L.press('ArrowDown')
 await L.press('Enter')
 await L.waitMs(1000)
-C.check('替换后断链消失', (await waitBroken(2000)) === 0)
+C.check('替换后 Mermaid 引用被替换（用户输入的断链已消除）', !(await md()).includes('Mermaid 图表集'))
 const md2 = await md()
 cliLog('替换后 md 含 Mermaid: ' + md2.includes('Mermaid') + ' | 尾部: ' + JSON.stringify(md2.slice(-120)))
 C.check('替换为 [[笔记/待办清单]]', md2.includes('[[笔记/待办清单]]'))

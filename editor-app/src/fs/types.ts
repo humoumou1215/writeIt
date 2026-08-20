@@ -30,6 +30,12 @@ export interface FileSystem {
   remove(path: string): Promise<void>
   /** 在系统文件管理器中显示该路径（文件 → 所在目录并选中；目录 → 父级中选中）。不受支持的宿主抛错 */
   revealInExplorer(path: string): Promise<void>
+  /** Tauri：非交互式加载指定目录（恢复上次打开目录用）。返回是否成功 */
+  setRootFromPath?(path: string): Promise<boolean>
+  /** Tauri：应用可执行文件所在目录（兜底工作目录）；其他宿主返回 null */
+  appDir?(): Promise<string | null>
+  /** Tauri：当前根目录的绝对路径（保存「上次打开目录」用）；未设置返回 null */
+  rootPath?(): string | null
 }
 
 export function isEditableFile(name: string): boolean {

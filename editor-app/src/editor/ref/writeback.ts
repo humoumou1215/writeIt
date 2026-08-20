@@ -21,13 +21,15 @@ export interface BlockEntry {
   size: number
 }
 
-/** 收集文档中所有 file_block（含 size，用于范围序列化） */
+/** 收集文档中所有已物化的 file_block（含 size，用于范围序列化）。
+ * 只收集 materialized=true 的块：未物化的块内容为空（物化失败/断链/多层嵌入尚未展开），
+ * 若参与写回会把源文件误写空 → 数据丢失。 */
 function collectBlockEntries(editor: Editor): BlockEntry[] {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const blocks: BlockEntry[] = []
     view.state.doc.descendants((node, pos) => {
-      if (node.type.name === 'file_block') {
+      if (node.type.name === 'file_block' && Boolean(node.attrs.materialized)) {
         blocks.push({
           pos,
           path: node.attrs.path as string,

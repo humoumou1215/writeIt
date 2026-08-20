@@ -195,6 +195,8 @@ export const fileBlockSchema = $nodeSchema('file_block', (_ctx) => {
     attrs: {
       path: { default: '' },
       readonly: { default: false },
+      /** resolve 阶段是否已物化成功（未物化的块内容为空，写回时跳过避免覆盖源文件） */
+      materialized: { default: false },
     },
     parseDOM: [
       {

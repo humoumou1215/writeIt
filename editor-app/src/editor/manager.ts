@@ -35,6 +35,11 @@ import { settings, saveSettings } from '../state/settings'
 import type { Tab, ViewMode } from '../state/store'
 import { git, type DiffBase } from '../git'
 import { featureConfigs } from './features'
+import {
+  tableEnhancePlugin,
+  tableConfigCtx,
+  buildTableConfig,
+} from './table'
 import { registerMermaidRefDeps } from './mermaid-ref'
 import { templateService } from '../template/service'
 import {
@@ -64,9 +69,21 @@ interface Instance {
   topbar: null | { el: HTMLElement; parent: HTMLElement; next: Node | null }
   /** 引用/被引用 底部展示区（非编辑） */
   refsFooter: null | RefFooterHandle
+  /** 隐藏前保存的滚动位置（display:none 会清空 scrollTop，重新显示时手动还原） */
+  scrollTop: number
 }
 
 const instances = new Map<string, Instance>()
+
+// 调试钩子：查看各标签保存的滚动位置（切 tab 滚动保持排查用）
+;(window as any).__scrollDbg = () => {
+  const out: Record<string, any> = {}
+  instances.forEach((i, id) => {
+    const t = state.tabs.find((x) => x.id === id)
+    out[id] = { name: t?.name, active: state.activeTabId === id, saved: i.scrollTop, elTop: i.el.scrollTop, disp: i.el.style.display, scrollH: i.el.scrollHeight, clientH: i.el.clientHeight }
+  })
+  return out
+}
 
 // M14：编辑器挂载完成通知（批注抽屉在标签切换后等实例就绪再刷新）
 const mountListeners = new Set<(tabId: string) => void>()
@@ -671,6 +688,18 @@ export function getTabMarkdownByPath(path: string): string | null {
 }
 ;(window as unknown as { __editorOpenPath?: unknown }).__editorOpenPath = (path: string) => {
   void openTab(path)
+}
+;(window as unknown as { __editorReplaceAll?: unknown }).__editorReplaceAll = (md: string) => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return 'no-inst'
+  inst.suppressing = true
+  try {
+    inst.crepe.editor.action(replaceAll(md))
+    void resolveRefs(inst.crepe.editor)
+  } finally {
+    setTimeout(() => (inst.suppressing = false), 0)
+  }
+  return 'done'
 }
 ;(window as unknown as { __writebackDiag?: unknown }).__writebackDiag = async () => {
   // 诊断：输出所有标签的完整状态机 + 每个块「当前内容 vs 快照」对比（决定性证据）
@@ -1337,6 +1366,10 @@ export async function openTab(path: string, contentOverride?: string): Promise<v
     return
   }
 
+  const prevId = state.activeTabId
+  // 打开新标签前保存旧标签滚动（DOM 未变，scrollTop 有效）
+  if (prevId) saveTabScroll(prevId)
+
   const tab: Tab = {
     id: nextTabId(),
     path,
@@ -1357,6 +1390,9 @@ export async function openTab(path: string, contentOverride?: string): Promise<v
 }
 
 export function activateTab(id: string) {
+  // 切换前保存旧标签的滚动位置（DOM 尚未变化，scrollTop 仍有效；display:none 会把它清 0）
+  const prevId = state.activeTabId
+  if (prevId && prevId !== id) saveTabScroll(prevId)
   state.activeTabId = id
   // M6：批注卡上下文跟随活动标签（切标签后 Ctrl+R/批注卡作用于当前编辑器）
   const inst0 = instances.get(id)
@@ -1364,9 +1400,10 @@ export function activateTab(id: string) {
   syncActiveTopbar()
   // 引用底部展示区：切到该标签时重扫反向引用（其它标签可能新增了对它的引用）
   scheduleRefsFooterRefresh(id)
-  // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）
+  // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）；并恢复本标签滚动
   requestAnimationFrame(() => {
     const inst = instances.get(id)
+    if (inst) restoreTabScroll(id)
     const tab = state.tabs.find((t) => t.id === id)
     if (inst && tab?.viewMode === 'source') {
       inst.srcTa?.focus()
@@ -1375,6 +1412,57 @@ export function activateTab(id: string) {
     const viewEl = inst?.el.querySelector('.ProseMirror') as HTMLElement | null
     viewEl?.focus()
   })
+}
+
+// ---------- 滚动位置保持（display:none 的元素无布局、scrollTop 归 0：隐藏前保存、重新显示时还原） ----------
+// 关键时序：display:none 会把 pane 的 scrollTop 清 0，且 Vue 的 watcher(applyDisplay) 在 DOM 更新后才执行，
+// 那时已读不到旧滚动值。因此「保存」必须在 activeTabId 切换前（DOM 未变、scrollTop 仍有效）同步调用。
+
+/** 保存标签当前滚动位置（须在容器仍可见时调用——切换 activeTabId 前；源码模式存 textarea，其余存 pane） */
+export function saveTabScroll(tabId: string): void {
+  const inst = instances.get(tabId)
+  if (!inst) return
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (tab?.viewMode === 'source') {
+    // 源码模式：textarea 自身滚动（pane overflow hidden，无滚动）
+    if (inst.srcTa) inst.scrollTop = inst.srcTa.scrollTop
+  } else {
+    // 仅当 pane 仍可见时才读（否则 scrollTop 已被清 0，保留上次有效值）
+    if (inst.el.style.display !== 'none') inst.scrollTop = inst.el.scrollTop
+  }
+}
+
+/** 恢复标签保存的滚动位置。切回时 pane 刚从 display:none 恢复，内容（编辑器 DOM）可能尚未 re-layout，
+ *  scrollTop 会被 clamp 到 0；且代码块/mermaid 等懒加载（及 refsFooter）会在显示后小几百 ms 内重排并把
+ *  scrollTop 重置。因此逐帧“等待内容可滚动（scrollHeight>clientHeight）→ 对齐 saved”，直到达到或窗口超时。 */
+export function restoreTabScroll(tabId: string): void {
+  const inst = instances.get(tabId)
+  if (!inst || inst.scrollTop <= 0) return
+  const saved = inst.scrollTop
+  const tab = state.tabs.find((t) => t.id === tabId)
+  if (tab?.viewMode === 'source') {
+    if (inst.srcTa) inst.srcTa.scrollTop = saved
+    return
+  }
+  const el = inst.el
+  let frames = 0
+  const MAX_FRAMES = 80 // ~1.3s 窗口：内容未就绪时等待，就绪后对齐（此后再发生的重排大概率已收敛）
+  const tryAlign = () => {
+    frames++
+    if (frames > MAX_FRAMES) return
+    const maxScroll = el.scrollHeight - el.clientHeight
+    if (maxScroll <= 0) {
+      // 内容尚未渲染出可滚动高度 → 等下一帧
+      requestAnimationFrame(tryAlign)
+      return
+    }
+    const target = Math.min(saved, maxScroll)
+    if (Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
+    // 达到（近）目标即认为已稳定，本帧结束（后续放心交给浏览器的正常滚动）
+    if (Math.abs(el.scrollTop - target) <= 2) return
+    requestAnimationFrame(tryAlign)
+  }
+  requestAnimationFrame(tryAlign)
 }
 
 // ---------- M16：顶部栏槽位（Crepe topbar 横贯整行，大纲/正文都在其下） ----------
@@ -1600,10 +1688,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       run: (tid, opts) => validateEditor(crepe.editor, tid, opts),
       shouldSkip: () => instances.get(tabId)?.suppressing ?? true,
     })
+    // 表格增强：注入配置（新增下方行快捷键读 app 设置；默认 Shift+Enter）
+    ctx.set(tableConfigCtx.key, buildTableConfig(settings.shortcuts['tableAddRowBelow']))
   })
   crepe.editor.use(refPlugin)
   // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，tabId 经 ctx 注入）
   crepe.editor.use(annotationPlugin)
+  // 表格增强：单元格换行 / Shift+Enter 新增行 / 多选复制粘贴 / 动态列宽（数组整体 use，同 refPlugin 模式）
+  crepe.editor.use(tableEnhancePlugin)
   // P1：校验插件（编辑防抖监听 + validate 命令；引擎 validateEditor 由 config 注入）
   crepe.editor.use(validatePlugin)
   // 大纲：提取标题 + 光标小节实时追踪 → outlineStore(tabId)
@@ -1626,7 +1718,7 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)
 
-  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null, topbar: null, refsFooter: null }
+  const inst: Instance = { crepe, el: container, suppressing: false, srcTa: null, topbar: null, refsFooter: null, scrollTop: 0 }
   instances.set(tabId, inst)
 
   // 引用/被引用 底部展示区（非编辑）：置于正文（.milkdown）之后，随文档滚动
@@ -1894,6 +1986,12 @@ export async function saveTab(tabId: string): Promise<boolean> {
   syncBlockSnapshots(refreshed)
   // 保存后：磁盘 + 各打开标签内容可能变化 → 重扫所有引用底部展示区（反向引用随之更新）
   refreshAllRefsFooters()
+  // 保存可能命中模板域（.template/ 下的 md / rules / suggest 等）→ 重扫模板注册表，
+  // 使模板内容/规则改动即时生效（无需重启或重开目录；注册表重建后惰性缓存同步失效）。
+  // 仅模板域内文件触发，避免普通笔记每次保存都整树重扫。
+  const isTemplatePath =
+    tab.path === '.template' || tab.path.startsWith('.template/')
+  if (isTemplatePath) void templateService.rescan()
   return true
 }
 
@@ -1928,6 +2026,8 @@ export async function closeTab(tabId: string): Promise<void> {
     if (next) {
       const nextInst = instances.get(next.id)
       if (nextInst) setAnnotationCardContext(next.id, nextInst.crepe.editor)
+      // 恢复被激活标签的滚动位置（DOM 切换后）
+      requestAnimationFrame(() => restoreTabScroll(next.id))
     }
   }
   syncActiveTopbar()
@@ -2051,6 +2151,11 @@ export async function openDirectory(): Promise<void> {
   state.rootName = fs.rootName
   state.expanded = new Set()
   await refreshTree()
+  // 记录「上次打开的目录」：桌面应用下次启动自动恢复（见 App.vue onMounted restoreRoot）
+  if (fs.kind === 'tauri' && typeof fs.rootPath === 'function') {
+    settings.lastDir = fs.rootPath() ?? ''
+    saveSettings()
+  }
   toast(`已打开目录: ${state.rootName}`, 'success')
 }
 

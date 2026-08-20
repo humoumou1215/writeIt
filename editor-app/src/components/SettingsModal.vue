@@ -7,6 +7,7 @@ import {
   THEMES,
   ICON_SETS,
   SHORTCUT_DEFS,
+  EDITOR_SHORTCUT_DEFS,
   formatCombo,
 } from '../state/settings'
 import { fs } from '../fs'
@@ -84,7 +85,7 @@ function onRecordKey(e: KeyboardEvent) {
   }
   const combo = formatCombo(e)
   if (!combo) return
-  const conflict = SHORTCUT_DEFS.find(
+  const conflict = [...SHORTCUT_DEFS, ...EDITOR_SHORTCUT_DEFS].find(
     (d) => d.id !== recording.value && settings.shortcuts[d.id] === combo
   )
   if (conflict) {
@@ -97,14 +98,14 @@ function onRecordKey(e: KeyboardEvent) {
 }
 
 function resetOne(id: string) {
-  const def = SHORTCUT_DEFS.find((d) => d.id === id)
+  const def = [...SHORTCUT_DEFS, ...EDITOR_SHORTCUT_DEFS].find((d) => d.id === id)
   if (def) {
     settings.shortcuts[id] = def.default
     saveSettings()
   }
 }
 function resetAll() {
-  for (const def of SHORTCUT_DEFS) settings.shortcuts[def.id] = def.default
+  for (const def of [...SHORTCUT_DEFS, ...EDITOR_SHORTCUT_DEFS]) settings.shortcuts[def.id] = def.default
   saveSettings()
 }
 
@@ -233,6 +234,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             点击按键后按下新组合键；Backspace 清除；Esc 取消。
           </p>
           <div class="shortcut-list">
+            <div class="shortcut-group">编辑器快捷键</div>
+            <div v-for="def in EDITOR_SHORTCUT_DEFS" :key="def.id" class="shortcut-row">
+              <span class="shortcut-label">{{ def.label }}</span>
+              <input
+                v-if="recording === def.id"
+                ref="recordEl"
+                class="keycapture"
+                placeholder="按下新快捷键…"
+                autofocus
+                @keydown="onRecordKey"
+                @blur="recording = null"
+              />
+              <button v-else class="keybtn" @click="startRecord(def.id)">
+                {{ settings.shortcuts[def.id] || '未设置' }}
+              </button>
+              <button
+                class="reset"
+                title="恢复默认"
+                :disabled="settings.shortcuts[def.id] === def.default"
+                @click="resetOne(def.id)"
+              >
+                ↺
+              </button>
+            </div>
+            <div class="shortcut-group">应用快捷键</div>
             <div v-for="def in SHORTCUT_DEFS" :key="def.id" class="shortcut-row">
               <span class="shortcut-label">{{ def.label }}</span>
               <input
@@ -455,6 +481,17 @@ select {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.shortcut-group {
+  margin-top: 6px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--chrome-border-light);
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant);
+  letter-spacing: 0.02em;
+}
+.shortcut-group:first-child {
+  margin-top: 0;
 }
 .shortcut-row {
   display: flex;

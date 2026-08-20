@@ -57,15 +57,27 @@ function open() {
   else toast(`「${props.node.name}」仅展示，暂不支持打开编辑`, 'info')
 }
 
-// ---------- M15：git 角标 + 快捷进 diff ----------
-const STATUS_LABEL: Record<string, string> = {
-  M: '已修改', A: '已新增', D: '已删除', '?': '未跟踪', U: '未合并', R: '已重命名', C: '已复制',
+// ---------- M15：git 状态角标（工作区改动） ----------
+// 呈现方式：文件名按状态着色 + 行尾类型字母（U / M / A / D / ? …），替代早期「文件名左侧圆点」
+const STATUS_META: Record<
+  string,
+  { letter: string; label: string; nameCls: string; chipCls: string }
+> = {
+  M: { letter: 'M', label: '已修改', nameCls: 'nm-m', chipCls: 'ck-m' },
+  A: { letter: 'A', label: '已新增', nameCls: 'nm-a', chipCls: 'ck-a' },
+  D: { letter: 'D', label: '已删除', nameCls: 'nm-d', chipCls: 'ck-d' },
+  '?': { letter: '?', label: '未跟踪', nameCls: 'nm-u', chipCls: 'ck-u' },
+  U: { letter: 'U', label: '未合并', nameCls: 'nm-u', chipCls: 'ck-u' },
+  R: { letter: 'R', label: '已重命名', nameCls: 'nm-r', chipCls: 'ck-r' },
+  C: { letter: 'C', label: '已复制', nameCls: 'nm-r', chipCls: 'ck-r' },
 }
-const DOT_CLS: Record<string, string> = {
-  M: 'dot-m', A: 'dot-a', D: 'dot-d', '?': 'dot-u', U: 'dot-u', R: 'dot-r', C: 'dot-r',
+/** 当前节点的 git 状态码（文件 = 工作区状态；目录 = 聚合状态）；无改动返回空串 */
+function nodeStatus(): string {
+  if (props.node.kind === 'file') return state.gitMark.files[props.node.path]?.status ?? ''
+  if (props.node.kind === 'dir') return state.gitMark.dirs[props.node.path] ?? ''
+  return ''
 }
-const dotCls = (st: string) => DOT_CLS[st] ?? 'dot-u'
-const statusName = (st: string) => STATUS_LABEL[st] ?? '改动'
+const statusMeta = () => STATUS_META[nodeStatus()]
 /** 有改动文件行尾的「查看 Git 改动」按钮（单击行为保持正常打开编辑，不劫持） */
 function openGitTreeDiff(path: string) {
   void openGitDiff(path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
@@ -91,7 +103,10 @@ function onDragStart(e: DragEvent) {
   beginDrag(props.node.path, props.node.kind, props.node.name)
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', props.node.path)
+    // 用自定义 MIME 而非 text/plain：Windows WebView2 下 setData('text/plain', 路径)
+    // 会被当成「拖拽真实文件」→ 系统层找不到该文件 → 显示禁止符号且拖不动。
+    // 自定义类型让 WebView2 视为应用内拖拽，正常显示 move 光标。
+    e.dataTransfer.setData('application/x-writeit-node', props.node.path)
   }
 }
 
@@ -182,19 +197,6 @@ const dropVisual = () => {
           :size="15"
         />
       </span>
-      <!-- M15：git 角标（文件=工作区状态；目录=聚合状态） -->
-      <span
-        v-if="node.kind === 'file' && state.gitMark.files[node.path]"
-        class="git-dot"
-        :class="dotCls(state.gitMark.files[node.path].status)"
-        :title="`${statusName(state.gitMark.files[node.path].status)} · 工作区改动，点击行尾 Git 图标查看 diff`"
-      ></span>
-      <span
-        v-else-if="node.kind === 'dir' && state.gitMark.dirs[node.path]"
-        class="git-dot"
-        :class="dotCls(state.gitMark.dirs[node.path])"
-        :title="`${statusName(state.gitMark.dirs[node.path])} · 目录内有改动`"
-      ></span>
       <input
         v-if="isRenaming()"
         ref="inputEl"
@@ -209,9 +211,22 @@ const dropVisual = () => {
       <span
         v-else
         class="name"
-        :class="{ muted: node.kind === 'file' && !isEditableFile(node.name) }"
+        :class="[
+          { muted: node.kind === 'file' && !isEditableFile(node.name) },
+          statusMeta()?.nameCls,
+        ]"
+        :title="statusMeta() ? statusMeta()!.label : undefined"
       >
         {{ node.name }}
+      </span>
+      <!-- M15：git 类型字母（行尾，替代文件名左侧圆点） -->
+      <span
+        v-if="statusMeta()"
+        class="git-letter"
+        :class="statusMeta()!.chipCls"
+        :title="`${statusMeta()!.label} · 工作区改动，点击行尾 Git 图标查看 diff`"
+      >
+        {{ statusMeta()!.letter }}
       </span>
       <span class="actions">
         <button
@@ -358,27 +373,53 @@ const dropVisual = () => {
 .icon .mi {
   flex-shrink: 0;
 }
-/* M15：git 状态角标（文件/目录） */
-.git-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+/* M15：git 状态呈现——文件名按状态着色 + 行尾类型字母；替代早期左侧圆点 */
+.name.nm-m {
+  color: #f59f00;
+}
+.name.nm-a {
+  color: #4caf50;
+}
+.name.nm-d {
+  color: var(--chrome-error, #ba1a1a);
+}
+.name.nm-u {
+  color: #8b95a1;
+}
+.name.nm-r {
+  color: #9d7beb;
+}
+.git-letter {
+  min-width: 17px;
+  height: 17px;
+  line-height: 17px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, Consolas, monospace;
   flex-shrink: 0;
+  user-select: none;
 }
-.git-dot.dot-m {
-  background: #f59f00;
+.git-letter.ck-m {
+  color: #f59f00;
+  background: rgba(245, 159, 0, 0.16);
 }
-.git-dot.dot-a {
-  background: #2e7d32;
+.git-letter.ck-a {
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.16);
 }
-.git-dot.dot-d {
-  background: var(--chrome-error, #ba1a1a);
+.git-letter.ck-d {
+  color: var(--chrome-error, #ba1a1a);
+  background: color-mix(in srgb, var(--chrome-error, #ba1a1a) 16%, transparent);
 }
-.git-dot.dot-u {
-  background: #6c757d;
+.git-letter.ck-u {
+  color: #8b95a1;
+  background: rgba(139, 149, 161, 0.18);
 }
-.git-dot.dot-r {
-  background: #7b5cd6;
+.git-letter.ck-r {
+  color: #9d7beb;
+  background: rgba(157, 123, 235, 0.16);
 }
 .git-diff-btn {
   color: var(--chrome-primary) !important;

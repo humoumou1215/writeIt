@@ -11,7 +11,8 @@ import { extractDoctype } from '../../template/service'
 import { createSuggestContext } from '../../template/suggest-context'
 import { getRefConfig, type RefConfig } from './config'
 
-const MAX_DEPTH = 3
+// 块嵌入最大递归深度（A 嵌 B 嵌 C ...）；超过此层的块不物化并 toast 提示
+const MAX_DEPTH = 10
 /** 源内容缓存：path → 原始 markdown（限制条数，避免内存膨胀） */
 const contentCache = new Map<string, string>()
 const CACHE_LIMIT = 60
@@ -76,6 +77,8 @@ export async function materializeBlock(
     const from = pos + 1
     const to = pos + atPos.nodeSize - 1
     const tr = view.state.tr.replaceWith(from, to, parsed.content)
+    // 标记物化成功：未物化的块（内容为空）不参与写回，避免保存时覆盖源文件
+    tr.setNodeMarkup(pos, undefined, { ...atPos.attrs, materialized: true })
     view.dispatch(tr)
     // 物化 dispatch 后强制完整渲染：replaceWith 更新已创建的 NodeView 时
     // 内容 DOM 不会建立 pmViewDesc（块内输入因此失效）——强制重建视图
@@ -90,11 +93,11 @@ export async function materializeBlock(
 }
 
 /** 收集文档中所有 file_block 的位置（倒序处理，避免位置漂移） */
-function collectBlocks(editor: Editor): Array<{ pos: number; path: string; readonly: boolean; depth: number }> {
+function collectBlocks(editor: Editor): Array<{ pos: number; path: string; readonly: boolean; depth: number; materialized: boolean }> {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const doc = view.state.doc
-    const blocks: Array<{ pos: number; path: string; readonly: boolean; depth: number }> = []
+    const blocks: Array<{ pos: number; path: string; readonly: boolean; depth: number; materialized: boolean }> = []
 
     const walk = (node: typeof doc, pos: number, depth: number) => {
       node.forEach((child, offset) => {
@@ -104,6 +107,7 @@ function collectBlocks(editor: Editor): Array<{ pos: number; path: string; reado
             path: child.attrs.path as string,
             readonly: child.attrs.readonly as boolean,
             depth,
+            materialized: Boolean(child.attrs.materialized),
           })
         }
         if (child.isBlock && depth < MAX_DEPTH) {
@@ -222,14 +226,24 @@ export async function resolveRefs(editor: Editor): Promise<void> {
   const cfg = getRefConfig(editor)
   if (!cfg) return
   try {
-    // 1. 块物化（倒序，避免位置漂移）
-    const blocks = collectBlocks(editor).sort((a, b) => b.pos - a.pos)
-    for (const b of blocks) {
-      if (b.depth >= MAX_DEPTH) {
+    // 1. 块物化（递归/多轮）：物化一个块会把它内容里的嵌套块引入文档，
+    //    下一轮重新收集继续物化，直至没有新的未物化块或达到深度上限。
+    //    每轮只物化「未物化且未超深」的块（materialized 标记避免重复物化覆盖用户编辑）。
+    let warned = false
+    for (let round = 0; round < MAX_DEPTH; round++) {
+      const all = collectBlocks(editor)
+      const deep = all.filter((b) => !b.materialized && b.depth >= MAX_DEPTH)
+      if (deep.length > 0 && !warned) {
         cfg.toast(`引用深度超过 ${MAX_DEPTH} 层，已截断`, 'info')
-        continue
+        warned = true
       }
-      await materializeBlock(editor, b.pos, b.path, b.readonly)
+      const blocks = all
+        .filter((b) => !b.materialized && b.depth < MAX_DEPTH)
+        .sort((a, b) => b.pos - a.pos)
+      if (blocks.length === 0) break
+      for (const b of blocks) {
+        await materializeBlock(editor, b.pos, b.path, b.readonly)
+      }
     }
     // 2. 对象引用消歧/定型（倒序）
     const refs = collectRefs(editor).sort((a, b) => b.pos - a.pos)

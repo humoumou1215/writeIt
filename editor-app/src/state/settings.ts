@@ -54,8 +54,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'settings', label: '打开设置', default: 'Ctrl+,' },
 ]
 
+/** 编辑器内快捷键（经 milkdown keymap 在编辑器中生效，不在全局 onKeydown 拦截）——
+ *  目前仅表格：「在下方新增一行」默认 Shift+Enter。设置面板会列出并允许录制与冲突检测。 */
+export const EDITOR_SHORTCUT_DEFS: ShortcutDef[] = [
+  { id: 'tableAddRowBelow', label: '表格：在下方新增一行', default: 'Shift+Enter' },
+]
+
 const defaultShortcuts: Record<string, string> = Object.fromEntries(
-  SHORTCUT_DEFS.map((s) => [s.id, s.default])
+  [...SHORTCUT_DEFS, ...EDITOR_SHORTCUT_DEFS].map((s) => [s.id, s.default])
 )
 
 /** 把按键事件格式化为 "Ctrl+Shift+X" 形式；纯修饰键返回空串 */
@@ -115,6 +121,8 @@ export interface AppSettings {
   sidebarPinned: boolean
   /** 全局模板目录（真实文件系统：外部目录；mock：忽略，用内置示例） */
   templateDir: string
+  /** 上次打开的工作目录（Tauri 桌面应用下次启动自动恢复；空 = 未记录，兜底用 app 所在目录） */
+  lastDir: string
   /** 批注用户名（web/mock 无 git 时使用；Tauri 下优先 git user.name） */
   annotationUsername: string
   /** 批注抽屉默认宽度（px） */
@@ -137,6 +145,7 @@ const defaultSettings: AppSettings = {
   sidebarWidth: 250,
   sidebarPinned: false,
   templateDir: '',
+  lastDir: '',
   annotationUsername: '我',
   annotationDrawerWidth: 300,
   outlineWidth: 180,

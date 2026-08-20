@@ -238,9 +238,13 @@ export async function commitEditing(name: string): Promise<void> {
         toast(`已创建文件夹`, 'success')
       }
     } else {
-      const newPath = ed.path.includes('/')
+      let newPath = ed.path.includes('/')
         ? joinPath(ed.path.slice(0, ed.path.lastIndexOf('/')), target)
         : target
+      // 重命名文件若未写扩展名 → 默认补 .md（与新建拉齐）
+      if (ed.kind === 'file' && !baseName(newPath).match(/\.\w+$/)) {
+        newPath = newPath + '.md'
+      }
       if (newPath === ed.path) return
       await fs.rename(ed.path, newPath)
       onFileRenamed(ed.path, newPath, ed.kind)
