@@ -555,7 +555,8 @@ fn git_show_commit(state: State<AppState>, hash: String) -> Result<GitShowCommit
   let nout = run_git(&root, &["diff-tree", "--name-status", "-z", "--no-commit-id", "-r", "--root", "-M", &hash])?;
   let mut status_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
   if nout.status.success() {
-    let toks: Vec<&str> = String::from_utf8_lossy(&nout.stdout).split('\0').collect();
+    let nout_str = String::from_utf8_lossy(&nout.stdout);
+    let toks: Vec<&str> = nout_str.split('\0').collect();
     let mut i = 0;
     while i < toks.len() {
       let st = toks[i];
@@ -1263,6 +1264,7 @@ fn git_show_file(state: State<AppState>, path: String, rev: String) -> Result<St
 
 /// M18 §4.7：批量取多文件旧/新内容 + hunks 标志 + 内容 hash（嵌入源扫描一次往返）。
 /// kind 同 git_diff_file（unstaged/staged/worktree/range）；候选路径一次 ls-files 解析。
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShowFileEntry {
   #[serde(rename = "write")]
@@ -1275,12 +1277,14 @@ struct ShowFileEntry {
   hash: Option<ShowFileHash>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShowFileHash {
   old: String,
   next: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShowFilesResult {
   entries: Vec<ShowFileEntry>,
@@ -1376,11 +1380,11 @@ fn git_show_files(
       }
     };
     // 每请求产一个 entry（writePath→realPath 映射完整；相同 realPath 由消费者去重）
-    let old: Option<String> = None;
-    let next: Option<String> = None;
-    let exists = false;
-    let changed: Option<bool> = None;
-    let hash: Option<ShowFileHash> = None;
+    let mut old: Option<String> = None;
+    let mut next: Option<String> = None;
+    let mut exists = false;
+    let mut changed: Option<bool> = None;
+    let mut hash: Option<ShowFileHash> = None;
     if resolve(&root, &real).map(|p| p.exists()).unwrap_or(false) || git_tracked(&root, &real) {
       old = show_file_content(&root, &real, &old_rev).ok();
       next = show_file_content(&root, &real, &new_rev).ok();
