@@ -36,11 +36,11 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
       "nsis": {
-        "installMode": "currentUser",
-        "webviewInstallMode": {
-          "type": "embedBootstrapper"
-        }
+        "installMode": "currentUser"
       }
     }
   }
