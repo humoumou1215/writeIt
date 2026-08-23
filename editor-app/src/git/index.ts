@@ -1,6 +1,7 @@
-// Git 能力层（M11/M12）：proxy 后端模式
+// Git 能力层（M11/M12/M16）：proxy 后端模式
 //   tauri → Rust 命令（git CLI，见 src-tauri/src/lib.rs）
-//   mock  → 内置演示仓库（浏览器 vite dev 直接查看 git diff 效果）
+//   mock  → 内置演示仓库（浏览器 vite dev 直接查看 git 效果）
+//   dev   → Vite Node 中间件真实仓库（?repo=1，见 vite-plugins/dev-repo.ts）
 //   web   → 真实目录模式无 git 能力（不可用）
 import type {
   GitBranch,
@@ -9,7 +10,9 @@ import type {
   GitFileStatus,
   GitRepoInfo,
   GitShowCommit,
+  ShowFilesResult,
 } from './types'
+import type { DiffBase } from './types'
 import { mockGit, resetMockGit } from './mock'
 import { devGit } from './dev'
 import { isDevRepoMode } from '../dev-repo'
@@ -26,7 +29,12 @@ export type {
   DiffHunk,
   GitDiffResult,
   DiffBase,
+  ShowFileEntry,
+  ShowFilesResult,
 } from './types'
+
+export { isDiffEditable } from './types'
+export { contentHash } from './hash'
 
 export interface GitBackend {
   readonly available: boolean
@@ -35,11 +43,29 @@ export interface GitBackend {
   status(): Promise<GitFileStatus[]>
   log(limit?: number, branch?: string): Promise<GitCommit[]>
   showCommit(hash: string): Promise<GitShowCommit>
-  diffFile(path: string, from: string | null, to: string): Promise<GitDiffResult>
+  diffFile(path: string, base: DiffBase): Promise<GitDiffResult>
   showFile(path: string, rev: string): Promise<string>
+  /** M18 §4.7：批量取多文件旧/新内容 + hunks 标志 + hash（嵌入源扫描一次往返） */
+  showFiles(paths: string[], base: DiffBase): Promise<ShowFilesResult>
+  /** Changes 区「放弃更改」：worktree ← index；未跟踪 → 删除文件 */
   discardFile(path: string): Promise<void>
+  /** Changes 区 hunk 还原：只回滚该 hunk（index..worktree 层） */
   discardHunk(path: string, hunkIndex: number): Promise<void>
   checkoutBranch(name: string): Promise<void>
+  // M16 SCM：
+  stage(paths: string[]): Promise<void>
+  unstage(paths: string[]): Promise<void>
+  commit(message: string, opts?: { amend?: boolean; stageAll?: boolean }): Promise<{ hash: string }>
+  /** staged 区「还原到 HEAD」：reset + checkout 组合（破坏性） */
+  revertToHead(paths: string[]): Promise<void>
+  fetch(): Promise<void>
+  pull(): Promise<void>
+  push(): Promise<void>
+  aheadBehind(): Promise<{ ahead: number; behind: number } | null>
+  createBranch(name: string, from?: string): Promise<void>
+  renameBranch(from: string, to: string): Promise<void>
+  deleteBranch(name: string): Promise<void>
+  ignore(path: string): Promise<void>
 }
 
 // ---------- tauri 后端 ----------
@@ -67,11 +93,20 @@ const tauriBackend: GitBackend = {
   async showCommit(hash: string) {
     return (await core()).invoke('git_show_commit', { hash })
   },
-  async diffFile(path: string, from: string | null, to: string) {
-    return (await core()).invoke('git_diff_file', { path, from, to })
+  async diffFile(path: string, base: DiffBase) {
+    if (base.kind === 'range') {
+      return (await core()).invoke('git_diff_file', { path, kind: 'range', from: base.from, to: base.to })
+    }
+    return (await core()).invoke('git_diff_file', { path, kind: base.kind, from: null, to: null })
   },
   async showFile(path: string, rev: string) {
     return (await core()).invoke('git_show_file', { path, rev })
+  },
+  async showFiles(paths: string[], base: DiffBase) {
+    if (base.kind === 'range') {
+      return (await core()).invoke('git_show_files', { paths, kind: 'range', from: base.from, to: base.to })
+    }
+    return (await core()).invoke('git_show_files', { paths, kind: base.kind, from: null, to: null })
   },
   async discardFile(path: string) {
     return (await core()).invoke('git_discard_file', { path })
@@ -81,6 +116,46 @@ const tauriBackend: GitBackend = {
   },
   async checkoutBranch(name: string) {
     return (await core()).invoke('git_checkout_branch', { name })
+  },
+  async stage(paths: string[]) {
+    return (await core()).invoke('git_stage', { paths })
+  },
+  async unstage(paths: string[]) {
+    return (await core()).invoke('git_unstage', { paths })
+  },
+  async commit(message: string, opts?: { amend?: boolean; stageAll?: boolean }) {
+    return (await core()).invoke('git_commit', {
+      message,
+      amend: opts?.amend ?? false,
+      stageAll: opts?.stageAll ?? false,
+    })
+  },
+  async revertToHead(paths: string[]) {
+    return (await core()).invoke('git_revert_to_head', { paths })
+  },
+  async fetch() {
+    return (await core()).invoke('git_fetch')
+  },
+  async pull() {
+    return (await core()).invoke('git_pull')
+  },
+  async push() {
+    return (await core()).invoke('git_push')
+  },
+  async aheadBehind() {
+    return (await core()).invoke('git_ahead_behind')
+  },
+  async createBranch(name: string, from?: string) {
+    return (await core()).invoke('git_create_branch', { name, from: from ?? null })
+  },
+  async renameBranch(from: string, to: string) {
+    return (await core()).invoke('git_rename_branch', { from, to })
+  },
+  async deleteBranch(name: string) {
+    return (await core()).invoke('git_delete_branch', { name })
+  },
+  async ignore(path: string) {
+    return (await core()).invoke('git_ignore', { path })
   },
 }
 

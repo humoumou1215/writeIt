@@ -12,6 +12,16 @@ import { promisify } from 'node:util'
 import { promises as fs, statSync } from 'node:fs'
 import path from 'node:path'
 
+/** 内容指纹（M18 §4.7）：与前端 src/git/hash.ts 同算法（FNV-1a 32），三侧一致 */
+function contentHash(content: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < content.length; i++) {
+    h ^= content.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
 const execFile = promisify(execFileCb)
 
 /** 内容库根目录（独立 git 仓库）。可用 WRITEIT_DEV_REPO 覆盖切换任意仓库 */
@@ -99,9 +109,45 @@ function isGitRepo(): boolean {
   try { return statSync(path.join(REPO_ROOT, '.git')).isDirectory() } catch { return false }
 }
 
-/** git status --porcelain=v1 -z → [{status, path}]；R/C 双记录 → 显示 "old → new"（对齐 parse_porcelain） */
-function parsePorcelain(bytes: Buffer): { status: string; path: string }[] {
-  const files: { status: string; path: string }[] = []
+/** 文件是否已被 git 跟踪（HEAD/索引存在该路径） */
+async function trackedInGit(p: string): Promise<boolean> {
+  try {
+    await git(['ls-files', '--error-unmatch', '--', p])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** git diff --no-index（a 与 b 有差异时退出码为 1，属正常；stdout 才是 diff 内容） */
+function gitDiffNoIndex(a: string, b: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'core.quotepath=false', 'diff', '--no-index', '--no-color', '-U3', a, b],
+      { cwd: REPO_ROOT, encoding: 'buffer', maxBuffer: 256 << 20 },
+      (err, stdout, stderr) => {
+        if (err && err.code !== 1) {
+          reject(new Error((stderr?.toString('utf8') || err.message || 'git diff --no-index 失败').trim()))
+          return
+        }
+        resolve(stdout as Buffer)
+      }
+    )
+  })
+}
+
+interface XyEntry {
+  x: string
+  y: string
+  path: string
+  renameFrom?: string
+}
+
+/** git status --porcelain=v1 -z → XY 双码（M16）
+ * 关键（Phase 0 #6）：-z 下 R/C 两记录顺序 = `XY <新路径> NUL <旧路径>`（与 non-z 相反） */
+function parsePorcelain(bytes: Buffer): XyEntry[] {
+  const files: XyEntry[] = []
   let i = 0
   while (i < bytes.length) {
     let end = bytes.indexOf(0, i)
@@ -109,56 +155,113 @@ function parsePorcelain(bytes: Buffer): { status: string; path: string }[] {
     const rec = bytes.subarray(i, end).toString('utf8')
     i = end + 1
     if (rec.length < 3) continue
-    const xy = rec.slice(0, 2)
+    const x = rec[0]
+    const y = rec[1]
     const p = rec.slice(3)
-    const st = xy.trim()
-    if (st === 'R' || st === 'C') {
+    if (x === 'R' || x === 'C') {
       let end2 = bytes.indexOf(0, i)
       if (end2 === -1) end2 = bytes.length
-      const newPath = bytes.subarray(i, end2).toString('utf8')
+      const oldPath = bytes.subarray(i, end2).toString('utf8')
       i = end2 + 1
-      files.push({ status: st, path: `${p} → ${newPath}` })
+      files.push({ x, y, path: p, renameFrom: oldPath })
       continue
     }
-    let status: string
-    if (st.includes('?')) status = '?'
-    else if (st.includes('U')) status = 'U'
-    else {
-      const last = st[st.length - 1]
-      status = last === 'M' ? 'M' : last === 'A' ? 'A' : last === 'D' ? 'D' : 'M'
-    }
-    files.push({ status, path: p })
+    files.push({ x, y, path: p })
   }
   return files
 }
 
-/** git status：porcelain 状态 + numstat 行数（untracked 读文件行数铺底） */
+/** numstat -z 记录正则：`add\tdel` 或 `add\tdel\t`（rename）或 `add\tdel\tpath`（普通） */
+const NUMSTAT_RE = /^(\d+)\t(\d+)\t?(.*)$/
+
+/** git diff --numstat -z → path → [add, del]
+ * 普通记录：`add\tdel\tpath`（统计与路径同一 NUL token）
+ * rename 记录：`add\tdel\t` NUL `old` NUL `new`（路径独立 token，key 取最后一段，Phase 0 #6） */
+function parseNumstatZ(text: string): Map<string, [number, number]> {
+  const toks = text.split('\0')
+  const map = new Map<string, [number, number]>()
+  let i = 0
+  while (i < toks.length) {
+    const t = toks[i]
+    const m = NUMSTAT_RE.exec(t)
+    if (!m) { i++; continue }
+    const add = parseInt(m[1], 10)
+    const del = parseInt(m[2], 10)
+    i++
+    const inlinePath = m[3]
+    if (inlinePath) {
+      map.set(inlinePath, [add, del])
+      continue
+    }
+    // rename：统计 token 以 tab 结尾，路径在后续 NUL token（old, new → key 取 new）
+    const paths: string[] = []
+    while (i < toks.length && !NUMSTAT_RE.test(toks[i])) {
+      if (toks[i] !== '') paths.push(toks[i])
+      i++
+    }
+    const np = paths[paths.length - 1]
+    if (np !== undefined) map.set(np, [add, del])
+  }
+  return map
+}
+
+/** git status：porcelain XY 双码 + 双 numstat 行数（untracked 读文件行数铺底） */
 async function gitStatus() {
   const out = await git(['status', '--porcelain=v1', '-z'])
-  const files = parsePorcelain(out).map((f) => ({ ...f, added: -1, deleted: -1 }))
-  // 行数统计：工作区 vs HEAD（untracked 不在内）
+  const entries = parsePorcelain(out)
+  const files: {
+    path: string; status: string; indexStatus: string; worktreeStatus: string; renameFrom?: string
+    added: number; deleted: number; indexAdded: number; indexDeleted: number
+  }[] = []
+  // 未跟踪目录条目（`?? 目录/`）→ 先收集，稍后展开
+  const dirs: string[] = []
+  for (const e of entries) {
+    if (e.x === '?' && e.path.endsWith('/')) { dirs.push(e.path); continue }
+    const status = e.y !== ' ' ? e.y : e.x
+    files.push({
+      path: e.path, status, indexStatus: e.x, worktreeStatus: e.y,
+      renameFrom: e.renameFrom, added: -1, deleted: -1, indexAdded: -1, indexDeleted: -1,
+    })
+  }
+  // 行数双通道（-z）：unstaged（index..worktree）+ staged（HEAD..index）
   try {
-    const nums = (await git(['diff', '--numstat', 'HEAD'])).toString('utf8')
-    for (const line of nums.split('\n')) {
-      const parts = line.split('\t')
-      if (parts.length < 3) continue
-      const add = parseInt(parts[0], 10)
-      const del = parseInt(parts[1], 10)
-      const f = files.find((x) => x.path === parts[2])
-      if (f) { f.added = Number.isNaN(add) ? -1 : add; f.deleted = Number.isNaN(del) ? -1 : del }
+    const unstaged = parseNumstatZ((await git(['diff', '--numstat', '-z'])).toString('utf8'))
+    for (const f of files) { const v = unstaged.get(f.path); if (v) { f.added = v[0]; f.deleted = v[1] } }
+  } catch { /* 无提交/非仓库忽略 */ }
+  try {
+    const staged = parseNumstatZ((await git(['diff', '--cached', '--numstat', '-z'])).toString('utf8'))
+    for (const f of files) { const v = staged.get(f.path); if (v) { f.indexAdded = v[0]; f.indexDeleted = v[1] } }
+  } catch { /* 忽略 */ }
+  // untracked：目录展开 + 行数
+  const expanded: typeof files = []
+  for (const f of files) expanded.push(f)
+  for (const dir of dirs) {
+    const base = dir.slice(0, -1)
+    const inner: string[] = []
+    const walk = async (rel: string) => {
+      let ents: import('node:fs').Dirent[]
+      try { ents = await fs.readdir(resolveRel(rel), { withFileTypes: true }) } catch { return }
+      for (const e of ents) {
+        if (e.name === '.git') continue
+        const r = rel ? `${rel}/${e.name}` : e.name
+        if (e.isDirectory()) await walk(r)
+        else inner.push(r)
+      }
     }
-  } catch { /* HEAD 无提交时忽略 */ }
-  // untracked：读行数
-  for (const f of files) {
-    if (f.status === '?' && f.added < 0) {
-      try {
-        const s = await fs.readFile(resolveRel(f.path), 'utf8')
-        f.added = s.split('\n').length
-        f.deleted = 0
-      } catch { /* 二进制/不存在忽略 */ }
+    await walk(base)
+    for (const fp of inner) {
+      let add = -1
+      try { add = (await fs.readFile(resolveRel(fp), 'utf8')).split('\n').length } catch { /* 忽略 */ }
+      expanded.push({ path: fp, status: '?', indexStatus: '?', worktreeStatus: '?', added: add, deleted: 0, indexAdded: -1, indexDeleted: -1 })
     }
   }
-  return files
+  // 普通未跟踪文件补行数
+  for (const f of expanded) {
+    if (f.status === '?' && f.added < 0) {
+      try { f.added = (await fs.readFile(resolveRel(f.path), 'utf8')).split('\n').length } catch { f.added = 0 }
+    }
+  }
+  return expanded
 }
 
 function parseHunkHeader(line: string): DiffHunk | null {
@@ -269,10 +372,10 @@ function extractHunkPatch(diffText: string, idx: number): string | null {
   return out.join('\n') + '\n'
 }
 
-/** 用 stdin 管道喂补丁给 git apply（execFile 的 input 会挂起，改用 spawn） */
+/** 用 stdin 管道喂补丁给 git apply（execFile 的 input 会挂起，改用 spawn）；Phase 0 #1：不带 --unidiff-zero */
 function applyPatch(patch: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['apply', '--reverse', '--unidiff-zero', '-'], { cwd: REPO_ROOT })
+    const child = spawn('git', ['apply', '--reverse', '-'], { cwd: REPO_ROOT })
     let errBuf = Buffer.alloc(0)
     child.stderr.on('data', (d: Buffer) => { errBuf = Buffer.concat([errBuf, d]) })
     child.on('error', reject)
@@ -384,13 +487,11 @@ async function handleGit(req: IncomingMessage, res: ServerResponse, action: stri
         const args = ['log', '-n', String(n), '--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1e']
         if (body.branch) args.push(String(body.branch))
         const text = (await git(args)).toString('utf8')
-        const commits = text.split('\u{1e}').map((rec) => rec.split('\u{1f}')).filter((p) => p.length >= 5 && p[0] !== '').map((p) => ({
-          hash: p[0],
-          parents: p[1] ? p[1].split(/\s+/) : [],
-          author: p[2],
-          date: parseInt(p[3], 10) || 0,
-          message: p[4],
-        }))
+        // git --format 每条记录后追加 '\n' → 除首条外 hash 前有换行；trim 归一
+        const commits = text.split('\u{1e}').map((rec) => rec.replace(/^\n/, '')).filter(Boolean).map((rec) => {
+          const p = rec.split('\u{1f}')
+          return { hash: p[0].trim(), parents: p[1] ? p[1].split(/\s+/) : [], author: p[2], date: parseInt(p[3], 10) || 0, message: p[4] }
+        })
         send(res, { ok: true, data: commits })
         return
       }
@@ -399,38 +500,30 @@ async function handleGit(req: IncomingMessage, res: ServerResponse, action: stri
         const header = (await git(['log', '-1', '--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1e', hash])).toString('utf8')
         const rec = header.split('\u{1e}')[0]?.split('\u{1f}') ?? []
         if (rec.length < 5 || !rec[0]) throw new Error(`提交不存在：${hash}`)
-        // 文件状态：diff-tree --name-status -z --no-commit-id（NUL 交替 token；--root 支持初始提交）
+        // 文件状态：diff-tree --name-status -z（rename 两段路径 = old, new，key 取 new；Phase 0 #4/#6）
         const nout = (await git(['diff-tree', '--name-status', '-z', '--no-commit-id', '-r', '--root', '-M', hash])).toString('utf8')
         const statusMap = new Map<string, string>()
-        const toks = nout.split('\0')
-        for (let i = 0; i < toks.length; ) {
-          const st = toks[i++]
-          if (!st) continue
-          const p = toks[i++]
-          if (p === undefined) break
-          const code = st[0]
-          if (code === 'R' || code === 'C') {
-            // rename/copy：紧随的两条 path 记录 = old, new（取 new）
-            const newPath = toks[i++]
-            if (newPath === undefined) break
-            statusMap.set(newPath, code === 'R' ? 'R' : 'M')
-          } else {
-            statusMap.set(p, code === 'A' ? 'A' : code === 'D' ? 'D' : 'M')
+        {
+          const toks = nout.split('\0')
+          let ti = 0
+          while (ti < toks.length) {
+            const st = toks[ti++]
+            if (!st) continue
+            const p = toks[ti++]
+            if (p === undefined) break
+            const code = st[0]
+            if (code === 'R' || code === 'C') {
+              const newPath = toks[ti++]
+              if (newPath === undefined) break
+              statusMap.set(newPath, code === 'R' ? 'R' : 'C')
+            } else {
+              statusMap.set(p, code === 'A' ? 'A' : code === 'D' ? 'D' : 'M')
+            }
           }
         }
-        // 行数：diff-tree --numstat -z --no-commit-id（rename 路径 `old => new`，取 new）
+        // 行数：diff-tree --numstat -z（-z：rename 两段路径，key 取 last，Phase 0 #6）
         const mout = (await git(['diff-tree', '--numstat', '-z', '--no-commit-id', '-r', '--root', '-M', hash])).toString('utf8')
-        const numMap = new Map<string, [number, number]>()
-        for (const rec of mout.split('\0')) {
-          if (!rec) continue
-          const parts = rec.split('\t')
-          if (parts.length < 3) continue
-          const add = parseInt(parts[0], 10)
-          const del = parseInt(parts[1], 10)
-          const p = parts.slice(2).join('\t')
-          const key = p.includes(' => ') ? p.split(' => ')[1] : p
-          numMap.set(key, [add, del])
-        }
+        const numMap = parseNumstatZ(mout)
         const keys = [...statusMap.keys()].sort()
         const files = keys.map((k) => {
           const [add, del] = numMap.get(k) ?? [-1, -1]
@@ -443,21 +536,32 @@ async function handleGit(req: IncomingMessage, res: ServerResponse, action: stri
       }
       case 'diff-file': {
         const path_ = String(body.path)
+        const kind = String(body.kind ?? 'unstaged')
         const from = body.from ? String(body.from) : null
         const to = String(body.to ?? 'HEAD')
-        const args = ['diff', '--no-color', '-U3']
-        if (from) { args.push(from, to) } else { args.push('HEAD') }
-        args.push('--', path_)
-        const text = (await git(args)).toString('utf8')
-        let exists = false
-        try { exists = statSync(resolveRel(path_)).isFile() } catch { exists = false }
+        // 未跟踪（新）文件：git diff 不含未跟踪文件 → --no-index /dev/null 合成「全新增」diff
+        let untracked = false
+        if (kind !== 'staged') untracked = !(await trackedInGit(path_))
+        const rev: string[] = []
+        if (kind === 'staged') rev.push('--cached')
+        else if (kind === 'worktree') rev.push('HEAD')
+        else if (kind === 'range') { rev.push(from ?? ''); rev.push(to) }
+        let text: string
+        if (untracked) {
+          text = (await gitDiffNoIndex('/dev/null', resolveRel(path_))).toString('utf8')
+        } else {
+          const args = ['diff', '--no-color', '-U3', ...rev]
+          args.push('--', path_)
+          text = (await git(args)).toString('utf8')
+        }
+        let exists = untracked
+        try { exists = exists || statSync(resolveRel(path_)).isFile() } catch { exists = untracked }
         if (!text) { send(res, { ok: true, data: { hunks: [], added: 0, deleted: 0, exists } }); return }
         const base = parseUnifiedDiff(text)
-        // 词级高亮：--word-diff=porcelain 解析，行组与 unified 行序合并（对齐 lib.rs，补齐 -- path）
+        // 词级高亮：同样的 rev + -- path（untracked 全新增，跳过）
         let result = base
-        if (base.hunks.length) {
-          const wargs = ['diff', '--word-diff=porcelain', '--no-color', '-U3']
-          if (from) { wargs.push(from, to) } else { wargs.push('HEAD') }
+        if (base.hunks.length && !untracked) {
+          const wargs = ['diff', '--word-diff=porcelain', '--no-color', '-U3', ...rev]
           wargs.push('--', path_)
           try {
             const wtext = (await git(wargs)).toString('utf8')
@@ -473,24 +577,182 @@ async function handleGit(req: IncomingMessage, res: ServerResponse, action: stri
         send(res, { ok: true, data: out.toString('utf8') })
         return
       }
+      // M18 §4.7：批量端点（与 mock/tauri 三侧对齐）——一次 ls-files 解析候选路径 + 批量 show
+      case 'show-files': {
+        const reqPaths = Array.isArray(body.paths) ? body.paths.map(String) : []
+        const kind = String(body.kind ?? 'unstaged')
+        const from = body.from ? String(body.from) : null
+        const to = String(body.to ?? 'HEAD')
+        const oldRev = kind === 'unstaged' ? 'HEAD' : kind === 'staged' ? 'HEAD' : kind === 'worktree' ? 'HEAD' : (from ?? 'HEAD')
+        const newRev = (kind === 'worktree' || kind === 'unstaged') ? '' : kind === 'staged' ? ':index' : (to ?? 'HEAD')
+        const entries: Array<{
+          write: string; realPath: string; old: string | null; next: string | null; exists: boolean; changed: boolean | null; hash: { old: string; next: string } | null
+        }> = []
+        const readContent = async (p: string, rev: string): Promise<string | null> => {
+          try {
+            if (rev === ':index') return (await git(['show', `:${p}`])).toString('utf8')
+            if (rev === '') return (await fs.readFile(resolveRel(p), 'utf8')).toString()
+            return (await git(['show', `${rev}:${p}`])).toString('utf8')
+          } catch {
+            return null
+          }
+        }
+        for (const req of reqPaths) {
+          let realPath: string | null = null
+          try {
+            const out = await git(['ls-files', '--', `${req}`, `${req}.md`, `${req}.markdown`, `${req}.txt`])
+            const hit = out.toString('utf8').split('\n').filter(Boolean)[0]
+            realPath = hit || null
+          } catch { /* ignore */ }
+          try {
+            if (!realPath && fs.existsSync(resolveRel(req + '.md'))) realPath = req + '.md'
+            else if (!realPath && fs.existsSync(resolveRel(req))) realPath = req
+          } catch { /* ignore */ }
+          if (!realPath) {
+            entries.push({ write: req, realPath: req, old: null, next: null, exists: false, changed: null, hash: null })
+            continue
+          }
+          // 每请求产一个 entry（writePath→realPath 映射完整；相同 realPath 由消费者去重）
+          const old = await readContent(realPath, oldRev)
+          const next = await readContent(realPath, newRev)
+          const exists = next != null || (await trackedInGit(realPath)) || fs.existsSync(resolveRel(realPath))
+          const changed = old != null && next != null ? old !== next : old === null && next != null
+          entries.push({
+            write: req, realPath, old, next, exists,
+            changed,
+            hash: old == null && next == null ? null : { old: contentHash(old ?? ''), next: contentHash(next ?? '') },
+          })
+        }
+        send(res, { ok: true, data: { entries } })
+        return
+      }
       case 'discard-file': {
-        await git(['checkout', '--', String(body.path)])
+        const path_ = String(body.path)
+        const tracked = await trackedInGit(path_)
+        if (!tracked) {
+          // 未跟踪 → 删除文件（Phase 0 #5）
+          const full = resolveRel(path_)
+          try { await fs.rm(full, { recursive: true }) } catch { /* 不存在忽略 */ }
+        } else {
+          await git(['checkout', '--', path_])
+        }
         send(res, { ok: true })
         return
       }
       case 'discard-hunk': {
         const path_ = String(body.path)
         const idx = Number(body.hunkIndex)
-        const text = (await git(['diff', '--no-color', '-U0', 'HEAD', '--', path_])).toString('utf8')
+        // Phase 0 #1：-U3 提取（与前端 hunk 序号一致），apply --reverse（不带 unidiff-zero）
+        const text = (await git(['diff', '--no-color', '-U3', '--', path_])).toString('utf8')
         const patch = extractHunkPatch(text, idx)
         if (!patch) throw new Error('hunk 不存在或文件无改动')
-        // 与 Rust 侧一致：spawn + stdin 管道写补丁（execFile 的 input 在部分 Node 版本会挂起）
         await applyPatch(patch)
         send(res, { ok: true })
         return
       }
       case 'checkout-branch': {
         await git(['checkout', String(body.name)])
+        send(res, { ok: true })
+        return
+      }
+      // ---- M16 SCM ----
+      case 'stage': {
+        const paths = Array.isArray(body.paths) ? body.paths.map(String) : []
+        if (paths.length) await git(['add', '-A', '--', ...paths])
+        send(res, { ok: true })
+        return
+      }
+      case 'unstage': {
+        const paths = Array.isArray(body.paths) ? body.paths.map(String) : []
+        if (paths.length) await git(['reset', '-q', 'HEAD', '--', ...paths])
+        send(res, { ok: true })
+        return
+      }
+      case 'revert-to-head': {
+        const paths = Array.isArray(body.paths) ? body.paths.map(String) : []
+        if (paths.length) {
+          await git(['reset', '-q', 'HEAD', '--', ...paths])
+          await git(['checkout', '--', ...paths])
+        }
+        send(res, { ok: true })
+        return
+      }
+      case 'commit': {
+        const message = String(body.message ?? '')
+        const amend = body.amend === true
+        const stageAll = body.stageAll === true
+        if (stageAll) await git(['add', '-A'])
+        const args = ['commit']
+        if (amend) args.push('--amend')
+        args.push('-m', message)
+        await git(args)
+        const hash = (await git(['rev-parse', 'HEAD'])).toString('utf8').trim()
+        send(res, { ok: true, data: { hash } })
+        return
+      }
+      case 'fetch': {
+        await git(['fetch'])
+        send(res, { ok: true })
+        return
+      }
+      case 'pull': {
+        await git(['pull', '--no-rebase'])
+        send(res, { ok: true })
+        return
+      }
+      case 'push': {
+        try {
+          await git(['push'])
+        } catch (e) {
+          const msg = (e as Error).message
+          // 首次推送无 upstream → git push -u origin <branch>
+          if (msg.includes('upstream') || msg.includes('fetch first')) {
+            const branch = (await git(['branch', '--show-current'])).toString('utf8').trim()
+            if (branch) { await git(['push', '-u', 'origin', branch]); send(res, { ok: true }); return }
+          }
+          throw e
+        }
+        send(res, { ok: true })
+        return
+      }
+      case 'ahead-behind': {
+        let hasUpstream = true
+        try { await git(['rev-parse', '--abbrev-ref', '@{upstream}']) } catch { hasUpstream = false }
+        if (!hasUpstream) { send(res, { ok: true, data: null }); return }
+        try {
+          // 输出：左=behind 右=ahead（upstream 独有, HEAD 独有）
+          const text = (await git(['rev-list', '--left-right', '--count', '@{upstream}...HEAD'])).toString('utf8')
+          const parts = text.trim().split(/\s+/)
+          send(res, { ok: true, data: { behind: parseInt(parts[0], 10) || 0, ahead: parseInt(parts[1], 10) || 0 } })
+        } catch {
+          send(res, { ok: true, data: null })
+        }
+        return
+      }
+      case 'create-branch': {
+        const args = ['branch', String(body.name)]
+        if (body.from) args.push(String(body.from))
+        await git(args)
+        send(res, { ok: true })
+        return
+      }
+      case 'rename-branch': {
+        await git(['branch', '-m', String(body.from), String(body.to)])
+        send(res, { ok: true })
+        return
+      }
+      case 'delete-branch': {
+        await git(['branch', '-D', String(body.name)])
+        send(res, { ok: true })
+        return
+      }
+      case 'ignore': {
+        const gi = path.join(REPO_ROOT, '.gitignore')
+        let content = ''
+        try { content = await fs.readFile(gi, 'utf8') } catch { /* 无则创建 */ }
+        if (content && !content.endsWith('\n')) content += '\n'
+        content += `/${String(body.path)}\n`
+        await fs.writeFile(gi, content, 'utf8')
         send(res, { ok: true })
         return
       }

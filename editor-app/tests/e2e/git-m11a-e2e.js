@@ -98,13 +98,18 @@ await js(MOCK_SRC)
 
 const ensureSidebar = async () => {
   if (await js(`document.querySelector('.content-col') ? document.querySelector('.content-col').classList.contains('collapsed') : false`)) {
-    await L.clickEl('.icon-col .icon-btn', 1, { label: '展开侧栏' })
+    // 抽屉独立交互：用「文件」按钮展开（不要用 Git 按钮——展开后 tab 已是 git，再点 git 会 toggle 收起）
+    await L.clickEl('.icon-col .icon-btn', 0, { label: '展开侧栏' })
     await L.waitMs(300)
   }
 }
 
 // 1. tauri 模式下 Git 图标可用
-const gitBtn = (() => L.clickEl('.icon-col .icon-btn:nth-child(2)', 0, { label: 'Git 面板' }))
+// 抽屉独立交互：点 Git 进 Git 抽屉；已在 Git 抽屉（按钮 active）则不再点，避免 toggle 收起
+const gitBtn = async () => {
+  const inGit = await js(`(() => { const el = document.querySelector('.icon-col .icon-btn:nth-child(2)'); return !!el && el.classList.contains('active') })()`)
+  if (!inGit) await L.clickEl('.icon-col .icon-btn:nth-child(2)', 0, { label: 'Git 面板' })
+}
 const inlineOp = await js(`(() => { const el = document.querySelector('.icon-col .icon-btn:nth-child(2)'); return el ? el.style.opacity : null })()`)
 C.check('Git 图标可用（无灰置 inline style）', inlineOp === '' || inlineOp === undefined || inlineOp === null)
 
@@ -164,6 +169,9 @@ C.check('M13 渲染模式：组合 md 渲染（diff 标注）', (await L.q('.ren
 C.check('M13 行内修改（删除字划线/新增字绿底）', (await L.qText('.render-host .diff-del', '旧')) >= 1 && (await L.qText('.render-host .diff-ins', '新')) >= 1)
 await L.waitMs(2000)
 C.check('M14 块级纯删除/新增也走行内标记', (await L.q('.render-host .diff-del')) >= 2 && (await L.q('.render-host .diff-ins')) >= 2)
+// 抽屉默认收纳：读取 diff 批注前先展开
+await js(`document.querySelector('.annotation-open-btn')?.click()`)
+await L.waitMs(400)
 C.check('M14 批注抽屉「改动说明」卡', (await L.q('.annotation-drawer .ad-card .ad-card-title')) >= 1)
 C.check('M13 mermaid 渲染图（svg）', (await L.q('.render-host svg, .render-host .mermaid')) > 0)
 C.check('M13 嵌入引用卡片渲染', (await L.q('.render-host .ref-file-block')) > 0)

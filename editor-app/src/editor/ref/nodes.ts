@@ -197,6 +197,9 @@ export const fileBlockSchema = $nodeSchema('file_block', (_ctx) => {
       readonly: { default: false },
       /** resolve 阶段是否已物化成功（未物化的块内容为空，写回时跳过避免覆盖源文件） */
       materialized: { default: false },
+      /** 运行时折叠态（不序列化；round-trip 无损）：{ reason: 'cycle'|'depth'; chain: string[] } | null。
+       *  环 / 超深（第 11 层起）折叠提示卡，见 embed-nesting-governance.md */
+      collapsed: { default: null },
     },
     parseDOM: [
       {
@@ -207,13 +210,14 @@ export const fileBlockSchema = $nodeSchema('file_block', (_ctx) => {
         }),
       },
     ],
-    // NodeView 接管渲染，toDOM 仅作占位
+    // NodeView 接管渲染，toDOM 仅作占位/诊断选择器
     toDOM: (node) => [
       'div',
       {
         'data-file-block': '',
         'data-path': node.attrs.path,
         'data-readonly': String(node.attrs.readonly),
+        ...(node.attrs.collapsed ? { 'data-collapsed': '' } : {}),
       },
       0,
     ],

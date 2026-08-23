@@ -14,9 +14,15 @@ import {
   brokenRefPlugin,
 } from './app-plugin'
 import { placeholderDecorationPlugin } from './placeholder'
+import { editorMenuPlugin } from './editor-menu'
 import { refConfigCtx } from './config'
+import { installClipboardWatch } from './clipboard-core'
 
 import './styles.css'
+
+// 全局剪贴板失效监听（用户复制了别的内容 → 内部剪贴板作废，防陈旧引用误粘贴）。
+// 模块加载即注册一次（幂等；无 document 环境自动跳过）
+installClipboardWatch()
 
 export { doctypeSchema, fileRefSchema, objectRefSchema, fileBlockSchema } from './nodes'
 export { resolveRefs } from './resolve'
@@ -58,4 +64,6 @@ export const refPlugin: MilkdownPlugin[] = [
   $prose(() => brokenRefPlugin),
   // M9：{{}} 占位符渲染（decoration，不改内容；代码块内保留字面）
   $prose(() => placeholderDecorationPlugin),
+  // 文件引用粘贴（Ctrl+V）+ 编辑器自定义右键菜单（替代默认 contextmenu）
+  editorMenuPlugin,
 ]

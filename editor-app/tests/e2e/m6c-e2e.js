@@ -19,8 +19,12 @@ await L.waitMs(400)
 await L.clickText('.tree .name', '周报.md')
 await L.waitMs(6000)
 
-// 1. 抽屉默认展开 + 批注卡（1 人工 + 1 校验违规）
-C.check('抽屉默认展开', (await L.q('.annotation-drawer.open')) > 0)
+// 1. 抽屉默认收纳（打开文件不展开）+ 批注卡（1 人工 + 1 校验违规）
+C.check('抽屉默认收纳（不展开）', (await L.q('.annotation-drawer.open')) === 0)
+C.check('折叠态显示小胶囊展开按钮', (await L.q('.annotation-open-btn')) > 0)
+await L.clickEl('.annotation-open-btn', 0, { label: '展开抽屉' })
+await L.waitMs(500)
+C.check('点击展开按钮后抽屉打开', (await L.q('.annotation-drawer.open')) > 0)
 C.check('抽屉显示 2 张卡（人工 + 校验）', (await L.q('.ad-card')) === 2)
 const threadText = await L.txt('.ad-card .ad-comment-content')
 C.check('人工批注评论内容显示', (threadText || '').includes('验收标准'))

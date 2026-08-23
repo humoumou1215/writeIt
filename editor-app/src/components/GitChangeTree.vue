@@ -29,7 +29,11 @@ const props = defineProps<{
   collapsed: Set<string>
 }>()
 
-const emit = defineEmits<{ open: [node: GitChangeNode] }>()
+const emit = defineEmits<{
+  open: [node: GitChangeNode]
+  /** M16：单文件右键/⋯ 菜单（目录行不参与） */
+  context: [e: MouseEvent, path: string]
+}>()
 
 const isDir = computed(() => props.node.kind === 'dir')
 const isCollapsed = computed(() => isDir.value && props.collapsed.has(props.node.path))
@@ -42,6 +46,10 @@ function toggle() {
   if (props.collapsed.has(props.node.path)) props.collapsed.delete(props.node.path)
   else props.collapsed.add(props.node.path)
 }
+
+function onContext(e: MouseEvent) {
+  if (!isDir.value) emit('context', e, props.node.path)
+}
 </script>
 
 <template>
@@ -51,17 +59,24 @@ function toggle() {
       :class="{ dir: node.kind === 'dir', 'ws-file': node.kind === 'file' }"
       :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
       @click="toggle"
+      @contextmenu.prevent="onContext"
     >
       <span class="arrow" :class="{ open: isDir && !isCollapsed }">
         <span v-if="isDir">▶</span>
       </span>
       <span class="ct-icon">{{ isDir ? '📁' : '📄' }}</span>
-      <span v-if="isDir" class="st" :class="stCls(node.status)">{{ node.status }}</span>
+      <span class="st" :class="stCls(node.status)">{{ node.status }}</span>
       <span class="name" :title="node.path">{{ isDir ? node.name : baseName(node.path) }}</span>
-      <span v-if="node.added >= 0" class="stats">
-        <span class="stat-add">+{{ node.added }}</span>
-        <span class="stat-del">−{{ node.deleted }}</span>
+      <span v-if="node.added + node.deleted > 0" class="stats">
+        <span v-if="node.added > 0" class="stat-add">+{{ node.added }}</span>
+        <span v-if="node.deleted > 0" class="stat-del">−{{ node.deleted }}</span>
       </span>
+      <button
+        v-if="!isDir"
+        class="ct-more"
+        title="更多操作"
+        @click.stop="emit('context', $event, node.path)"
+      >⋯</button>
     </div>
     <div v-if="isDir && !isCollapsed && node.children">
       <GitChangeTree
@@ -71,6 +86,7 @@ function toggle() {
         :depth="depth + 1"
         :collapsed="collapsed"
         @open="(n) => emit('open', n)"
+        @context="(e: MouseEvent, p: string) => emit('context', e, p)"
       />
     </div>
   </div>
@@ -151,6 +167,26 @@ function toggle() {
   flex-shrink: 0;
   display: flex;
   gap: 5px;
+}
+.ct-more {
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.ct-node:hover .ct-more {
+  opacity: 1;
+}
+.ct-more:hover {
+  background: var(--chrome-selected);
+  color: var(--chrome-on-background);
 }
 .stat-add {
   color: #2e7d32;

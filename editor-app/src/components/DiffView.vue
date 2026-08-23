@@ -7,7 +7,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { state } from '../state/store'
 import { closeGitDiff, discardFileDiff, discardHunkDiff } from '../editor/manager'
-import type { DiffHunk, DiffLine } from '../git'
+import { isDiffEditable, type DiffHunk, type DiffLine } from '../git'
 import RenderDiff from './RenderDiff.vue'
 
 const props = defineProps<{ tabId: string }>()
@@ -180,11 +180,11 @@ const emptyState = computed(() => {
 })
 
 // ---------- M11d：还原（仅工作区 diff 可还原） ----------
-const canDiscard = computed(() => diff.value?.base.from === null && !diff.value?.loading)
+const canDiscard = computed(() => diff.value && isDiffEditable(diff.value.base) && !diff.value.loading)
 </script>
 
 <template>
-  <div v-if="diff" class="git-diff-view">
+  <div v-if="diff" class="git-diff-view" :data-tab-id="tabId">
     <!-- 工具栏 -->
     <div class="diff-toolbar">
       <span class="diff-path" :title="diff.path">{{ diff.path }}</span>

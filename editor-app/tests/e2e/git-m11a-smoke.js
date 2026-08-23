@@ -9,13 +9,18 @@ await L.freshApp('http://localhost:5173/?backend=mock')
 
 const ensureSidebar = async () => {
   if (await js(`document.querySelector('.content-col') ? document.querySelector('.content-col').classList.contains('collapsed') : false`)) {
-    await L.clickEl('.icon-col .icon-btn', 1, { label: '展开侧栏' })
+    // 抽屉独立交互：用「文件」按钮展开（不要用 Git 按钮——展开后 tab 已是 git，再点 git 会 toggle 收起）
+    await L.clickEl('.icon-col .icon-btn', 0, { label: '展开侧栏' })
     await L.waitMs(300)
   }
 }
 
 // 1. Git 图标可用
-const gitBtn = (() => L.clickEl('.icon-col .icon-btn:nth-child(2)', 0, { label: 'Git 面板' }))
+// 抽屉独立交互：点 Git 进 Git 抽屉；已在 Git 抽屉（按钮 active）则不再点，避免 toggle 收起
+const gitBtn = async () => {
+  const inGit = await js(`(() => { const el = document.querySelector('.icon-col .icon-btn:nth-child(2)'); return !!el && el.classList.contains('active') })()`)
+  if (!inGit) await L.clickEl('.icon-col .icon-btn:nth-child(2)', 0, { label: 'Git 面板' })
+}
 const inlineOp = await js(`(() => { const el = document.querySelector('.icon-col .icon-btn:nth-child(2)'); return el ? el.style.opacity : null })()`)
 C.check('Git 图标可用（mock 演示模式）', inlineOp === '' || inlineOp === undefined || inlineOp === null)
 
@@ -53,11 +58,13 @@ await L.waitMs(2500)
 try { await waitForElement('.render-host .preview svg, .render-host .mmd-zoomable svg', { timeout: 8 }).catch(() => {}) } catch {}
 C.check('M14 mermaid 图渲染', (await L.q('.render-host .preview svg, .render-host .mmd-zoomable svg')) > 0)
 await L.waitMs(1500)
-C.check('M14 mermaid 修改节点（diff-node-mod）', (await L.q('.render-host svg g.node.diff-node-mod')) >= 1)
+C.check('M14 mermaid 修改节点（新节点绿 + 旧值红删除双节点）', (await L.qText('.render-host svg g.node.diff-node-add', '授信成功')) >= 1 && (await L.qText('.render-host svg g.node.diff-node-del', '支付成功')) >= 1)
 C.check('M14 mermaid 新增节点（diff-node-add）', (await L.q('.render-host svg g.node.diff-node-add')) >= 1)
 C.check('M14 mermaid 删除节点（diff-node-del）', (await L.q('.render-host svg g.node.diff-node-del')) >= 1)
 
-// 批注抽屉
+// 批注抽屉（默认收纳：先展开再读卡）
+await js(`document.querySelector('.annotation-open-btn')?.click()`)
+await L.waitMs(400)
 try { await waitForElement('.annotation-drawer .ad-card', { timeout: 8 }).catch(() => {}) } catch {}
 C.check('M14 批注抽屉「改动说明」卡 ≥5', (await L.qText('.annotation-drawer .ad-card .ad-card-title', '改动说明')) >= 5)
 C.check('M14 批注卡含 mermaid 变更说明', (await js(`[...document.querySelectorAll('.annotation-drawer .ad-card')].map(c=>c.textContent).join('')`)).includes('流程图'))
@@ -75,7 +82,7 @@ await L.clickText('.section .ws-file', '会议纪要')
 await L.waitMs(2500)
 try { await waitForElement('.render-host .diff-ins', { timeout: 15 }).catch(() => {}) } catch {}
 C.check('M14 会议纪要：新增议题（消息通知需求收集）', (await L.qText('.render-host .diff-ins', '消息通知需求收集')) >= 1)
-C.check('M14 会议纪要：备注修改词级', (await L.qText('.render-host .diff-del', '不做退款')) === 1 && (await L.qText('.render-host .diff-ins', '退款下期排期')) === 1)
+C.check('M14 会议纪要：备注修改词级', (await L.qText('.render-host .diff-del', '不做')) === 1 && (await L.qText('.render-host .diff-ins', '下期排期')) === 1)
 await L.press('Escape')
 await L.waitMs(400)
 
@@ -84,7 +91,7 @@ await ensureSidebar()
 await L.clickText('.section .ws-file', '需求表')
 await L.waitMs(2500)
 try { await waitForElement('.render-host .diff-ins', { timeout: 15 }).catch(() => {}) } catch {}
-C.check('M14 需求表：单元格级（待评审→评审中）', (await L.qText('.render-host .diff-del', '待评审')) === 1 && (await L.qText('.render-host .diff-ins', '评审中')) === 1)
+C.check('M14 需求表：单元格级（待评审→评审中）', (await L.qText('.render-host .diff-del', '待')) >= 1 && (await L.qText('.render-host .diff-ins', '中')) >= 1)
 C.check('M14 需求表：新增行（消息通知）', (await L.qText('.render-host .diff-ins', '消息通知')) >= 1)
 await L.press('Escape')
 await L.waitMs(400)

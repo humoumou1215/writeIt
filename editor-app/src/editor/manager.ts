@@ -12,6 +12,7 @@ import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
+import { contentHash } from '../git/hash'
 import { refPlugin, resolveRefs, refConfigCtx } from './ref'
 import type { RefConfig } from './ref/config'
 import { registerRefStringify } from './ref/stringify'
@@ -33,7 +34,11 @@ import { baseName } from '../fs/types'
 import { state, nextTabId, toast, confirmDialog } from '../state/store'
 import { settings, saveSettings } from '../state/settings'
 import type { Tab, ViewMode } from '../state/store'
-import { git, type DiffBase } from '../git'
+// 诊断埋点（D2）：操作轨迹 + 业务日志（tab/save/git/view）
+import { diag, diagEvent } from '../diagnostics/logger'
+// D2.5：渲染计数（markdownUpdated 节奏，探针取数）——直接依赖 monitor，避免 index↔manager 循环
+import { markEditorRender } from '../diagnostics/monitor'
+import { git, type DiffBase, isDiffEditable } from '../git'
 import { featureConfigs } from './features'
 import {
   tableEnhancePlugin,
@@ -74,6 +79,10 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+/** 诊断探针：当前已挂载的编辑器实例数（多标签健康） */
+export function getInstanceCount(): number {
+  return instances.size
+}
 
 // 调试钩子：查看各标签保存的滚动位置（切 tab 滚动保持排查用）
 ;(window as any).__scrollDbg = () => {
@@ -224,15 +233,22 @@ async function setViewMode(tabId: string, mode: ViewMode): Promise<void> {
 export async function toggleSourceMode(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return
-  await setViewMode(tabId, tab.viewMode === 'source' ? 'wysiwyg' : 'source')
+  const next = tab.viewMode === 'source' ? 'wysiwyg' : 'source'
+  diagEvent('view:source-toggle', { target: tab.path, data: { to: next } })
+  await setViewMode(tabId, next)
 }
 
 // ---------- M11：Git diff 视图 ----------
 
-/** 工作区文件内容（mock 演示仓库 = mockGit worktree；否则 = fs 磁盘） */
+/** 工作区文件内容（mock 演示仓库 = mockGit worktree；否则 = fs 磁盘）
+ * 文件不存在/已删除（如 D 状态或演示虚拟文件）→ 返回空串，不抛未处理异常 */
 async function readWorktreeFile(path: string): Promise<string> {
   const { isMockGit } = await import('../git')
-  return isMockGit() ? git.showFile(path, 'WORKTREE') : fs.readFile(path)
+  try {
+    return isMockGit() ? await git.showFile(path, 'WORKTREE') : await fs.readFile(path)
+  } catch {
+    return ''
+  }
 }
 
 /** 打开某文件的 Git diff（工作区 vs HEAD / commit vs 父提交 / a..b）。
@@ -242,8 +258,10 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
     toast('Git 功能仅在桌面应用中可用', 'info')
     return
   }
-  // 该文件已打开且有未保存改动 → 先保存（保证磁盘 == 编辑器所见）
-  const tab = state.tabs.find((t) => t.path === path)
+  diagEvent('git:open-diff', { target: path, data: { base } })
+  // M16：git 标签（kind='git'）与文件树打开的 editor 标签互不占用。
+  // 该 git 标签已有未保存改动 → 先保存（保证磁盘 == 编辑器所见）
+  let tab = state.tabs.find((t) => t.path === path && t.kind === 'git')
   if (tab) {
     if (tab.dirty) {
       const ok = await saveTab(tab.id)
@@ -251,13 +269,20 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
     }
     activateTab(tab.id)
   } else {
-    await openTab(path, await readWorktreeFile(path))
+    await openTab(path, await readWorktreeFile(path), 'git')
+    tab = state.tabs.find((x) => x.path === path && x.kind === 'git') ?? null
   }
-  const t = state.tabs.find((x) => x.path === path)
+  const t = tab ?? state.tabs.find((x) => x.path === path)
   if (!t) return
   await waitForInstance(t.id)
-  // base 相同且有数据 → 直接切视图
-  if (t.diff && t.diff.base.from === base.from && t.diff.base.to === base.to && !t.diff.loading) {
+  // base 相同且有数据 → 直接切视图（range 额外比对 from/to）；M18：切回时轻量复核内容指纹
+  const sameBase =
+    t.diff &&
+    t.diff.base.kind === base.kind &&
+    (base.kind !== 'range' || (t.diff.base.kind === 'range' && t.diff.base.from === base.from && t.diff.base.to === base.to)) &&
+    !t.diff.loading
+  if (sameBase) {
+    await recheckDiffFreshness(t.id)
     await setViewMode(t.id, 'diff')
     return
   }
@@ -273,10 +298,11 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
     renderData: null,
     renderLoading: false,
     renderError: null,
+    scrollTop: 0,
   }
   await setViewMode(t.id, 'diff')
   try {
-    const res = await git.diffFile(path, base.from, base.to)
+    const res = await git.diffFile(path, base)
     const cur = state.tabs.find((x) => x.id === t.id)
     if (cur && cur.diff) {
       cur.diff.hunks = res.hunks
@@ -285,14 +311,17 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
       cur.diff.exists = res.exists
       cur.diff.loading = false
     }
+    diagEvent('git:diff-loaded', { target: path, ok: true, data: { added: res.added, deleted: res.deleted } })
   } catch (e) {
     toast(`加载 diff 失败: ${(e as Error).message}`, 'error')
+    diag('error', 'git-diff', `加载 diff 失败: ${(e as Error).message}`)
+    diagEvent('git:diff-loaded', { target: path, ok: false, data: { error: (e as Error).message } })
     const cur = state.tabs.find((x) => x.id === t.id)
     if (cur && cur.diff) cur.diff.loading = false
   }
 }
 
-/** M11c：懒加载渲染模式所需的两版本内容（旧 = git show；新 = 工作区文件或 git show） */
+/** M11c/M16：懒加载渲染模式所需的两版本内容（随 DiffBase kind 决定基准） */
 export async function loadRenderData(tabId: string): Promise<void> {
   const t = state.tabs.find((x) => x.id === tabId)
   const d = t?.diff
@@ -300,14 +329,50 @@ export async function loadRenderData(tabId: string): Promise<void> {
   d.renderLoading = true
   d.renderError = null
   try {
-    // 新版本：工作区 → 磁盘文件（mock 演示仓库 = mockGit worktree）；commit/范围 → git show to
-    const newMd =
-      d.base.from === null ? await readWorktreeFile(d.path) : await git.showFile(d.path, d.base.to)
-    // 旧版本：工作区 vs HEAD → HEAD；commit vs parent → 父提交；a..b → a
-    const oldRev = d.base.from ?? 'HEAD'
-    const oldMd = await git.showFile(d.path, oldRev)
+    // 新版本
+    let newMd: string
+    if (d.base.kind === 'worktree' || d.base.kind === 'unstaged') {
+      newMd = await readWorktreeFile(d.path)
+    } else if (d.base.kind === 'staged') {
+      // index blob：git show :path（rev='' 时后端拼成 `:path`）
+      newMd = await git.showFile(d.path, '')
+    } else {
+      // range：提交中新增/删除的文件在端点可能不存在（git show fatal）→ 降级为空文档
+      try {
+        newMd = await git.showFile(d.path, d.base.to)
+      } catch {
+        newMd = ''
+      }
+    }
+    // 旧版本
+    let oldMd: string
+    if (d.base.kind === 'unstaged') {
+      // 旧 = index blob；未跟踪新文件 → 旧版本为空文档
+      try {
+        oldMd = await git.showFile(d.path, '')
+      } catch {
+        oldMd = ''
+      }
+    } else if (d.base.kind === 'staged' || d.base.kind === 'worktree') {
+      // 新文件（A）不在 HEAD：git show HEAD:path 报 fatal → 旧版本降级为空文档
+      try {
+        oldMd = await git.showFile(d.path, 'HEAD')
+      } catch {
+        oldMd = ''
+      }
+    } else {
+      try {
+        oldMd = await git.showFile(d.path, d.base.from)
+      } catch {
+        oldMd = ''
+      }
+    }
     const cur = state.tabs.find((x) => x.id === tabId)
-    if (cur?.diff) cur.diff.renderData = { oldMd, newMd }
+    if (cur?.diff) {
+      cur.diff.renderData = { oldMd, newMd }
+      // M18 §4.6：内容指纹（磁盘外部变化自动刷新依据；hash 零额外成本）
+      cur.diff.freshToken = { oldHash: contentHash(oldMd), nextHash: contentHash(newMd) }
+    }
   } catch (e) {
     toast(`加载渲染数据失败: ${(e as Error).message}`, 'error')
     const cur = state.tabs.find((x) => x.id === tabId)
@@ -318,8 +383,43 @@ export async function loadRenderData(tabId: string): Promise<void> {
   }
 }
 
-/** 渲染模式引用 chip 点击打开目标（复用正文 handleOpenRef 逻辑） */
-export function buildRenderRefCfg(): import('./ref/config').RefConfig {
+/** M18 §4.6 新鲜度复核：进入 diff 视图/切回标签时轻量检查新版本内容指纹，
+ *  磁盘外部变化（应用外 git 提交/外部编辑器改文件）→ 自动重算 + toast */
+export async function recheckDiffFreshness(tabId: string): Promise<boolean> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  const d = tab?.diff
+  if (!d || !d.renderData || !d.freshToken || d.loading) return false
+  try {
+    let newMd: string
+    if (d.base.kind === 'worktree' || d.base.kind === 'unstaged') {
+      newMd = await readWorktreeFile(d.path)
+    } else if (d.base.kind === 'staged') {
+      newMd = await git.showFile(d.path, '')
+    } else {
+      try {
+        newMd = await git.showFile(d.path, d.base.to)
+      } catch {
+        return false
+      }
+    }
+    if (contentHash(newMd) === d.freshToken.nextHash) return false
+    // 失效：清空渲染数据强制重算 + 刷新 hunks
+    const cur = state.tabs.find((x) => x.id === tabId)
+    if (cur?.diff) {
+      cur.diff.renderData = null
+      cur.diff.freshToken = null
+      cur.diff.hunks = []
+    }
+    toast('内容已变化，diff 已刷新', 'info')
+    void loadRenderData(tabId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 渲染模式引用 chip 点击打开目标（复用正文 handleOpenRef 逻辑）；hostPath 供嵌入链环检测链根 */
+export function buildRenderRefCfg(hostPath?: string | null): import('./ref/config').RefConfig {
   return {
     fs: {
       readFile: async (p: string) => readWorktreeFile(p),
@@ -327,6 +427,7 @@ export function buildRenderRefCfg(): import('./ref/config').RefConfig {
       writeFile: (p: string, c: string) => fs.writeFile(p, c),
     },
     toast,
+    hostPath: hostPath ?? null,
     openFile: (path, fragment) => {
       void openRefTarget(path, fragment)
     },
@@ -350,6 +451,12 @@ export async function openRefTarget(path: string, fragment: string | null): Prom
 
 /** 退出 diff 视图（回到 wysiwyg；diff 数据保留） */
 export async function closeGitDiff(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  // M16：git 标签（SCM/Git 改动打开的独立标签）→ 关闭标签本身；editor 标签 → 回到编辑器视图
+  if (tab?.kind === 'git' && tab.viewMode === 'diff') {
+    await closeTab(tab.id)
+    return
+  }
   await setViewMode(tabId, 'wysiwyg')
 }
 
@@ -364,7 +471,7 @@ export async function openActiveGitDiff(): Promise<void> {
     toast('当前没有打开的文件', 'info')
     return
   }
-  await openGitDiff(tab.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+  await openGitDiff(tab.path, { kind: 'worktree', label: '工作区 vs HEAD' })
 }
 
 /** Git 面板刷新钩子（还原/切换分支后调用） */
@@ -430,38 +537,41 @@ async function reloadTabFromDisk(tabId: string): Promise<void> {
   }
 }
 
-/** 还原整文件（仅工作区 diff；危险操作带确认） */
+/** 还原整文件（仅 Changes 区语义：worktree ← index；危险操作带确认） */
 export async function discardFileDiff(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   const d = tab?.diff
-  if (!d || d.base.from !== null || !d.exists) return
+  if (!d || !isDiffEditable(d.base) || !d.exists) return
   const ok = await confirmDialog({
     title: '还原整个文件？',
-    message: `将丢弃「${d.path}」的全部未提交改动（${d.added} 增 / ${d.deleted} 删），恢复到 HEAD 版本。\n\n此操作不可撤销。`,
+    message: `将丢弃「${d.path}」的全部未提交改动（${d.added} 增 / ${d.deleted} 删），恢复到已暂存/HEAD 版本。\n\n此操作不可撤销。`,
     confirmText: '还原文件',
     danger: true,
   })
   if (!ok) return
   try {
     await git.discardFile(d.path)
-    // 该文件的打开标签同步为磁盘内容；diff 视图关闭（内容已变）
+    // 该文件的打开标签同步为磁盘内容；git 标签（SCM 打开的独立标签）→ 关闭
     if (state.tabs.find((t) => t.path === d.path)) {
       await reloadTabFromDisk(tab.id)
-      // 退出 diff 视图（内容已刷新，回到编辑器）
-      await setViewMode(tab.id, 'wysiwyg')
+      if (tab.kind === 'git') {
+        await closeTab(tab.id)
+      } else {
+        await setViewMode(tab.id, 'wysiwyg')
+      }
     }
     refreshGitPanel()
-    toast('已还原到 HEAD 版本', 'success')
+    toast('已还原文件改动', 'success')
   } catch (e) {
     toast(`还原失败: ${(e as Error).message}`, 'error')
   }
 }
 
-/** 还原单个 hunk（仅工作区 diff） */
+/** 还原单个 hunk（仅 Changes 区，index..worktree 层） */
 export async function discardHunkDiff(tabId: string, hunkIdx: number): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   const d = tab?.diff
-  if (!d || d.base.from !== null) return
+  if (!d || !isDiffEditable(d.base)) return
   const hunk = d.hunks[hunkIdx]
   if (!hunk) return
   const ok = await confirmDialog({
@@ -475,7 +585,11 @@ export async function discardHunkDiff(tabId: string, hunkIdx: number): Promise<v
     await git.discardHunk(d.path, hunkIdx)
     if (state.tabs.find((t) => t.path === d.path)) {
       await reloadTabFromDisk(tab.id)
-      await setViewMode(tab.id, 'wysiwyg')
+      if (tab.kind === 'git') {
+        await closeTab(tab.id)
+      } else {
+        await setViewMode(tab.id, 'wysiwyg')
+      }
     }
     refreshGitPanel()
     toast('已还原该处改动', 'success')
@@ -1350,9 +1464,9 @@ async function collectAllRanges(
 
 // ---------- 打开 / 激活 ----------
 
-export async function openTab(path: string, contentOverride?: string): Promise<void> {
-  // 已在标签中 → 直接激活
-  const existing = state.tabs.find((t) => t.path === path)
+export async function openTab(path: string, contentOverride?: string, kind: 'editor' | 'git' = 'editor'): Promise<void> {
+  // 已在标签中（同路径 + 同来源）→ 直接激活（M16：git 与 editor 标签互不占用）
+  const existing = state.tabs.find((t) => t.path === path && t.kind === kind)
   if (existing) {
     activateTab(existing.id)
     return
@@ -1363,6 +1477,7 @@ export async function openTab(path: string, contentOverride?: string): Promise<v
     content = contentOverride ?? (await fs.readFile(path))
   } catch (e) {
     toast(`打开失败: ${(e as Error).message}`, 'error')
+    diag('error', 'tab', `打开失败 ${path}: ${(e as Error).message}`)
     return
   }
 
@@ -1370,10 +1485,14 @@ export async function openTab(path: string, contentOverride?: string): Promise<v
   // 打开新标签前保存旧标签滚动（DOM 未变，scrollTop 有效）
   if (prevId) saveTabScroll(prevId)
 
+  diagEvent('tab:open', { target: path })
+  diag('info', 'tab', `打开 ${path}`)
+
   const tab: Tab = {
     id: nextTabId(),
     path,
     name: baseName(path),
+    kind,
     savedContent: content,
     dirty: false,
     lastModified: Date.now(),
@@ -1394,6 +1513,10 @@ export function activateTab(id: string) {
   const prevId = state.activeTabId
   if (prevId && prevId !== id) saveTabScroll(prevId)
   state.activeTabId = id
+  if (prevId && prevId !== id) {
+    const t = state.tabs.find((x) => x.id === id)
+    diagEvent('tab:activate', { target: t?.path ?? id })
+  }
   // M6：批注卡上下文跟随活动标签（切标签后 Ctrl+R/批注卡作用于当前编辑器）
   const inst0 = instances.get(id)
   if (inst0) setAnnotationCardContext(id, inst0.crepe.editor)
@@ -1420,9 +1543,17 @@ export function activateTab(id: string) {
 
 /** 保存标签当前滚动位置（须在容器仍可见时调用——切换 activeTabId 前；源码模式存 textarea，其余存 pane） */
 export function saveTabScroll(tabId: string): void {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  // M16：diff 视图 → 保存 diff 滚动容器位置（.git-diff-view 的滚动块）
+  if (tab?.viewMode === 'diff' && tab.diff) {
+    const el = document.querySelector<HTMLElement>(`.git-diff-view[data-tab-id="${tabId}"] .diff-body`)
+    if (el && el.style.display !== 'none') {
+      tab.diff.scrollTop = el.scrollTop
+    }
+    return
+  }
   const inst = instances.get(tabId)
   if (!inst) return
-  const tab = state.tabs.find((t) => t.id === tabId)
   if (tab?.viewMode === 'source') {
     // 源码模式：textarea 自身滚动（pane overflow hidden，无滚动）
     if (inst.srcTa) inst.scrollTop = inst.srcTa.scrollTop
@@ -1436,10 +1567,16 @@ export function saveTabScroll(tabId: string): void {
  *  scrollTop 会被 clamp 到 0；且代码块/mermaid 等懒加载（及 refsFooter）会在显示后小几百 ms 内重排并把
  *  scrollTop 重置。因此逐帧“等待内容可滚动（scrollHeight>clientHeight）→ 对齐 saved”，直到达到或窗口超时。 */
 export function restoreTabScroll(tabId: string): void {
+  const tab = state.tabs.find((t) => t.id === tabId)
+  // M16：diff 标签 → 恢复 diff 滚动（内容渲染/懒加载后逐帧对齐）
+  if (tab?.viewMode === 'diff' && tab.diff && tab.diff.scrollTop > 0) {
+    const saved = tab.diff.scrollTop
+    restoreDiffScroll(tabId, saved)
+    return
+  }
   const inst = instances.get(tabId)
   if (!inst || inst.scrollTop <= 0) return
   const saved = inst.scrollTop
-  const tab = state.tabs.find((t) => t.id === tabId)
   if (tab?.viewMode === 'source') {
     if (inst.srcTa) inst.srcTa.scrollTop = saved
     return
@@ -1463,6 +1600,36 @@ export function restoreTabScroll(tabId: string): void {
     requestAnimationFrame(tryAlign)
   }
   requestAnimationFrame(tryAlign)
+}
+
+/** M16：diff 标签滚动恢复（渲染内容/懒加载完成后逐帧对齐；文本模式可立即对齐） */
+function restoreDiffScroll(tabId: string, saved: number): void {
+  const frame = () => {
+    const el = document.querySelector<HTMLElement>(`.git-diff-view[data-tab-id="${tabId}"] .diff-body`)
+    if (!el || el.style.display === 'none') return
+    if (el.scrollHeight <= el.clientHeight) {
+      // 内容未就绪（显示中/懒加载）→ 下一帧再试（最多 ~2s）
+      const cur = state.tabs.find((t) => t.id === tabId)
+      if (cur?.diff && cur.diff.scrollTop === saved) {
+        let n = 0
+        const wait = () => {
+          if (n++ > 120) return
+          const el2 = document.querySelector<HTMLElement>(`.git-diff-view[data-tab-id="${tabId}"] .diff-body`)
+          if (!el2 || el2.scrollHeight > el2.clientHeight) {
+            const target = Math.min(saved, el2.scrollHeight - el2.clientHeight)
+            el2.scrollTop = target
+            return
+          }
+          requestAnimationFrame(wait)
+        }
+        requestAnimationFrame(wait)
+      }
+      return
+    }
+    const target = Math.min(saved, el.scrollHeight - el.clientHeight)
+    el.scrollTop = target
+  }
+  requestAnimationFrame(frame)
 }
 
 // ---------- M16：顶部栏槽位（Crepe topbar 横贯整行，大纲/正文都在其下） ----------
@@ -1649,6 +1816,19 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     },
     getTreeVersion: () => state.treeVersion,
     templateService,
+    // 嵌入链判定的链根（环检测含宿主的用例）；Tab 关闭/重命名后重开即重判
+    hostPath: tab.path,
+    // 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
+    // 在工作区内 → 相对路径；无根路径/工作区外 → 文件名（Obsidian 式全库匹配）
+    resolveExternalPath: (absPath) => {
+      const root = fs.rootPath?.()
+      if (root) {
+        const normRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+        const normAbs = absPath.replace(/\\/g, '/')
+        if (normAbs.startsWith(normRoot + '/')) return normAbs.slice(normRoot.length + 1)
+      }
+      return baseName(absPath)
+    },
   }
   /** 引用 chip 点击 → 解析真实路径 → 打开标签 → #片段滚动（原 registerOpenRefHandler 逻辑） */
   async function handleOpenRef(path: string, fragment: string | null) {
@@ -1723,7 +1903,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 
   // 引用/被引用 底部展示区（非编辑）：置于正文（.milkdown）之后，随文档滚动
   inst.refsFooter = createRefFooter(container, (path) => {
-    void openTab(path)
+    // 引用/被引用 chip 点击：复用正文 chip 的解析逻辑（文档内写法 → 真实路径补扩展名 / Obsidian 基线名匹配）
+    void handleOpenRef(path, null)
   })
   syncRefsFooterVisibility(tabId)
   void refreshRefsFooter(tabId)
@@ -1755,15 +1936,50 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   notifyEditorMounted(tabId)
   // §6.7：真实用户输入（键盘/粘贴/IME）→ 记录时间戳。
   // 用 DOM input 事件而非 markdownUpdated（校验空事务/物化等程序化 dispatch 不触发 input）
-  const onInput = () => {
+  // D2.5b：编辑会话聚合埋点 —— 连续输入（间隔 ≤3s）记为一个会话，暂停时记一条 editor:edit
+  //   （逐键埋点噪声大且无意义；会话粒度给出「在哪个文件、编了多久、改了多少」的现场证据）
+  let burstEdits = 0
+  let burstChars = 0
+  let burstStart = 0
+  let burstTimer: ReturnType<typeof setTimeout> | null = null
+  const flushEditBurst = () => {
+    if (burstTimer) {
+      clearTimeout(burstTimer)
+      burstTimer = null
+    }
+    if (burstEdits > 0) {
+      const t = state.tabs.find((x) => x.id === tabId)
+      diagEvent('editor:edit', {
+        target: t?.path,
+        data: {
+          edits: burstEdits,
+          chars: burstChars,
+          secs: Math.max(1, Math.round((Date.now() - burstStart) / 1000)),
+        },
+      })
+      burstEdits = 0
+      burstChars = 0
+      burstStart = 0
+    }
+  }
+  const onInput = (e: Event) => {
     const t = state.tabs.find((x) => x.id === tabId)
     if (t) t.userEditedAt = Date.now()
+    // 会话聚合（输入事件计数 + 键入字符数；IME 组合/粘贴按事件粒度计）
+    if (burstEdits === 0) burstStart = Date.now()
+    burstEdits++
+    const data = (e as InputEvent).data
+    burstChars += typeof data === 'string' ? data.length : 1
+    if (burstTimer) clearTimeout(burstTimer)
+    burstTimer = setTimeout(flushEditBurst, 3000)
   }
   container.addEventListener('input', onInput)
 
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, md) => {
       if (inst.suppressing) return
+      // D2.5：渲染计数（每次 doc 内容更新 → 探针统计节奏）
+      markEditorRender()
       const t = state.tabs.find((x) => x.id === tabId)
       if (!t) return
       // §6.7 脏检测双条件：markdown 变化 || 可编辑嵌入内容 ≠ 保存时快照
@@ -1912,9 +2128,11 @@ export async function saveTab(tabId: string): Promise<boolean> {
   const inst = instances.get(tabId)
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return false
+  const t0 = performance.now()
   if (!inst) {
     // 容器尚未挂载（极早期）——直接写 savedContent
     tab.dirty = false
+    diagEvent('save', { target: tab.path, ok: true, ms: performance.now() - t0, data: { early: true } })
     return true
   }
   // M7：源码模式保存 → 先把 textarea 最新内容解析回 doc（保持源码模式，保存后继续编辑源码）
@@ -1935,7 +2153,6 @@ export async function saveTab(tabId: string): Promise<boolean> {
     if (!ok) return false
   }
   const md = inst.crepe.getMarkdown()
-  // IME 防御：组合输入未提交时先强制上屏（blur→focus 触发 compositionend），
   // 否则组合文本不在 doc 里——保存/写回都会丢用户输入
   try {
     const view = inst.crepe.editor.action((ctx) => ctx.get(editorViewCtx))
@@ -1953,6 +2170,8 @@ export async function saveTab(tabId: string): Promise<boolean> {
     await fs.writeFile(tab.path, md)
   } catch (e) {
     toast(`保存失败: ${(e as Error).message}`, 'error')
+    diag('error', 'save', `保存失败 ${tab.path}: ${(e as Error).message}`)
+    diagEvent('save', { target: tab.path, ok: false, ms: performance.now() - t0, data: { error: (e as Error).message } })
     return false
   }
   inst.suppressing = true
@@ -1992,6 +2211,7 @@ export async function saveTab(tabId: string): Promise<boolean> {
   const isTemplatePath =
     tab.path === '.template' || tab.path.startsWith('.template/')
   if (isTemplatePath) void templateService.rescan()
+  diagEvent('save', { target: tab.path, ok: true, ms: performance.now() - t0 })
   return true
 }
 
@@ -2019,6 +2239,7 @@ export async function closeTab(tabId: string): Promise<void> {
   const idx = state.tabs.findIndex((t) => t.id === tabId)
   state.tabs.splice(idx, 1)
   unmountEditor(tabId)
+  diagEvent('tab:close', { target: tab.path })
   if (state.activeTabId === tabId) {
     const next = state.tabs[Math.min(idx, state.tabs.length - 1)]
     state.activeTabId = next ? next.id : null

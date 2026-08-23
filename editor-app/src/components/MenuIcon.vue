@@ -12,6 +12,7 @@
 
 export type MenuIconName =
   | 'files' | 'git' | 'settings' | 'shortcuts' | 'export' | 'search'
+  | 'diagnostics'
   | 'folder' | 'file' | 'fileNew' | 'dirNew'
   | 'refresh' | 'locate' | 'pin' | 'rename' | 'chevron'
 export type MenuIconSet = 'line' | 'soft' | 'gradient'
@@ -80,6 +81,11 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
         <g class="mi-scan">
           <circle cx="10.2" cy="10.2" r="6.1" />
           <path d="M14.7 14.7 20 20" />
+        </g>
+      </template>
+      <template v-else-if="name === 'diagnostics'">
+        <g class="mi-pulse">
+          <path class="mi-ecg" d="M2.6 12h3.6l2.6-7.4 5.2 14.8 2.6-7.4h4.8" />
         </g>
       </template>
       <!-- 文件树 -->
@@ -165,6 +171,11 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
           <circle class="mi-pri" cx="10.2" cy="10.2" r="6.1" />
           <circle cx="10.2" cy="10.2" r="2.5" fill="color-mix(in srgb, var(--chrome-background) 70%, transparent)" />
           <path class="mi-pri-stroke" d="M14.7 14.7 20 20" />
+        </g>
+      </template>
+      <template v-else-if="name === 'diagnostics'">
+        <g class="mi-pulse">
+          <path class="mi-pri-stroke" d="M2.6 12h3.6l2.6-7.4 5.2 14.8 2.6-7.4h4.8" />
         </g>
       </template>
       <!-- 文件树 -->
@@ -258,6 +269,11 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
           <circle :fill="`url(#wi-g-search)`" cx="10.2" cy="10.2" r="6.1" />
           <circle cx="10.2" cy="10.2" r="2.5" fill="rgba(255,255,255,.9)" />
           <path :stroke="`url(#wi-g-search)`" stroke-width="2.4" stroke-linecap="round" d="M14.7 14.7 20 20" />
+        </g>
+      </template>
+      <template v-else-if="name === 'diagnostics'">
+        <g class="mi-pulse">
+          <path :stroke="`url(#wi-g-diagnostics)`" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" d="M2.6 12h3.6l2.6-7.4 5.2 14.8 2.6-7.4h4.8" />
         </g>
       </template>
       <!-- 文件树 -->
@@ -392,12 +408,20 @@ const PLUS_BOX = 'M14.4 14.6h4.2M16.5 12.5v4.2'
   0%, 100% { opacity: 0.9; }
   50% { opacity: 0.15; }
 }
+@keyframes mi-heartbeat {
+  0%, 100% { transform: scale(1); }
+  25% { transform: scale(1.14); }
+  40% { transform: scale(1); }
+  60% { transform: scale(1.1); }
+  75% { transform: scale(1); }
+}
 
 /* 菜单栏五件套：悬停时动 */
 :global(.icon-btn:hover .mi-files .mi-g) { animation: mi-nod 1.3s ease-in-out 2; }
 :global(.icon-btn:hover .mi-settings .mi-g) { animation: mi-spin 1.8s linear infinite; }
 :global(.icon-btn:hover .mi-git .mi-flow) { animation: mi-flow 1.2s linear infinite; }
 :global(.icon-btn:hover .mi-git .mi-flow-rev) { animation: mi-flow-rev-kf 1.8s linear infinite; }
+:global(.icon-btn:hover .mi-diagnostics .mi-pulse) { animation: mi-heartbeat 1.4s ease-in-out 2; }
 :global(.icon-btn:hover .mi-shortcuts .mi-keys) { animation: mi-key 1.3s ease-in-out infinite; }
 :global(.icon-btn:hover .mi-export .mi-arrow) { animation: mi-pop 0.9s ease-in-out infinite; }
 :global(.icon-btn:hover .mi-search .mi-scan) { animation: mi-pan 1.4s ease-in-out infinite; }

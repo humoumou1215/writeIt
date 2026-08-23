@@ -135,6 +135,19 @@ export interface AppSettings {
   outlineAutoFit: boolean
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
+
+  // ---------- 诊断（Diagnostics）----------
+  /** 诊断功能总开关（关闭后入口隐藏） */
+  diagEnabled: boolean
+  /** 全局异常自动 toast 提示 */
+  diagAutoPrompt: boolean
+  /** 操作轨迹记录（timeline） */
+  diagTrackTimeline: boolean
+  /* —— 生成弹窗的「上次选择」记忆（默认全开，用户可取消）—— */
+  diagIncludeSnapshot: boolean // 截图
+  diagIncludeDom: boolean // DOM 快照
+  diagIncludeDoc: boolean // 文档内容
+  diagIncludePaths: boolean // 完整路径（false → basename 脱敏）
 }
 
 const defaultSettings: AppSettings = {
@@ -152,6 +165,14 @@ const defaultSettings: AppSettings = {
   outlineOpen: true,
   outlineAutoFit: true,
   shortcuts: { ...defaultShortcuts },
+  // 诊断
+  diagEnabled: true,
+  diagAutoPrompt: true,
+  diagTrackTimeline: true,
+  diagIncludeSnapshot: true,
+  diagIncludeDom: true,
+  diagIncludeDoc: true,
+  diagIncludePaths: true,
 }
 
 export const settings = reactive<AppSettings>(loadSettings())

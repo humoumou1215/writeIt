@@ -37,6 +37,7 @@ function onContextMenu(e: MouseEvent, id: string) {
       @contextmenu="onContextMenu($event, tab.id)"
     >
       <span class="dot" :class="{ dirty: tab.dirty }"></span>
+      <span v-if="tab.kind === 'git'" class="git-badge" title="Git SCM 打开">🔀</span>
       <span class="tab-name">{{ tab.name }}</span>
       <button
         class="close"
@@ -96,6 +97,11 @@ function onContextMenu(e: MouseEvent, id: string) {
 }
 .dot.dirty {
   background: var(--chrome-primary);
+}
+.git-badge {
+  font-size: 11px;
+  color: var(--chrome-primary);
+  flex-shrink: 0;
 }
 .tab-name {
   overflow: hidden;

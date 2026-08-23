@@ -19,6 +19,8 @@ import { computeDocDiff } from '@milkdown/plugin-diff'
 import type { Node } from '@milkdown/kit/prose/model'
 import { Decoration } from '@milkdown/kit/prose/view'
 import { diffMermaid, type MermaidNodeDiff } from './mermaid-diff'
+import { pairFences } from './diff/fence-pair'
+import { contentHash } from '../git/hash'
 
 export interface DiffNote {
   id: string
@@ -33,8 +35,7 @@ export interface DiffNote {
   to: number
 }
 
-let noteSeq = 0
-function makeNote(
+export function makeNote(
   kind: DiffNote['kind'],
   text: string,
   del: string | undefined,
@@ -44,7 +45,14 @@ function makeNote(
   to: number
 ): DiffNote {
   const clip = (s: string | undefined, max = 48) => (s && s.length > max ? s.slice(0, max) + '…' : s)
-  return { id: `dn-${++noteSeq}`, kind, text, del: clip(del), add: clip(add), anchor, from, to }
+  // M18 §4.2/F22：id 内容派生（scopePath+kind+op+摘要 hash）——重算稳定，批注激活态/滚动保持
+  const id = `dn-${contentHash(`diff|${kind}|${text}|${clip(del) ?? ''}|${clip(add) ?? ''}`)}`
+  return { id, kind, text, del: clip(del), add: clip(add), anchor, from, to }
+}
+
+/** M18 §4.2：装饰携带 data-dnote（record.id）——连线/定位/批注卡锚定的身份接口 */
+export function dnote(recordId: string): Record<string, string> {
+  return { 'data-dnote': recordId }
 }
 
 const SNAP = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 48)
@@ -117,6 +125,11 @@ export interface BuildDiffDecoResult {
   notes: DiffNote[]
 }
 
+export interface BuildDiffDecoOptions {
+  /** 位置偏移（嵌入块内容 diff：把源文档坐标映射到宿主文档该块的 content 区） */
+  offset?: number
+}
+
 interface DelInfo {
   fromA: number
   toA: number
@@ -126,9 +139,10 @@ interface DelInfo {
   paired: boolean
 }
 
-export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoResult {
+export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDiffDecoOptions): BuildDiffDecoResult {
   const decorations: Decoration[] = []
   const notes: DiffNote[] = []
+  const off = opts?.offset ?? 0
 
   let changes: ReturnType<typeof computeDocDiff>
   try {
@@ -160,9 +174,9 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoR
     // 语义规则 3：file_block 卡片不标文本；纯删除 → 红色占位行 + 批注卡
     const delIsEmbed = hasDel && touches(oldDoc, ch.fromA, ch.toA, (n) => n.type.name === 'file_block')
     const insIsEmbed = hasIns && touches(newDoc, ch.fromB, ch.toB, (n) => n.type.name === 'file_block')
-    if (delIsEmbed || insIsEmbed) {
+        if (delIsEmbed || insIsEmbed) {
       if (hasDel && !hasIns && delIsEmbed) {
-        embedDeleteDecoration(oldDoc, newDoc, ch.fromA, ch.fromB, decorations, notes)
+        embedDeleteDecoration(oldDoc, newDoc, ch.fromA, ch.fromB, decorations, notes, off)
       }
       continue
     }
@@ -188,21 +202,18 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoR
     if (insBlock) {
       // 块级新增：标记范围内最外层完整包含的块（不回描内层，避免表格整块假绿）
       let addedNode = false
+      // M18：先产批注卡（内容派生 id）再建装饰（携带 data-dnote）——装饰 = record 投影
+      let insNote: DiffNote | null = null
       newDoc.nodesBetween(ch.fromB, ch.toB, (node, pos) => {
         const end = pos + node.nodeSize
         if (!node.isBlock || pos < ch.fromB || end > ch.toB) return true
         if (node.type.name === 'paragraph' && node.content.size === 0) return true
-        decorations.push(Decoration.node(pos, end, { class: 'diff-ins diff-ins-block' }))
-        addedNode = true
-        return false
-      })
-      if (addedNode) {
-        if (inTable && hasDel) {
-          notes.push(makeNote('table', '修改了表格单元格', delText, addText, SNAP(addText), ch.fromB, ch.toB))
-        } else {
-          const addLines = addText.split('\n').filter((l) => l.trim())
-          notes.push(
-            makeNote(
+        if (!insNote) {
+          if (inTable && hasDel) {
+            insNote = makeNote('table', '修改了表格单元格', delText, addText, SNAP(addText), ch.fromB + off, ch.toB + off)
+          } else {
+            const addLines = addText.split('\n').filter((l) => l.trim())
+            insNote = makeNote(
               'block',
               hasDel
                 ? `修改了此段${addLines.length > 1 ? `（${addLines.length} 行）` : ''}`
@@ -210,36 +221,43 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoR
               delText || undefined,
               addText,
               SNAP(addText),
-              ch.fromB,
-              ch.toB
+              ch.fromB + off,
+              ch.toB + off
             )
-          )
+          }
+          notes.push(insNote)
         }
+        decorations.push(Decoration.node(pos + off, end + off, { class: 'diff-ins diff-ins-block', ...dnote(insNote.id) }))
+        addedNode = true
+        return false
+      })
+      if (!addedNode && !insNote) {
+        // 空块级新增（如空段落删除后被替换）：无装饰无卡（保持现状——current 也有此行为）
       }
     } else if (!hasDel) {
       // 纯行内新增
       if (addText.trim()) {
-        decorations.push(Decoration.inline(ch.fromB, ch.toB, { class: 'diff-ins' }))
-        notes.push(
-          makeNote(
-            inTable ? 'table' : 'word',
-            inTable ? '修改了表格单元格' : `新增"${SNAP(addText)}"`,
-            undefined,
-            addText,
-            SNAP(addText),
-            ch.fromB,
-            ch.toB
-          )
+        const note = makeNote(
+          inTable ? 'table' : 'word',
+          inTable ? '修改了表格单元格' : `新增"${SNAP(addText)}"`,
+          undefined,
+          addText,
+          SNAP(addText),
+          ch.fromB + off,
+          ch.toB + off
         )
+        notes.push(note)
+        decorations.push(Decoration.inline(ch.fromB + off, ch.toB + off, { class: 'diff-ins', ...dnote(note.id) }))
       }
     } else {
       // 修改对（行内）：新文本绿（旧文本删除侧插回）
       if (addText.trim()) {
-        decorations.push(Decoration.inline(ch.fromB, ch.toB, { class: 'diff-ins' }))
         const oldInline = oldDoc.textBetween(ch.fromA, ch.toA, '', '')
-        if (oldInline.trim()) {
-          notes.push(makeNote('word', `修改"${SNAP(oldInline)}"为"${SNAP(addText)}"`, oldInline, addText, SNAP(addText), ch.fromB, ch.toB))
-        }
+        const note = oldInline.trim()
+          ? makeNote('word', `修改"${SNAP(oldInline)}"为"${SNAP(addText)}"`, oldInline, addText, SNAP(addText), ch.fromB + off, ch.toB + off)
+          : makeNote('word', `新增"${SNAP(addText)}"`, undefined, addText, SNAP(addText), ch.fromB + off, ch.toB + off)
+        notes.push(note)
+        decorations.push(Decoration.inline(ch.fromB + off, ch.toB + off, { class: 'diff-ins', ...dnote(note.id) }))
       }
     }
   }
@@ -250,14 +268,15 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoR
   for (const d of inlineDels) {
     const text = oldDoc.textBetween(d.fromA, d.toA, '', '')
     if (!text.trim()) continue
+    // 纯删除才有「删除」卡（修改对的删除已由「修改」卡表达）
+    const note = !d.paired
+      ? makeNote('word', `删除"${SNAP(text)}"`, text, undefined, SNAP(text), d.posB + off, Math.min(d.posB + 1, newDoc.content.size) + off)
+      : null
+    if (note) notes.push(note)
     const el = document.createElement('span')
     el.className = 'diff-del'
     el.textContent = text
-    decorations.push(Decoration.widget(d.posB, el, { side: -1, key: `diff-del-inline-${d.fromA}` }))
-    // 纯删除才有「删除」卡（修改对的删除已由「修改」卡表达）
-    if (!d.paired) {
-      notes.push(makeNote('word', `删除"${SNAP(text)}"`, text, undefined, SNAP(text), d.posB, Math.min(d.posB + 1, newDoc.content.size)))
-    }
+    decorations.push(Decoration.widget(d.posB + off, el, { side: -1, key: `diff-del-inline-${d.fromA}`, ...(note ? dnote(note.id) : {}) }))
   }
   // 块级：按 posB 分组（连续删除映射到同一位）→ 同一 widget 拼接
   const byPos = new Map<number, DelInfo[]>()
@@ -270,12 +289,13 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node): BuildDiffDecoR
     const lines: string[] = []
     for (const d of group) lines.push(oldDoc.textBetween(d.fromA, d.toA, '\n', '\n').trim())
     const text = lines.filter(Boolean).join('\n')
+    const vis = text.split('\n').filter((l) => l.trim())
+    const note = makeNote('block', `删除了此段${vis.length > 1 ? `（${vis.length} 行）` : ''}`, text, undefined, SNAP(vis[0] || ''), posB + off, Math.min(posB + 1, newDoc.content.size) + off)
+    notes.push(note)
     const el = document.createElement('span')
     el.className = isInlineWidgetPos(newDoc, posB) ? 'diff-del' : 'diff-del diff-del-block'
     el.textContent = text || '（已删除）'
-    decorations.push(Decoration.widget(posB, el, { side: -1, key: `diff-del-block-${group[0].fromA}` }))
-    const vis = text.split('\n').filter((l) => l.trim())
-    notes.push(makeNote('block', `删除了此段${vis.length > 1 ? `（${vis.length} 行）` : ''}`, text, undefined, SNAP(vis[0] || ''), posB, Math.min(posB + 1, newDoc.content.size)))
+    decorations.push(Decoration.widget(posB + off, el, { side: -1, key: `diff-del-block-${group[0].fromA}`, ...dnote(note.id) }))
   }
 
   return { decorations, notes }
@@ -287,16 +307,19 @@ function embedDeleteDecoration(
   fromA: number,
   posB: number,
   decorations: Decoration[],
-  notes: DiffNote[]
+  notes: DiffNote[],
+  off = 0
 ): void {
   const path = fileBlockPathNear(oldDoc, fromA)
   const txt = path ? `移除引用：[[${path}]]` : '移除引用'
+  // 内容派生 id（同一 path 的移除引用重算稳定；去重）
+  if (notes.some((n) => n.kind === 'block' && n.del === path)) return
+  const note = makeNote('block', `移除了引用「${path || '?'}」`, path || undefined, undefined, txt, posB + off, Math.min(posB + 1, newDoc.content.size) + off)
+  notes.push(note)
   const el = document.createElement('span')
   el.className = 'diff-del diff-del-block'
   el.textContent = txt
-  decorations.push(Decoration.widget(posB, el, { side: -1, key: `diff-embed-del-${fromA}` }))
-  if (!notes.some((n) => n.kind === 'block' && n.del === path))
-    notes.push(makeNote('block', `移除了引用「${path || '?'}」`, path || undefined, undefined, txt, posB, Math.min(posB + 1, newDoc.content.size)))
+  decorations.push(Decoration.widget(posB + off, el, { side: -1, key: `diff-embed-del-${fromA}`, ...dnote(note.id) }))
 }
 
 /** 范围内是否包含完整块节点 */
@@ -319,7 +342,7 @@ function containsBlock(doc: Node, from: number, to: number): boolean {
   return found
 }
 
-// ---------- mermaid fence 预合并（节点级 diff 的唯一入口） ----------
+// ---------- mermaid fence 预合并（节点级 diff 的唯一入口；M18：配对走 pairFences 加权） ----------
 
 const FENCE_RE = /^```(\w*)\s*$/
 
@@ -327,10 +350,12 @@ export interface PatchMermaidResult {
   md: string
   mermaid: MermaidNodeDiff[]
   notes: DiffNote[]
+  /** 每一条新 md 栅栏的配对（newIdx → oldIdx/新增）；与 mermaid 列表一一对应 */
+  pairs: Array<{ newIdx: number; oldIdx: number | null }>
 }
 
 /** 提取 md 中所有 mermaid 栅栏 body（按出现顺序） */
-function extractMermaidBodies(md: string): string[] {
+export function extractMermaidBodies(md: string): string[] {
   const bodies: string[] = []
   const lines = md.split('\n')
   let inFence = false
@@ -360,7 +385,9 @@ function meaningfulMermaid(d: MermaidNodeDiff): boolean {
   return d.type !== 'unknown' && (d.add.length > 0 || d.del.length > 0 || d.mod.length > 0)
 }
 
-function mermaidNote(d: MermaidNodeDiff): DiffNote {
+/** 统一的 mermaid 变更文案（宿主正文与嵌入块共用同一口径）：修改 = 删旧+增新（M16b 二元语义），
+ *  分别并入「新增 / 删除」计数 → 如「流程图：新增 2 个节点、删除 2 个」 */
+export function mermaidDiffText(d: MermaidNodeDiff): string {
   const label = d.type === 'flowchart' ? '流程图' : d.type === 'sequence' ? '时序图' : d.type === 'state' ? '状态图' : '图表'
   const unit = d.type === 'sequence' ? '消息' : '节点'
   const ac = d.add.length + d.mod.length
@@ -368,36 +395,51 @@ function mermaidNote(d: MermaidNodeDiff): DiffNote {
   const parts: string[] = []
   if (ac) parts.push(`新增 ${ac} 个${unit}`)
   if (dc) parts.push(`删除 ${dc} 个`)
-  return makeNote('mermaid', `${label}：${parts.join('、')}`, undefined, undefined, `${label}节点`, -1, -1)
+  return parts.length ? `${label}：${parts.join('、')}` : `${label}：无结构变化`
 }
 
-/** 把新 md 中 mermaid 栅栏替换为「合并源码」（新为底 + 删除节点/消息加回），
- *  供渲染后 DOM 标注红色删除目标；非 mermaid 行原样。返回合并结果 + 批注卡。 */
+function mermaidNote(d: MermaidNodeDiff): DiffNote {
+  return makeNote('mermaid', mermaidDiffText(d), undefined, undefined, mermaidDiffText(d), -1, -1)
+}
+
+/**
+ * 把新 md 中 mermaid 栅栏替换为「合并源码」（新为底 + 删除节点/消息加回 + classDef/class 声明，
+ * §4.8 由 diffMermaid 产出），供 NodeView 渲染图内红绿标注；非 mermaid 行原样。
+ * 配对：M18 起走 pairFences（加权配对，免疫下标漂移）；返回 pairs 供 FenceRegistry 消费。
+ */
 export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidResult {
   const oldBodies = extractMermaidBodies(oldMd)
   const newBodies = extractMermaidBodies(newMd)
+  const pairs = pairFences(oldBodies, newBodies)
   const mermaid: MermaidNodeDiff[] = []
   const notes: DiffNote[] = []
+
+  const pairsByNew = new Map<number, { oldIdx: number | null }>()
+  for (const p of pairs) pairsByNew.set(p.newIdx, p)
   const mergedByIndex = new Map<number, string>()
 
-  const pairCount = Math.min(oldBodies.length, newBodies.length)
-  for (let k = 0; k < pairCount; k++) {
-    const d = diffMermaid(oldBodies[k], newBodies[k])
+  // 逐条新栅栏：配对 → diff → merged（有结构变化才合并）；未配对新栅栏不产 diagram 标注（块级新增表达）
+  for (let j = 0; j < newBodies.length; j++) {
+    const p = pairsByNew.get(j)
+    const oldBody = p?.oldIdx != null ? oldBodies[p.oldIdx] : ''
+    const d = diffMermaid(oldBody, newBodies[j])
+    mermaid.push(d)
+    if (p?.oldIdx != null && meaningfulMermaid(d)) {
+      mergedByIndex.set(j, d.merged)
+      notes.push(mermaidNote(d))
+    }
+  }
+  // 整段删除的旧栅栏（未被任何新栅栏匹配）：删旧 → 产删除卡（渲染无对应图）
+  const matchedOld = new Set(pairs.map((p) => p.oldIdx).filter((x): x is number => x != null))
+  for (let i = 0; i < oldBodies.length; i++) {
+    if (matchedOld.has(i)) continue
+    const d = diffMermaid(oldBodies[i], '')
     if (meaningfulMermaid(d)) {
-      mergedByIndex.set(k, d.merged)
       mermaid.push(d)
       notes.push(mermaidNote(d))
     }
   }
-  // 多出的旧 fence（整段删除）
-  for (let k = pairCount; k < oldBodies.length; k++) {
-    const d = diffMermaid(oldBodies[k], '')
-    if (meaningfulMermaid(d)) {
-      mermaid.push(d)
-      notes.push(mermaidNote(d))
-    }
-  }
-  if (!mergedByIndex.size) return { md: newMd, mermaid, notes }
+  if (!mergedByIndex.size) return { md: newMd, mermaid, notes, pairs }
 
   // 重建 md：逐行扫描，把有合并源码的 mermaid 栅栏替换 body
   const lines = newMd.split('\n')
@@ -423,5 +465,5 @@ export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidRe
     out.push(lines[i])
     i++
   }
-  return { md: out.join('\n'), mermaid, notes }
+  return { md: out.join('\n'), mermaid, notes, pairs }
 }

@@ -29,7 +29,8 @@ export function buildChangeTree(files: GitChangeSource[]): GitChangeNode[] {
   const map = new Map<string, GitChangeNode>()
 
   for (const f of files) {
-    const parts = f.path.split('/')
+    const parts = f.path.split('/').filter(Boolean) // 去掉空段（尾随 / 产生的空名）
+    if (!parts.length) continue
     let parentPath = ''
     let siblings = roots
     let dir: GitChangeNode | undefined

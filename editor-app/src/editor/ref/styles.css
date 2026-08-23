@@ -108,6 +108,39 @@ span.ref-object:hover {
   cursor: default;
 }
 
+/* 多层嵌入治理：环 / 超深折叠提示卡（编辑视图 × git diff 视图共用同一组 class，
+ * 见 docs/embed-nesting-governance.md §3.3）。提示卡是 contentDOM 外的手写 DOM，
+ * contentDOM 保持空容器；点击链路路径（.ref-file）经 refClickPlugin 打开源文件。 */
+.ref-file-block.is-collapsed .ref-file-block-content {
+  display: none;
+}
+.ref-file-block-collapsed {
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  background: var(--chrome-background);
+  border-bottom: 1px solid var(--chrome-border);
+  user-select: none;
+}
+.ref-hint-line {
+  color: #b45309; /* 琥珀：提示而非错误（断链才是红） */
+  font-weight: 600;
+}
+.ref-hint-chain {
+  margin-top: 4px;
+  color: var(--chrome-on-surface-variant);
+  word-break: break-all;
+}
+.ref-hint-chain .ref-file {
+  color: var(--chrome-primary);
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+  cursor: pointer;
+  margin: 0 1px;
+}
+.ref-hint-chain .ref-file:hover {
+  text-decoration: underline;
+}
 /* M3：断链引用红色警告态 */
 .ref-broken {
   text-decoration: underline wavy var(--chrome-error) !important;

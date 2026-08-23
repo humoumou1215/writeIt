@@ -13,7 +13,8 @@
     "sync:demo:check": "node scripts/sync-demo.mjs --check",
     "predev": "npm run sync:demo",
     "prebuild": "npm run sync:demo",
-    "test:e2e": "node tests/e2e/run-all.js"
+    "test:e2e": "node tests/e2e/run-all.js",
+    "test:unit": "node tests/unit/run-unit.cjs"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",
@@ -32,9 +33,11 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-vue": "^6.0.8",
+    "jsdom": "^26.1.0",
     "jszip": "^3.10.1",
     "pdfjs-dist": "^6.2.108",
     "typescript": "~5.9.3",
-    "vite": "^7.3.6"
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
   }
 }

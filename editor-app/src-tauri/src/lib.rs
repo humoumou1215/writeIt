@@ -277,10 +277,21 @@ pub struct GitBranch {
 #[serde(rename_all = "camelCase")]
 pub struct GitFileStatus {
   pub path: String,
-  /// M 修改 / A 新增 / D 删除 / U 未合并 / ? 未跟踪 / R 重命名
+  /// M-A-D-U-?-R-C（兼容字段 = worktree 有码则 worktree 码，否则 index 码，旧 UI 仍可用）
   pub status: String,
+  /// X 码：index vs HEAD（' ' = 未暂存）
+  pub index_status: String,
+  /// Y 码：worktree vs index（' ' = 无工作区改动）
+  pub worktree_status: String,
+  /// R/C：旧路径（-z 下第二段记录）
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub rename_from: Option<String>,
+  /// 工作区行数 = index..worktree numstat；未跟踪 = 磁盘行数
   pub added: i64,
   pub deleted: i64,
+  /// staged 行数 = HEAD..index numstat
+  pub index_added: i64,
+  pub index_deleted: i64,
 }
 
 #[derive(Serialize, Clone)]
@@ -362,7 +373,10 @@ fn no_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+  // M16 Phase 0 #4：-c core.quotepath=false 统一注入（中文路径不做 octal 转义）
   no_console(&mut std::process::Command::new("git"))
+    .arg("-c")
+    .arg("core.quotepath=false")
     .args(args)
     .current_dir(root)
     .output()
@@ -450,36 +464,36 @@ fn git_status(state: State<AppState>) -> Result<Vec<GitFileStatus>, String> {
   if !out.status.success() {
     return Err(String::from_utf8_lossy(&out.stderr).trim().into());
   }
-  let bytes = out.stdout;
-  let mut files: Vec<GitFileStatus> = parse_porcelain(&bytes)
-    .into_iter()
-    .map(|(status, path)| GitFileStatus { path, status, added: -1, deleted: -1 })
-    .collect();
-  // 行数统计：git diff --numstat HEAD（工作区 vs HEAD 全量；untracked 不在内）
-  let nums = run_git(&root, &["diff", "--numstat", "HEAD"]);
-  if let Ok(nums) = nums {
-    if nums.status.success() {
-      let num_text = String::from_utf8_lossy(&nums.stdout);
-      for line in num_text.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 3 {
-          continue;
-        }
-        let add: i64 = parts[0].trim().parse().unwrap_or(-1);
-        let del: i64 = parts[1].trim().parse().unwrap_or(-1);
-        let p = parts[2].to_string();
-        if let Some(f) = files.iter_mut().find(|f| f.path == p) {
-          f.added = add;
-          f.deleted = del;
-        }
-      }
+  let entries = parse_porcelain(&out.stdout);
+  let mut files: Vec<GitFileStatus> = Vec::new();
+  for e in entries {
+    // 未跟踪目录条目（`?? 目录/`）→ 展开为内部文件
+    if e.x == '?' && e.path.ends_with('/') {
+      expand_untracked_dir(&root, &e.path, &mut files);
+      continue;
     }
+    // 兼容字段：worktree 有码则 worktree 码，否则 index 码
+    let status = if e.y != ' ' { e.y.to_string() } else { e.x.to_string() };
+    files.push(GitFileStatus {
+      path: e.path,
+      status,
+      index_status: e.x.to_string(),
+      worktree_status: e.y.to_string(),
+      rename_from: e.rename_from,
+      added: -1,
+      deleted: -1,
+      index_added: -1,
+      index_deleted: -1,
+    });
   }
-  // untracked：读文件行数（正常笔记文件不大）
+  // 行数双通道（-z）：unstaged（index..worktree）+ staged（HEAD..index）
+  fill_numstat(&root, &mut files, false);
+  fill_numstat(&root, &mut files, true);
+  // 未跟踪文件：读盘行数（正常笔记文件不大）
   for f in files.iter_mut() {
     if f.status == "?" && f.added < 0 {
       if let Ok(full) = resolve(&root, &f.path) {
-        if let Ok(s) = fs::read_to_string(&full) {
+        if let Ok(s) = std::fs::read_to_string(&full) {
           f.added = s.lines().count() as i64;
           f.deleted = 0;
         }
@@ -505,12 +519,14 @@ fn git_log(state: State<AppState>, limit: Option<i64>, branch: Option<String>) -
   let text = String::from_utf8_lossy(&out.stdout);
   let mut commits = Vec::new();
   for rec in text.split('\u{1e}') {
+    // git --format 在每条记录后追加 '\n' → 除首条外 hash 前有换行；trim 归一
+    let rec = rec.trim_start_matches('\n');
     let parts: Vec<&str> = rec.split('\u{1f}').collect();
     if parts.len() < 5 || parts[0].is_empty() {
       continue;
     }
     commits.push(GitCommit {
-      hash: parts[0].to_string(),
+      hash: parts[0].trim().to_string(),
       parents: parts[1].split_whitespace().map(|s| s.to_string()).collect(),
       author: parts[2].to_string(),
       date: parts[3].trim().parse().unwrap_or(0),
@@ -534,43 +550,45 @@ fn git_show_commit(state: State<AppState>, hash: String) -> Result<GitShowCommit
   if hparts.len() < 4 || hparts[0].is_empty() {
     return Err(format!("提交不存在：{hash}"));
   }
-  // 文件列表：diff-tree --name-status（带 rename 检测）
-  let nout = run_git(&root, &["diff-tree", "--name-status", "-r", "--root", "-M", &hash])?;
+  // 文件列表：diff-tree --name-status -z（Phase 0 #4：-z 才不会丢中文路径统计；
+  //   -z 下 rename 两段路径 = old, new，key 取 new）
+  let nout = run_git(&root, &["diff-tree", "--name-status", "-z", "--no-commit-id", "-r", "--root", "-M", &hash])?;
   let mut status_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
   if nout.status.success() {
-    for line in String::from_utf8_lossy(&nout.stdout).lines() {
-      let mut parts = line.split('\t');
-      let st = parts.next().unwrap_or("").to_string();
-      let p = parts.next().unwrap_or("").to_string();
-      if st.is_empty() || p.is_empty() {
+    let toks: Vec<&str> = String::from_utf8_lossy(&nout.stdout).split('\0').collect();
+    let mut i = 0;
+    while i < toks.len() {
+      let st = toks[i];
+      i += 1;
+      if st.is_empty() {
         continue;
       }
-      if let Some(code) = st.chars().next() {
-        // R100 → R；文件路径取 new（rename 的第二段）
-        let key = if code == 'R' || code == 'C' { parts.next().unwrap_or(&p).to_string() } else { p };
-        status_map.insert(key, if code == 'R' { "R".into() } else if code == 'A' { "A".into() } else if code == 'D' { "D".into() } else { "M".into() });
+      let p = toks.get(i).copied().unwrap_or("");
+      i += 1;
+      if p.is_empty() {
+        continue;
+      }
+      let code = st.as_bytes()[0] as char;
+      if code == 'R' || code == 'C' {
+        // diff-tree -z：旧路径在前、新路径在后 → key 取第二段
+        let new_path = toks.get(i).copied().unwrap_or(p);
+        i += 1;
+        if !new_path.is_empty() {
+          status_map.insert(new_path.to_string(), if code == 'R' { "R".into() } else { "C".into() });
+        }
+      } else {
+        let key = if code == 'A' { "A".into() } else if code == 'D' { "D".into() } else { "M".into() };
+        status_map.insert(p.to_string(), key);
       }
     }
   }
-  // 行数：diff-tree --numstat（rename 路径为 `old => new`，取 new）
-  let mout = run_git(&root, &["diff-tree", "--numstat", "-r", "--root", "-M", &hash])?;
-  let mut num_map: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
-  if mout.status.success() {
-    for line in String::from_utf8_lossy(&mout.stdout).lines() {
-      let parts: Vec<&str> = line.split('\t').collect();
-      if parts.len() < 3 {
-        continue;
-      }
-      let add: i64 = parts[0].trim().parse().unwrap_or(-1);
-      let del: i64 = parts[1].trim().parse().unwrap_or(-1);
-      let p = parts[2].to_string();
-      let key = match p.rsplit_once(" => ") {
-        Some((_, new)) => new.to_string(),
-        None => p,
-      };
-      num_map.insert(key, (add, del));
-    }
-  }
+  // 行数：diff-tree --numstat -z（-z：rename 两段路径，key 取 last，Phase 0 #6）
+  let mout = run_git(&root, &["diff-tree", "--numstat", "-z", "--no-commit-id", "-r", "--root", "-M", &hash])?;
+  let num_map: std::collections::HashMap<String, (i64, i64)> = if mout.status.success() {
+    parse_numstat_z(&mout.stdout)
+  } else {
+    std::collections::HashMap::new()
+  };
   let mut keys: Vec<&String> = status_map.keys().collect();
   keys.sort();
   let mut files = Vec::new();
@@ -664,9 +682,18 @@ fn parse_unified_diff(text: &str, word_groups: Option<Vec<Vec<DiffWord>>>) -> (V
   (hunks, added, deleted)
 }
 
-/// 解析 git status --porcelain=v1 -z 输出 → (状态码, 显示路径)
-/// rename/复制有两记录：R old\0new\0 → 显示 "old → new"
-fn parse_porcelain(bytes: &[u8]) -> Vec<(String, String)> {
+/// git status --porcelain=v1 -z 单记录（M16：XY 双码）
+struct PorcelainEntry {
+  x: char,
+  y: char,
+  path: String,
+  rename_from: Option<String>,
+}
+
+/// 解析 git status --porcelain=v1 -z 输出 → XY 双码列表
+/// 关键（Phase 0 #6 实测）：-z 下 rename/复制两记录顺序为 `XY <新路径>` NUL `<旧路径>`
+///   （与 non-z 的 `old -> new` 相反）；第二段 = 旧路径 → rename_from
+fn parse_porcelain(bytes: &[u8]) -> Vec<PorcelainEntry> {
   let mut files = Vec::new();
   let mut i = 0;
   while i < bytes.len() {
@@ -680,35 +707,136 @@ fn parse_porcelain(bytes: &[u8]) -> Vec<(String, String)> {
     if rec.len() < 3 {
       continue;
     }
-    let xy = &rec[0..2];
+    let x = rec.as_bytes()[0] as char;
+    let y = rec.as_bytes()[1] as char;
     let path = rec[3..].to_string();
-    let st = xy.trim();
-    if st == "R" || st == "C" {
+    if x == 'R' || x == 'C' {
+      // -z：第一段 = 新路径，第二段 = 旧路径
       let end2 = bytes[i..]
         .iter()
         .position(|&b| b == 0)
         .map(|p| i + p)
         .unwrap_or(bytes.len());
-      let new_path = String::from_utf8_lossy(&bytes[i..end2]).to_string();
+      let old_path = String::from_utf8_lossy(&bytes[i..end2]).to_string();
       i = end2 + 1;
-      files.push((st.to_string(), format!("{path} → {new_path}")));
+      files.push(PorcelainEntry { x, y, path, rename_from: Some(old_path) });
       continue;
     }
-    let status = if st.contains('?') {
-      "?".to_string()
-    } else if st.contains('U') {
-      "U".to_string()
-    } else {
-      match st.chars().last() {
-        Some('M') => "M".to_string(),
-        Some('A') => "A".to_string(),
-        Some('D') => "D".to_string(),
-        _ => "M".to_string(),
-      }
-    };
-    files.push((status, path));
+    files.push(PorcelainEntry { x, y, path, rename_from: None });
   }
   files
+}
+
+/// git diff --numstat -z 输出 → path → (add, del)
+/// 普通记录：`add\tdel\tpath`（统计与路径同一 NUL token）
+/// rename 记录：`add\tdel\t` NUL `old` NUL `new`（路径独立 token，key 取最后一段，Phase 0 #6）
+fn parse_numstat_z(bytes: &[u8]) -> std::collections::HashMap<String, (i64, i64)> {
+  let text = String::from_utf8_lossy(bytes);
+  let toks: Vec<&str> = text.split('\0').collect();
+  let mut map = std::collections::HashMap::new();
+  let mut i = 0;
+  while i < toks.len() {
+    let t = toks[i];
+    // 形如 `A\tD` / `A\tD\t`（rename）/ `A\tD\tpath`（普通）
+    let mut it = t.splitn(3, '\t');
+    let a = it.next().unwrap_or("");
+    let d = it.next().unwrap_or("");
+    let rest = it.next().unwrap_or("");
+    let (Ok(ac), Ok(dc)) = (a.trim().parse::<i64>(), d.trim().parse::<i64>()) else {
+      i += 1;
+      continue;
+    };
+    i += 1;
+    if !rest.is_empty() {
+      map.insert(rest.to_string(), (ac, dc));
+      continue;
+    }
+    // rename：统计 token 以 tab 结尾，路径在后续 NUL token（old, new → key 取 new）
+    let mut paths: Vec<&str> = Vec::new();
+    while i < toks.len() {
+      let nx = toks[i];
+      let mut it2 = nx.splitn(3, '\t');
+      let a2 = it2.next().unwrap_or("");
+      let d2 = it2.next().unwrap_or("");
+      if a2.trim().parse::<i64>().is_ok() && d2.trim().parse::<i64>().is_ok() {
+        break;
+      }
+      if !nx.is_empty() {
+        paths.push(nx);
+      }
+      i += 1;
+    }
+    if let Some(np) = paths.last() {
+      map.insert(np.to_string(), (ac, dc));
+    }
+  }
+  map
+}
+
+/// 行数回填：unstaged（git diff --numstat -z）或 staged（git diff --cached --numstat -z）
+fn fill_numstat(root: &Path, files: &mut [GitFileStatus], cached: bool) {
+  let args: &[&str] = if cached {
+    &["diff", "--cached", "--numstat", "-z"]
+  } else {
+    &["diff", "--numstat", "-z"]
+  };
+  if let Ok(out) = run_git(root, args) {
+    if out.status.success() {
+      let map = parse_numstat_z(&out.stdout);
+      for f in files.iter_mut() {
+        if let Some(&(a, d)) = map.get(&f.path) {
+          if cached {
+            f.index_added = a;
+            f.index_deleted = d;
+          } else {
+            f.added = a;
+            f.deleted = d;
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 未跟踪目录条目（`?? 目录/`）→ 递归展开为内部文件（含行数）
+fn expand_untracked_dir(root: &Path, dir_rel: &str, files: &mut Vec<GitFileStatus>) {
+  let base = dir_rel.trim_end_matches('/');
+  let Ok(full) = resolve(root, base) else {
+    return;
+  };
+  let mut out: Vec<(String, i64)> = Vec::new();
+  collect_untracked(&full, base, &mut out);
+  for (fp, lines) in out {
+    files.push(GitFileStatus {
+      path: fp,
+      status: "?".into(),
+      index_status: "?".into(),
+      worktree_status: "?".into(),
+      rename_from: None,
+      added: lines,
+      deleted: 0,
+      index_added: -1,
+      index_deleted: -1,
+    });
+  }
+}
+
+fn collect_untracked(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, i64)>) {
+  if let Ok(rd) = std::fs::read_dir(dir) {
+    for e in rd.flatten() {
+      let name = e.file_name().to_string_lossy().to_string();
+      if name == ".git" {
+        continue;
+      }
+      let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+      if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        collect_untracked(&e.path(), &r, out);
+      } else {
+        let lines = std::fs::read_to_string(&e.path()).map(|s| s.lines().count() as i64).unwrap_or(-1);
+        out.push((r, lines));
+      }
+    }
+  }
 }
 
 /// 解析 git diff --word-diff=porcelain 输出 → 每行组的词 token 列表
@@ -868,20 +996,40 @@ index 520d408..8b3d216 100644\n\
     let bytes = b" M a.md\0A  b.md\0?? c.md\0D  old.md\0";
     let files = parse_porcelain(bytes);
     assert_eq!(files.len(), 4);
-    assert_eq!(files[0], ("M".into(), "a.md".into()));
-    assert_eq!(files[1], ("A".into(), "b.md".into()));
-    assert_eq!(files[2], ("?".into(), "c.md".into()));
-    assert_eq!(files[3], ("D".into(), "old.md".into()));
+    // XY 双码
+    assert_eq!((files[0].x, files[0].y), (' ', 'M'));
+    assert_eq!(files[0].path, "a.md");
+    assert_eq!((files[1].x, files[1].y), ('A', ' '));
+    assert_eq!(files[1].path, "b.md");
+    assert_eq!((files[2].x, files[2].y), ('?', '?'));
+    assert_eq!(files[2].path, "c.md");
+    assert_eq!((files[3].x, files[3].y), ('D', ' '));
+    assert_eq!(files[3].path, "old.md");
+    // rename_from 只有 R/C 才有
+    assert!(files.iter().all(|f| f.rename_from.is_none()));
   }
 
   #[test]
-  fn porcelain_rename() {
-    // R old\0new\0 → 显示 "old → new"
-    let bytes = b"R  old.md\0new.md\0";
+  fn porcelain_rename_z_order() {
+    // Phase 0 #6：-z 下第一段 = 新路径，第二段 = 旧路径（与 non-z 相反）
+    let bytes = b"R  new.md\0old.md\0";
     let files = parse_porcelain(bytes);
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].0, "R");
-    assert_eq!(files[0].1, "old.md → new.md");
+    let f = &files[0];
+    assert_eq!(f.x, 'R');
+    assert_eq!(f.path, "new.md");
+    assert_eq!(f.rename_from.as_deref(), Some("old.md"));
+  }
+
+  #[test]
+  fn numstat_z_parse() {
+    // 普通：`1\t0\tpath`（同一 NUL token）；rename：`0\t0\t` NUL old NUL new（key 取最后一段）
+    let bytes = b"1\t0\ta.md\02\t3\tb.md\00\t0\t\0old.md\tnew.md\0";
+    let map = parse_numstat_z(bytes);
+    assert_eq!(map.get("a.md"), Some(&(1, 0)));
+    assert_eq!(map.get("b.md"), Some(&(2, 3)));
+    assert_eq!(map.get("new.md"), Some(&(0, 0)));
+    assert!(map.get("old.md").is_none(), "rename key 取新路径");
   }
 
   #[test]
@@ -889,7 +1037,8 @@ index 520d408..8b3d216 100644\n\
     // 中文路径（-z 下原样输出，不转义）
     let bytes = " M 中文.md\0".as_bytes();
     let files = parse_porcelain(bytes);
-    assert_eq!(files[0].1, "中文.md");
+    assert_eq!(files[0].path, "中文.md");
+    assert_eq!(files[0].y, 'M');
   }
 
   #[test]
@@ -906,7 +1055,7 @@ index 520d408..8b3d216 100644\n\
     assert!(extract_hunk_patch(text, 5).is_none());
   }
 
-  /// 真实 git：-U0 diff → 提取单 hunk → git apply --reverse → 验证该 hunk 已还原
+  /// 真实 git：-U3 diff → 提取单 hunk → git apply --reverse → 验证该 hunk 已还原
   #[test]
   fn discard_hunk_real_git() {
     use std::fs;
@@ -926,15 +1075,15 @@ index 520d408..8b3d216 100644\n\
     fs::write(dir.join("x.md"), "line1\nline2\nline3\nline4\nline5\n").unwrap();
     run(&["add", "."]);
     run(&["commit", "-qm", "init"]);
-    // 两处改动（两个 hunk）
+    // 两处改动（两个 hunk）；Phase 0 #1：-U3 提取（对齐前端 DiffView 的 hunk 序）
     fs::write(dir.join("x.md"), "line1 CHANGED\nline2\nline3\nline4 CHANGED\nline5\n").unwrap();
-    let diff = run(&["diff", "--no-color", "-U0", "HEAD", "--", "x.md"]);
+    let diff = run(&["diff", "--no-color", "-U3", "--", "x.md"]);
     let patch0 = extract_hunk_patch(&diff, 0).unwrap();
     let patch1 = extract_hunk_patch(&diff, 1).unwrap();
     // 反向应用 hunk0 → 第一处改动还原，第二处保留
     let apply = |patch: &str| {
       let mut child = Command::new("git")
-        .args(["apply", "--reverse", "--unidiff-zero", "-"])
+        .args(["apply", "--reverse", "-"])
         .current_dir(&dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1009,39 +1158,85 @@ index 520d408..8b3d216 100644\n\
 }
 
 
+/// 文件是否被 git 跟踪（index/HEAD 含该路径）
+fn git_tracked(root: &Path, path: &str) -> bool {
+  run_git(root, &["ls-files", "--error-unmatch", "--", path])
+    .map(|o| o.status.success())
+    .unwrap_or(false)
+}
+
+/// git diff --no-index（差异时退出码 1 属正常；stdout 才是 diff 内容）
+fn run_git_noindex(root: &Path, a: &str, b: &str) -> Result<Vec<u8>, String> {
+  use std::process::Command;
+  let out = no_console(&mut Command::new("git"))
+    .args(["-c", "core.quotepath=false", "diff", "--no-index", "--no-color", "-U3", a, b])
+    .current_dir(root)
+    .output()
+    .map_err(|e| format!("git diff --no-index 执行失败: {e}"))?;
+  if !out.status.success() && out.status.code() != Some(1) {
+    return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+  }
+  Ok(out.stdout)
+}
+
+/// M16：diff 基准随分区变化（unstaged=index..worktree / staged=--cached / worktree=HEAD..worktree / range=a..b）
 #[tauri::command]
 fn git_diff_file(
   state: State<AppState>,
   path: String,
+  kind: String,
   from: Option<String>,
   to: Option<String>,
 ) -> Result<GitDiffResult, String> {
   let root = git_root(&state)?;
-  let mut args = vec!["diff", "--no-color", "-U3"];
-  if let Some(f) = &from {
-    args.push(f.as_str());
-    args.push(to.as_deref().unwrap_or("HEAD"));
-  } else {
-    // 工作区 vs HEAD
-    args.push("HEAD");
+  let untracked = match kind.as_str() {
+    "staged" => false,
+    _ => !git_tracked(&root, &path),
+  };
+  // rev 参数按 kind 组装
+  let mut rev: Vec<String> = Vec::new();
+  match kind.as_str() {
+    "unstaged" => { /* index..worktree：无额外 rev */ }
+    "staged" => rev.push("--cached".into()),
+    "worktree" => rev.push("HEAD".into()),
+    "range" => {
+      rev.push(from.unwrap_or_default());
+      rev.push(to.unwrap_or_else(|| "HEAD".into()));
+    }
+    _ => return Err(format!("未知 diff kind: {kind}")),
   }
-  args.push("--");
-  args.push(&path);
-  let out = run_git(&root, &args)?;
-  if !out.status.success() {
-    return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+  let mut text: String;
+  if untracked {
+    // 未跟踪新文件：--no-index /dev/null 合成「全新增」diff（Phase 0 #3）
+    let full = resolve(&root, &path)?;
+    let out = run_git_noindex(&root, "/dev/null", &full.to_string_lossy())?;
+    text = String::from_utf8_lossy(&out).to_string();
+  } else {
+    let mut cmd = vec!["diff".to_string(), "--no-color".to_string(), "-U3".to_string()];
+    cmd.extend(rev.iter().cloned());
+    cmd.push("--".into());
+    cmd.push(path.clone());
+    let arg_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+    let out = run_git(&root, &arg_refs)?;
+    if !out.status.success() {
+      return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+    }
+    text = String::from_utf8_lossy(&out.stdout).to_string();
   }
   let exists = resolve(&root, &path).map(|p| p.exists()).unwrap_or(false);
-  let text = String::from_utf8_lossy(&out.stdout);
   if text.is_empty() {
     return Ok(GitDiffResult { hunks: Vec::new(), added: 0, deleted: 0, exists });
   }
   let (hunks, added, deleted) = parse_unified_diff(&text, None);
-  // 词级高亮（M11b）：--word-diff=porcelain 解析，行组与 unified 行序合并
+  // 词级（M11b）：同样的 rev 参数 + -- path（Phase 0 #2：不能跑全仓 diff）
   let mut word_hunks = hunks;
-  if !word_hunks.is_empty() {
-    let wout = run_git(&root, &["diff", "--word-diff=porcelain", "--no-color", "-U3"]);
-    if let Ok(wout) = wout {
+  if !word_hunks.is_empty() && !untracked {
+    let mut wcmd = vec!["diff".to_string(), "--word-diff=porcelain".to_string(), "--no-color".to_string(), "-U3".to_string()];
+    wcmd.extend(rev.iter().cloned());
+    wcmd.push("--".into());
+    wcmd.push(path.clone());
+    let warg_refs: Vec<&str> = wcmd.iter().map(|s| s.as_str()).collect();
+    if let Ok(wout) = run_git(&root, &warg_refs) {
       if wout.status.success() {
         let wtext = String::from_utf8_lossy(&wout.stdout);
         let groups = parse_word_groups(&wtext);
@@ -1066,17 +1261,183 @@ fn git_show_file(state: State<AppState>, path: String, rev: String) -> Result<St
   Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// 还原整文件到 HEAD（丢弃全部未提交改动）
+/// M18 §4.7：批量取多文件旧/新内容 + hunks 标志 + 内容 hash（嵌入源扫描一次往返）。
+/// kind 同 git_diff_file（unstaged/staged/worktree/range）；候选路径一次 ls-files 解析。
+#[serde(rename_all = "camelCase")]
+struct ShowFileEntry {
+  #[serde(rename = "write")]
+  write: String,
+  real_path: String,
+  old: Option<String>,
+  next: Option<String>,
+  exists: bool,
+  changed: Option<bool>,
+  hash: Option<ShowFileHash>,
+}
+
+#[serde(rename_all = "camelCase")]
+struct ShowFileHash {
+  old: String,
+  next: String,
+}
+
+#[serde(rename_all = "camelCase")]
+struct ShowFilesResult {
+  entries: Vec<ShowFileEntry>,
+}
+
+/// FNV-1a 32 位内容指纹（与前端 src/git/hash.ts / vite-plugins/dev-repo.ts 同算法）
+fn content_hash(content: &str) -> String {
+  let mut h: u32 = 0x811c9dc5;
+  for b in content.as_bytes() {
+    h ^= *b as u32;
+    h = h.wrapping_mul(0x0100_0193);
+  }
+  format!("{:08x}", h)
+}
+
+fn show_file_content(root: &Path, path: &str, rev: &str) -> Result<String, String> {
+  let arg = if rev.is_empty() {
+    format!(":{path}") // index blob
+  } else {
+    format!("{rev}:{path}")
+  };
+  let out = run_git(&root, &["show", &arg])?;
+  if !out.status.success() {
+    return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+  }
+  Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[tauri::command]
+fn git_show_files(
+  state: State<AppState>,
+  paths: Vec<String>,
+  kind: String,
+  from: Option<String>,
+  to: Option<String>,
+) -> Result<ShowFilesResult, String> {
+  let root = git_root(&state)?;
+  // rev 组装（对齐前端 DiffBase 语义）：
+  //   unstaged / worktree：旧 = HEAD；新 = index（''）；
+  //   staged：旧 = HEAD；新 = index（''）；
+  //   range：旧 = from；新 = to
+  let old_rev = if kind == "range" {
+    from.unwrap_or_else(|| "HEAD".into())
+  } else {
+    "HEAD".into()
+  };
+  let new_rev = if kind == "range" {
+    to.unwrap_or_else(|| "HEAD".into())
+  } else {
+    String::new() // index
+  };
+
+  let mut entries: Vec<ShowFileEntry> = Vec::new();
+  for req in &paths {
+    // 候选路径一次 ls-files 解析（仅跟踪文件）；未跟踪文件（新嵌入源）补磁盘存在性探测
+    let mut real: Option<String> = None;
+    let candidates: Vec<String> = vec![
+      req.clone(),
+      format!("{req}.md"),
+      format!("{req}.markdown"),
+      format!("{req}.txt"),
+    ];
+    let cand_refs: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
+    let mut args = vec!["ls-files", "--"];
+    args.extend(cand_refs.iter().copied());
+    if let Ok(out) = run_git(&root, &args) {
+      if out.status.success() {
+        let list = String::from_utf8_lossy(&out.stdout);
+        real = list.lines().next().map(|s| s.to_string());
+      }
+    }
+    if real.is_none() {
+      for c in &candidates {
+        if resolve(&root, c).map(|p| p.exists()).unwrap_or(false) {
+          real = Some(c.clone());
+          break;
+        }
+      }
+    }
+    let real = match real {
+      Some(r) => r,
+      None => {
+        entries.push(ShowFileEntry {
+          write: req.clone(),
+          real_path: req.clone(),
+          old: None,
+          next: None,
+          exists: false,
+          changed: None,
+          hash: None,
+        });
+        continue;
+      }
+    };
+    // 每请求产一个 entry（writePath→realPath 映射完整；相同 realPath 由消费者去重）
+    let old: Option<String> = None;
+    let next: Option<String> = None;
+    let exists = false;
+    let changed: Option<bool> = None;
+    let hash: Option<ShowFileHash> = None;
+    if resolve(&root, &real).map(|p| p.exists()).unwrap_or(false) || git_tracked(&root, &real) {
+      old = show_file_content(&root, &real, &old_rev).ok();
+      next = show_file_content(&root, &real, &new_rev).ok();
+    }
+    exists = resolve(&root, &real).map(|p| p.exists()).unwrap_or(false) || git_tracked(&root, &real);
+    changed = match (&old, &next) {
+      (Some(o), Some(n)) => Some(o != n),
+      (None, Some(_)) => Some(true), // 新文件
+      _ => None,
+    };
+    hash = match (&old, &next) {
+      (Some(o), Some(n)) => Some(ShowFileHash {
+        old: content_hash(o),
+        next: content_hash(n),
+      }),
+      (Some(o), None) => Some(ShowFileHash {
+        old: content_hash(o),
+        next: content_hash(""),
+      }),
+      (None, Some(n)) => Some(ShowFileHash {
+        old: content_hash(""),
+        next: content_hash(n),
+      }),
+      (None, None) => None,
+    };
+    entries.push(ShowFileEntry {
+      write: req.clone(),
+      real_path: real,
+      old,
+      next,
+      exists,
+      changed,
+      hash,
+    });
+  }
+  Ok(ShowFilesResult { entries })
+}
+
+/// 还原整文件（M16：未跟踪 → 删文件；其他 → checkout --，即 index → worktree，Phase 0 #5）
 #[tauri::command]
 fn git_discard_file(state: State<AppState>, path: String) -> Result<(), String> {
   let root = git_root(&state)?;
+  if !git_tracked(&root, &path) {
+    let full = resolve(&root, &path)?;
+    if full.is_dir() {
+      std::fs::remove_dir_all(&full).map_err(|e| e.to_string())?;
+    } else if full.exists() {
+      std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+    }
+    return Ok(());
+  }
   let out = run_git(&root, &["checkout", "--", &path])?;
   if !out.status.success() {
     return Err(String::from_utf8_lossy(&out.stderr).trim().into());
   }
   Ok(())
 }
-
 /// 从 unified diff 文本提取第 idx 个 hunk（含 diff 头部）→ 可独立应用的补丁
 fn extract_hunk_patch(diff_text: &str, idx: usize) -> Option<String> {
   let lines: Vec<&str> = diff_text.lines().collect();
@@ -1116,7 +1477,8 @@ fn extract_hunk_patch(diff_text: &str, idx: usize) -> Option<String> {
   Some(out)
 }
 
-/// 还原单个 hunk（仅工作区 diff）：提取该 hunk 的 -U0 补丁 → git apply --reverse
+/// 还原单个 hunk（仅 Changes 区，index..worktree 层）：
+/// -U3 提取（与前端 DiffView 的 hunk 序号一致，Phase 0 #1）→ git apply --reverse
 #[tauri::command]
 fn git_discard_hunk(
   state: State<AppState>,
@@ -1124,8 +1486,7 @@ fn git_discard_hunk(
   hunk_index: usize,
 ) -> Result<(), String> {
   let root = git_root(&state)?;
-  // -U0 无上下文：hunk 头行号精确，可独立应用
-  let out = run_git(&root, &["diff", "--no-color", "-U0", "HEAD", "--", &path])?;
+  let out = run_git(&root, &["diff", "--no-color", "-U3", "--", &path])?;
   if !out.status.success() {
     return Err(String::from_utf8_lossy(&out.stderr).trim().into());
   }
@@ -1133,7 +1494,7 @@ fn git_discard_hunk(
   let patch = extract_hunk_patch(&text, hunk_index).ok_or("hunk 不存在或文件无改动")?;
   use std::io::Write;
   let mut child = no_console(&mut std::process::Command::new("git"))
-    .args(["apply", "--reverse", "--unidiff-zero", "-"])
+    .args(["apply", "--reverse", "-"])
     .current_dir(&root)
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
@@ -1164,9 +1525,307 @@ fn git_checkout_branch(state: State<AppState>, name: String) -> Result<(), Strin
   Ok(())
 }
 
+// ---------- M16 SCM：暂存/提交/同步/分支 ----------
+
+fn run_git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
+  let out = run_git(root, args)?;
+  if !out.status.success() {
+    return Err(String::from_utf8_lossy(&out.stderr).trim().into());
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn git_stage(state: State<AppState>, paths: Vec<String>) -> Result<(), String> {
+  if paths.is_empty() {
+    return Ok(());
+  }
+  let root = git_root(&state)?;
+  let mut args = vec!["add", "-A", "--"];
+  for p in &paths {
+    args.push(p.as_str());
+  }
+  run_git_checked(&root, &args)
+}
+
+/// 取消暂存：git reset -q HEAD -- paths（实测无 HEAD 的首次提交仓库同样可用）
+#[tauri::command]
+fn git_unstage(state: State<AppState>, paths: Vec<String>) -> Result<(), String> {
+  if paths.is_empty() {
+    return Ok(());
+  }
+  let root = git_root(&state)?;
+  let mut args = vec!["reset", "-q", "HEAD", "--"];
+  for p in &paths {
+    args.push(p.as_str());
+  }
+  run_git_checked(&root, &args)
+}
+
+/// staged 区「还原到 HEAD」：index ← HEAD 且 worktree ← HEAD（破坏性，前端 danger confirm）
+#[tauri::command]
+fn git_revert_to_head(state: State<AppState>, paths: Vec<String>) -> Result<(), String> {
+  if paths.is_empty() {
+    return Ok(());
+  }
+  let root = git_root(&state)?;
+  {
+    let mut args = vec!["reset", "-q", "HEAD", "--"];
+    for p in &paths {
+      args.push(p.as_str());
+    }
+    run_git_checked(&root, &args)?;
+  }
+  {
+    let mut args = vec!["checkout", "--"];
+    for p in &paths {
+      args.push(p.as_str());
+    }
+    run_git_checked(&root, &args)?;
+  }
+  Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitResult {
+  hash: String,
+}
+
+/// 提交：commit -m msg（+--amend）；stage_all → 先 git add -A。返回 HEAD hash
+#[tauri::command]
+fn git_commit(
+  state: State<AppState>,
+  message: String,
+  amend: bool,
+  stage_all: bool,
+) -> Result<CommitResult, String> {
+  let root = git_root(&state)?;
+  if stage_all {
+    run_git_checked(&root, &["add", "-A"])?;
+  }
+  let mut args = vec!["commit"];
+  if amend {
+    args.push("--amend");
+  }
+  args.extend(["-m", message.as_str()]);
+  run_git_checked(&root, &args)?;
+  let hout = run_git(&root, &["rev-parse", "HEAD"])?;
+  let hash = String::from_utf8_lossy(&hout.stdout).trim().to_string();
+  Ok(CommitResult { hash })
+}
+
+#[tauri::command]
+fn git_fetch(state: State<AppState>) -> Result<(), String> {
+  let root = git_root(&state)?;
+  run_git_checked(&root, &["fetch"])
+}
+
+#[tauri::command]
+fn git_pull(state: State<AppState>) -> Result<(), String> {
+  let root = git_root(&state)?;
+  run_git_checked(&root, &["pull", "--no-rebase"])
+}
+
+/// 推送：普通 push；首次无 upstream（报错含 upstream）→ git push -u origin <branch>
+#[tauri::command]
+fn git_push(state: State<AppState>) -> Result<(), String> {
+  let root = git_root(&state)?;
+  match run_git_checked(&root, &["push"]) {
+    Ok(()) => Ok(()),
+    Err(e) => {
+      if e.contains("upstream") || e.contains("fetch first") {
+        let branch = run_git(&root, &["branch", "--show-current"])
+          .ok()
+          .filter(|o| o.status.success())
+          .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+          .filter(|s| !s.is_empty());
+        if let Some(b) = branch {
+          return run_git_checked(&root, &["push", "-u", "origin", b.as_str()]);
+        }
+      }
+      Err(e)
+    }
+  }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AheadBehind {
+  ahead: i64,
+  behind: i64,
+}
+
+/// ahead/behind（本地计算，无网络）：无 upstream → null（UI 隐藏 sync）
+#[tauri::command]
+fn git_ahead_behind(state: State<AppState>) -> Result<Option<AheadBehind>, String> {
+  let root = git_root(&state)?;
+  let has_upstream = run_git(&root, &["rev-parse", "--abbrev-ref", "@{upstream}"])
+    .map(|o| o.status.success())
+    .unwrap_or(false);
+  if !has_upstream {
+    return Ok(None);
+  }
+  let out = run_git(&root, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
+  if !out.status.success() {
+    return Ok(None);
+  }
+  let text = String::from_utf8_lossy(&out.stdout);
+  let mut parts = text.split_whitespace();
+  let behind: i64 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+  let ahead: i64 = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+  Ok(Some(AheadBehind { ahead, behind }))
+}
+
+#[tauri::command]
+fn git_create_branch(state: State<AppState>, name: String, from: Option<String>) -> Result<(), String> {
+  let root = git_root(&state)?;
+  let mut args = vec!["branch"];
+  args.push(name.as_str());
+  if let Some(f) = &from {
+    args.push(f.as_str());
+  }
+  run_git_checked(&root, &args)
+}
+
+#[tauri::command]
+fn git_rename_branch(state: State<AppState>, from: String, to: String) -> Result<(), String> {
+  let root = git_root(&state)?;
+  run_git_checked(&root, &["branch", "-m", from.as_str(), to.as_str()])
+}
+
+#[tauri::command]
+fn git_delete_branch(state: State<AppState>, name: String) -> Result<(), String> {
+  let root = git_root(&state)?;
+  run_git_checked(&root, &["branch", "-D", name.as_str()])
+}
+
+/// 追加一条规则到仓库根 .gitignore（无则创建）
+#[tauri::command]
+fn git_ignore(state: State<AppState>, path: String) -> Result<(), String> {
+  let root = git_root(&state)?;
+  let gi = root.join(".gitignore");
+  let mut content = String::new();
+  if let Ok(s) = std::fs::read_to_string(&gi) {
+    content = s;
+    if !content.ends_with('\n') {
+      content.push('\n');
+    }
+  }
+  content.push('/');
+  content.push_str(&path);
+  content.push('\n');
+  std::fs::write(&gi, content).map_err(|e| e.to_string())
+}
+
 // ---------- 注册 ----------
 
+/// 诊断信息（D3）：系统/应用信息，供前端诊断包环境层使用
+#[tauri::command]
+fn diagnostics_info() -> serde_json::Value {
+  serde_json::json!({
+    "os": std::env::consts::OS,
+    "arch": std::env::consts::ARCH,
+    "family": std::env::consts::FAMILY,
+    "appVersion": env!("CARGO_PKG_VERSION"),
+    "locale": std::env::var("LANG")
+        .ok()
+        .or_else(|| std::env::var("LC_ALL").ok())
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_default(),
+    "exeDir": std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default(),
+  })
+}
+
+/// 应用数据目录：panic 日志落盘位置（各平台约定）
+fn app_data_dir() -> std::path::PathBuf {
+  #[cfg(target_os = "windows")]
+  {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(base).join("com.writeit.app")
+  }
+  #[cfg(target_os = "macos")]
+  {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+      .join("Library/Application Support/com.writeit.app")
+  }
+  #[cfg(target_os = "linux")]
+  {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".local/share/com.writeit.app")
+  }
+  #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+  {
+    std::path::PathBuf::from(".")
+  }
+}
+
+/// 崩溃取证（D3）：Rust panic → 追加写 writeit-panic.log（用户反馈「闪退」时唯一证据）
+/// 链式接管 tauri 默认 hook：先落盘，再保留原有行为。
+pub fn install_panic_hook() {
+  let prev = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    let dir = app_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let line = format!(
+      "{} PANIC: {}\n",
+      chrono_now(),
+      info.payload().downcast_ref::<&str>().map(|s| s.to_string())
+          .or_else(|| info.payload().downcast_ref::<String>().cloned())
+          .unwrap_or_else(|| "<无 payload>".into())
+    );
+    let loc = info
+      .location()
+      .map(|l| format!("  at {}:{}:{}\n", l.file(), l.line(), l.column()))
+      .unwrap_or_default();
+    let _ = std::fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(dir.join("writeit-panic.log"))
+      .and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(format!("{}{}\n", line, loc).as_bytes())
+      });
+    prev(info);
+  }));
+}
+
+/// 简易本地时间（YYYY-MM-DD HH:MM:SS，UTC 本地换算不做时区库）
+fn chrono_now() -> String {
+  use std::time::{SystemTime, UNIX_EPOCH};
+  let secs = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or(0);
+  let days = secs / 86400;
+  let rem = secs % 86400;
+  // 1970-01-01 起的天数 → 年月日（蔡勒式推进；精度足够，误差 ±1 日边界忽略）
+  let (y, m, d) = civil_from_days(days as i64);
+  format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
+/// days since 1970-01-01 → (year, month, day)
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+  let z = z + 719468;
+  let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+  let doe = z - era * 146097;
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  let y = yoe + era * 400;
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  let mp = (5 * doy + 2) / 153;
+  let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+  let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+  (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 pub fn run() {
+  // 崩溃取证：最早安装，捕获一切 panic（含 Tauri 运行时错误）
+  install_panic_hook();
   tauri::Builder::default()
     .manage(AppState::default())
     .plugin(tauri_plugin_dialog::init())
@@ -1182,6 +1841,7 @@ pub fn run() {
       remove,
       reveal_in_explorer,
       save_binary,
+      diagnostics_info,
       git_user_name,
       git_repo_info,
       git_branches,
@@ -1190,9 +1850,22 @@ pub fn run() {
       git_show_commit,
       git_diff_file,
       git_show_file,
+      git_show_files,
       git_discard_file,
       git_discard_hunk,
       git_checkout_branch,
+      git_stage,
+      git_unstage,
+      git_commit,
+      git_revert_to_head,
+      git_fetch,
+      git_pull,
+      git_push,
+      git_ahead_behind,
+      git_create_branch,
+      git_rename_branch,
+      git_delete_branch,
+      git_ignore,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

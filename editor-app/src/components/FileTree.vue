@@ -80,7 +80,7 @@ function nodeStatus(): string {
 const statusMeta = () => STATUS_META[nodeStatus()]
 /** 有改动文件行尾的「查看 Git 改动」按钮（单击行为保持正常打开编辑，不劫持） */
 function openGitTreeDiff(path: string) {
-  void openGitDiff(path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+  void openGitDiff(path, { kind: 'worktree', label: '工作区 vs HEAD' })
 }
 
 function onContextMenu(e: MouseEvent) {

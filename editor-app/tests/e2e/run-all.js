@@ -44,11 +44,15 @@ const SUITES = [
   'mermaid-zoom-e2e', // Mermaid 预览放大查看（悬停放大镜 + Lightbox + ESC）
   'mermaid-ref-e2e', // M9 Mermaid 代码块 @ 联想 + 文本级引用跳转
   'export-e2e',     // M10 导出：默认 PDF/DOCX/MD + 设置导出页签 + export.ts 自定义
-  'git-m11a-e2e',   // M11 Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程）
+  'git-m11a-e2e',
+  'git-m18-fixture-e2e',   // M18 确定性渲染管线 fixture（prefill/NodeView/settle/data-dnote/折叠卡）   // M11 Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程）
   'git-m11a-smoke', // M11 浏览器降级：Git 图标灰置 + toast + 面板错误提示
   'search-e2e',     // 全局搜索面板：全文搜索/跳转/快捷键/收起
   'scroll-e2e',     // 切 tab 滚动位置保持（display:none 清 scrollTop → 切换点保存/恢复）
+  'refs-footer-e2e', // 引用/被引用 底部展示区：点击 chip 打开目标文件（回归 b3be328 后打开失败）
+  'paste-ref-e2e',   // 复制文件粘贴为引用（Ctrl+V 链接）+ 编辑器右键菜单（三种粘贴/类型切换）
   'table-enhance-e2e', // 表格增强：单元格换行 round-trip / Shift+Enter 新增行 / 动态列宽
+  'diagnostics-e2e', // 问题诊断包：logger/双入口/生成 zip/异常提示红点（D1-D3，2026-08-22）
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
 

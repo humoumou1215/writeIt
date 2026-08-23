@@ -278,18 +278,32 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
       }
       return null
     }
-    /** 渲染列宽（百分比）；拖拽中临时关闭动画以跟手 */
+    /** 渲染列宽（百分比）；就地更新 col 宽度（不重建，避免重排跳变），拖拽中临时关闭动画以跟手 */
     const applyFr = (tableEl: HTMLTableElement, fr: number[], animate = true) => {
       let g = tableEl.querySelector(':scope > colgroup') as HTMLTableColElement | null
       if (!g) {
         g = document.createElement('colgroup')
         tableEl.insertBefore(g, tableEl.firstChild)
+        fr.forEach((f) => {
+          const col = document.createElement('col')
+          col.style.width = f * 100 + '%'
+          g!.appendChild(col)
+        })
+        return
       }
-      while (g.firstChild) g.removeChild(g.firstChild)
-      fr.forEach((f) => {
-        const col = document.createElement('col')
-        col.style.width = f * 100 + '%'
-        g!.appendChild(col)
+      const cols = g.querySelectorAll('col')
+      if (cols.length !== fr.length) {
+        while (g.firstChild) g.removeChild(g.firstChild)
+        fr.forEach((f) => {
+          const col = document.createElement('col')
+          col.style.width = f * 100 + '%'
+          g!.appendChild(col)
+        })
+        return
+      }
+      fr.forEach((f, i) => {
+        cols[i].style.width = f * 100 + '%'
+        cols[i].style.transition = animate ? '' : 'none'
       })
       if (!animate) tableEl.style.transition = 'none'
     }
@@ -302,6 +316,12 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
       fr[drag.col + 1] -= delta
       applyFr(drag.table, fr, false)
       drag.fr = fr
+      // 指示条实时跟随鼠标
+      const rect = drag.table.getBoundingClientRect()
+      resizeHandle.style.display = 'block'
+      resizeHandle.style.top = rect.top + 'px'
+      resizeHandle.style.height = rect.height + 'px'
+      resizeHandle.style.left = x + 'px'
     }
     // 拖拽过程中的竖向指示条
     const resizeHandle = document.createElement('div')
@@ -334,6 +354,9 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
       const fr = drag.fr
       tableEl.style.removeProperty('transition')
       tableEl.style.removeProperty('cursor')
+      tableEl.querySelectorAll(':scope > colgroup col').forEach((c) => ((c as HTMLElement).style.transition = ''))
+      document.body.style.removeProperty('cursor')
+      document.body.style.removeProperty('userSelect')
       drag = null
       resizeHandle.style.display = 'none'
       window.removeEventListener('mousemove', onWinMove)
@@ -341,6 +364,8 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
       if (tableEl && fr.length) {
         persistManualWidths(view as EditorView, tableEl, fr)
         scheduleRender()
+        // 结束后按持久化的新 colwidth 重新渲染（看是否超宽）
+        requestAnimationFrame(() => view && renderAll(view))
       }
     }
     function onWinMove(e: MouseEvent) {
@@ -380,7 +405,9 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
           if (!tableEl || tableEl.rows.length === 0) return
           const hit = hitBorder(tableEl, e.clientX)
           if (hit == null) return
+          // 捕获：阻止表格自带的「列边界加列」等默认操作，避免冲突
           e.preventDefault()
+          e.stopPropagation()
           const fr = currentFractions(tableEl)
           if (fr.length < 2) return
           drag = {
@@ -391,44 +418,53 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
             tableW: tableEl.getBoundingClientRect().width,
           }
           tableEl.style.transition = 'none'
-          tableEl.style.cursor = 'col-resize'
-          resizeHandle.style.display = 'none'
+          document.body.style.cursor = 'col-resize'
+          document.body.style.userSelect = 'none'
+          // 指示条保留并跟随（不隐藏）
           window.addEventListener('mousemove', onWinMove)
           window.addEventListener('mouseup', onWinUp)
         }
-        dom.addEventListener('mousedown', onMouseDown)
+        dom.addEventListener('mousedown', onMouseDown, true) // 捕获阶段
         dom.addEventListener('mousemove', onMouseMoveHover)
-        const onMouseOver = (e: MouseEvent) => {
-          const target = e.target as HTMLElement
-          const tableEl = target.closest('table') as HTMLTableElement | null
-          if (!tableEl) {
-            hoveredTable = null
-            autoBtn.style.display = 'none'
-            return
-          }
-          hoveredTable = tableEl
-          // 表右上角
-          const r = tableEl.getBoundingClientRect()
+        // ---- 悬浮「自动列宽」按钮：基于 document mousemove + elementFromPoint，规则唯一、不闪烁 ----
+        // 「鼠标下最上层元素」是表格 → 显示按钮；是按钮/指示条自身 → 保持；是其它 → 隐藏。
+        let lastTable: HTMLTableElement | null = null
+        const positionAutoBtn = (t: HTMLTableElement) => {
+          const r = t.getBoundingClientRect()
           autoBtn.style.display = 'block'
-          autoBtn.style.left = r.right - 26 + 'px'
+          autoBtn.style.left = r.right - 24 + 'px'
           autoBtn.style.top = r.top + 4 + 'px'
         }
-        dom.addEventListener('mouseover', onMouseOver)
-        const hideHover = () => {
-          autoBtn.style.display = 'none'
-          resizeHandle.style.display = 'none'
-          
+        const onDocMove = (e: MouseEvent) => {
+          if (drag) return
+          const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+          const isOurUI = el && el.closest('.tb-auto-width,.tb-resize-handle')
+          const tableEl = el?.closest('table') as HTMLTableElement | null
+          if (tableEl && !isOurUI) {
+            hoveredTable = tableEl
+            if (tableEl !== lastTable) {
+              lastTable = tableEl
+              positionAutoBtn(tableEl)
+            }
+            autoBtn.style.display = 'block' // 保险：跨表时保证显示
+          } else if (!isOurUI) {
+            // 不在表格、也不在按钮/指示条上 → 隐藏
+            lastTable = null
+            hoveredTable = null
+            autoBtn.style.display = 'none'
+          }
+          // 若 hoveredTable 仍在但鼠标不在其上（e.g. 移到了按钮），保持显示
         }
-        dom.addEventListener('mouseleave', hideHover)
+        document.addEventListener('mousemove', onDocMove)
         return {
           update(v2) {
             if (!drag) scheduleRender()
           },
           destroy() {
-            dom.removeEventListener('mousedown', onMouseDown)
+            dom.removeEventListener('mousedown', onMouseDown, true)
             dom.removeEventListener('mousemove', onMouseMoveHover)
-            dom.removeEventListener('mouseover', onMouseOver)
-            dom.removeEventListener('mouseleave', hideHover)
+            document.removeEventListener('mousemove', onDocMove)
+            if (drag) endDrag()
             autoBtn.remove()
             resizeHandle.remove()
           },

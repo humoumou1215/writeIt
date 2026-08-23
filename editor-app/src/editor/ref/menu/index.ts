@@ -13,6 +13,7 @@ import { createApp, type App } from 'vue'
 
 import { resolveRefs } from '../resolve'
 import { refreshBrokenState } from '../app-plugin'
+import { diagEvent } from '../../../diagnostics/logger'
 import RefMenu from './RefMenu.vue'
 import { refConfigCtx, type RefConfig } from '../config'
 import {
@@ -79,7 +80,8 @@ function insertFileBlock(
   const tr = view.state.tr
   tr.delete(triggerFrom, triggerTo)
   const pos = triggerFrom
-  const block: Node = schema.nodes.file_block.create({ path, readonly })
+  // 创建即带默认段落：file_block content:'block+' 不允空块（空块被事务触碰会抛 RangeError）
+  const block: Node = schema.nodes.file_block.create({ path, readonly }, schema.nodes.paragraph.create())
   const $pos = tr.doc.resolve(pos)
   const parent = $pos.parent
 
@@ -391,6 +393,7 @@ class RefMenuView implements PluginView {
   select = (path: string, mode?: RefMode) => {
     const { triggerFrom, triggerTo, replacePos } = refMenuState
     const m = mode ?? refMenuState.mode
+    diagEvent('editor:ref-insert', { target: path, data: { mode: m, via: 'menu' } })
     if (replacePos != null) {
       // 替换模式：删除 [输入起点, 节点末尾)，插入新节点
       this.replaceNode(path, m)
@@ -438,6 +441,7 @@ class RefMenuView implements PluginView {
   selectEntity = (entityId: string, kind: 'file' | 'object' | 'heading') => {
     const path = refMenuState.selectedPath
     if (!path) return
+    diagEvent('editor:ref-insert', { target: path, data: { kind, via: 'entity' } })
     const { triggerFrom, triggerTo, replacePos } = refMenuState
     if (replacePos != null) {
       // 替换模式：按 replacePath 重查节点替换（v1 实体替换按链接模式处理）
@@ -459,6 +463,7 @@ class RefMenuView implements PluginView {
 
   /** 替换模式：按 replacePath 重查节点并替换（避免位置漂移） */
   replaceNode = (path: string, mode: RefMode) => {
+    diagEvent('editor:ref-replace', { target: path, data: { mode } })
     const schema = this.#view.state.schema
     const oldPath = refMenuState.replacePath
     let from = -1
@@ -482,7 +487,7 @@ class RefMenuView implements PluginView {
       tr.replaceWith(
         from,
         to,
-        schema.nodes.file_block.create({ path, readonly: mode === 'embed-ro' })
+        schema.nodes.file_block.create({ path, readonly: mode === 'embed-ro' }, schema.nodes.paragraph.create())
       )
     }
     this.#view.dispatch(tr)

@@ -1,7 +1,7 @@
 // M14：Git 演示仓库数据（真实 git diff 生成——tests/scratch/gen-mock-git.js 重新生成）
 // 演示仓库：README.md（mermaid/嵌入/词级/纯删除）+ 会议记录（嵌入块内容调整）+ 需求表（表格单元格级）
 // 数据为真实 git 仓库（三文件两提交 + 工作区改动）的 unified + word-diff=porcelain 解析产物
-import type { GitBranch, GitCommit, GitCommitFile, GitDiffResult, GitFileStatus } from './types'
+import type { DiffHunk, GitBranch, GitCommit, GitCommitFile, GitDiffResult, GitFileStatus } from './types'
 
 // ---------- 版本内容 ----------
 // ---------- 版本内容 ----------
@@ -1197,9 +1197,18 @@ export const README_COMMIT_HUNKS: GitDiffResult['hunks'] = [
 export const DEMO_REPO = { isRepo: true, branch: 'main', headHash: '1e7728bb136ba3bf7ab287f07399c7f7bea1b63f' } as const
 
 export const DEMO_STATUS: GitFileStatus[] = [
-  { path: 'Git演示/README.md', status: 'M', added: 8, deleted: 9 },
-  { path: 'Git演示/数据/需求表.md', status: 'M', added: 2, deleted: 1 },
-  { path: 'Git演示/笔记/会议纪要.md', status: 'M', added: 2, deleted: 1 },
+  // 工作区改动（indexStatus=' ' → Changes 区）
+  { path: 'Git演示/README.md', status: 'M', indexStatus: ' ', worktreeStatus: 'M', added: 8, deleted: 9, indexAdded: -1, indexDeleted: -1 },
+  { path: 'Git演示/数据/需求表.md', status: 'M', indexStatus: ' ', worktreeStatus: 'M', added: 2, deleted: 1, indexAdded: -1, indexDeleted: -1 },
+  { path: 'Git演示/笔记/会议纪要.md', status: 'M', indexStatus: ' ', worktreeStatus: 'M', added: 2, deleted: 1, indexAdded: -1, indexDeleted: -1 },
+  // R1 演示集：双态文件（X=M,Y=M → 同时出现在 Staged 与 Changes 两区）
+  { path: 'Git演示/双态.md', status: 'M', indexStatus: 'M', worktreeStatus: 'M', added: 2, deleted: 1, indexAdded: 1, indexDeleted: 0 },
+  // R1 演示集：staged-only（X=A, Y=' ' → 仅 Staged 区）
+  { path: 'Git演示/staged-only.md', status: 'A', indexStatus: 'A', worktreeStatus: ' ', added: -1, deleted: -1, indexAdded: 3, indexDeleted: 0 },
+  // R1 演示集：rename（改名后暂存；-z 顺序验证：path=新路径, renameFrom=旧路径）
+  { path: 'Git演示/改名后.md', status: 'R', indexStatus: 'R', worktreeStatus: ' ', renameFrom: 'Git演示/改名前的旧名字.md', added: -1, deleted: -1, indexAdded: 0, indexDeleted: 0 },
+  // M18 fixture：循环嵌入（A 嵌 B 嵌 A → 折叠卡验证）
+  { path: 'Git演示/环测试/甲.md', status: 'M', indexStatus: ' ', worktreeStatus: 'M', added: 1, deleted: 0, indexAdded: -1, indexDeleted: -1 },
 ]
 
 export const DEMO_LOG: GitCommit[] = [
@@ -1244,6 +1253,23 @@ export const DEMO_SHOW_COMMIT = {
     { path: 'Git演示/笔记/会议纪要.md', status: 'M', added: 1, deleted: 0 },
   ] as GitCommitFile[],
 }
+
+// M18 P3a fixture：循环嵌入（A 嵌 B 嵌 A → 折叠卡 + 保证层 record）
+export const CYCLE_A_V1 = `# 环 A\n\n![[Git演示/环测试/乙.md]]\n`
+export const CYCLE_A_V2 = `# 环 A\n\n![[Git演示/环测试/乙.md]]\n\nA 新增一行\n`
+export const CYCLE_B = `# 环 B\n\n![[Git演示/环测试/甲.md]]\n`
+
+export const CYCLE_HUNKS: DiffHunk[] = [
+  {
+    oldStart: 1, oldLines: 4, newStart: 1, newLines: 5,
+    lines: [
+      { kind: 'ctx', text: '# 环 A' },
+      { kind: 'ctx', text: '' },
+      { kind: 'ctx', text: '![[Git演示/环测试/乙.md]]' },
+      { kind: 'add', text: 'A 新增一行' },
+    ],
+  },
+]
 
 export const DEMO_BRANCHES: GitBranch[] = [
   { name: 'main', isCurrent: true, remote: null, aheadBehind: null },

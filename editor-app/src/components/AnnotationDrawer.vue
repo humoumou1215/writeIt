@@ -21,7 +21,7 @@ import {
 import { LEVEL_COLOR } from '../annotations/card-color'
 
 // ---------- 状态 ----------
-const open = ref(true)
+const open = ref(false)
 const width = ref(Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
 const anns = ref<Annotation[]>([])
 const activeId = ref<string | null>(null)
@@ -442,12 +442,21 @@ function drawConnector() {
       else svg.style.display = 'none'
       return
     }
-    // M14：diff 模式下用渲染 Crepe（doc = 组合 md）；否则主编辑器
+    // M14：diff 模式下用渲染 Crepe（doc = 预填充快照）；M18：先按 data-dnote 身份定位（§4.3），
+    // 失败再退回 coordsAtPos（prose 主策略）
     const crepe =
       tab?.viewMode === 'diff'
         ? m.getRenderInstance(tabId ?? '')
         : m.getActiveInstance()?.crepe ?? null
     if (!crepe) return
+    // data-dnote 锚点（内容派生 id = record.id；write-once 下稳定）
+    const dnoteEl = document.querySelector(
+      `.git-diff-view [data-dnote="${CSS.escape(active.id)}"]`
+    ) as HTMLElement | null
+    if (dnoteEl && dnoteEl.getBoundingClientRect().width > 0) {
+      drawConnectorPath(dnoteEl.getBoundingClientRect(), drawer, active)
+      return
+    }
     const { editorViewCtx } = await import('@milkdown/kit/core')
     try {
       crepe.editor.action((ctx) => {

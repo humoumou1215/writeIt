@@ -39,7 +39,15 @@ export interface RefConfig {
   reSelect: (path: string) => void
   /** 文件树版本号（菜单树缓存失效依据） */
   getTreeVersion: () => number
+  /** 当前文档（宿主）路径——嵌入链判定的链根；经理打开 tab 时注入；
+   *  diff 视图注入被 diff 的文件路径。未保存新文件时为 null：自嵌/宿主在链中的环
+   *  无法检测（降级为仅深度折叠），保存后重新判定即可检测。 */
+  hostPath?: string | null
   templateService: RefTemplateService
+  /** 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
+   *  工作区内返回相对路径；无根路径/工作区外返回文件名（Obsidian 式全库匹配）；
+   *  由装配层实现（有 fs.rootPath 全量能力），插件包不做系统路径转换。 */
+  resolveExternalPath?: (absPath: string) => string
 }
 
 /** ref 配置切片（$ctx 插件：注册进容器时默认 null；装配层 config 回调 set 覆盖）。

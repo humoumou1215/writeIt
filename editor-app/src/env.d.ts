@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+// 诊断包：vite.config.ts define 注入（编译期内联）
+declare const __APP_VERSION__: string
+declare const __BUILD_TIME__: string
+
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
   const component: DefineComponent<Record<string, never>, Record<string, never>, unknown>

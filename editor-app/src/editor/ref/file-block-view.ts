@@ -1,10 +1,13 @@
 // file_block 的 NodeView：卡片边框 + 头部（路径/只读徽标）+ 内容区
 // 内容区是 contentDOM，ProseMirror 原生渲染容器内的块；只读变体禁用编辑
+// + 多层嵌入治理：collapsed 非空（环 / 超深折叠）→ 渲染折叠提示卡（不可编辑），
+//   点击链路路径跳到对应源文件（经 refClickPlugin 的 a.ref-file 处理，无新接线）。
 import type { NodeView, NodeViewConstructor } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { ViewMutationRecord, EditorView } from 'prosemirror-view'
 import { TextSelection } from '@milkdown/kit/prose/state'
 import type { Ctx } from '@milkdown/kit/ctx'
+import { MAX_EMBED_DEPTH, type CollapsedInfo } from './embed-chain'
 
 export class FileBlockView implements NodeView {
   dom: HTMLElement
@@ -14,8 +17,17 @@ export class FileBlockView implements NodeView {
   private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.editorView = editorViewRef
+    const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
+    const locked = Boolean(node.attrs.readonly) || Boolean(collapsed)
     this.dom = document.createElement('div')
-    this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '')
+    this.dom.className =
+      'ref-file-block' +
+      (node.attrs.readonly ? ' readonly' : '') +
+      (collapsed ? ' is-collapsed' : '')
+    if (collapsed) {
+      this.dom.setAttribute('data-collapsed', '')
+      this.dom.setAttribute('data-chain', collapsed.chain.join('|'))
+    }
 
     this.header = document.createElement('div')
     this.header.className = 'ref-file-block-header'
@@ -29,18 +41,49 @@ export class FileBlockView implements NodeView {
     pathEl.textContent = node.attrs.path
     this.header.append(badgeEl, pathEl)
 
+    // 折叠提示卡（collapsed 非空）：与 contentDOM 同级的手写 DOM（B4：不污染内容 DOM），
+    // contentDOM 保持空 + 禁编辑；点击链路路径 → refClickPlugin 打开对应源文件。
+    if (collapsed) {
+      const hint = document.createElement('div')
+      hint.className = 'ref-file-block-collapsed'
+      const line = document.createElement('div')
+      line.className = 'ref-hint-line'
+      line.textContent =
+        collapsed.reason === 'cycle'
+          ? `↻ 循环引用：${node.attrs.path} 已在上级层级出现`
+          : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
+      hint.append(line)
+      if (collapsed.chain && collapsed.chain.length) {
+        const chainEl = document.createElement('div')
+        chainEl.className = 'ref-hint-chain'
+        collapsed.chain.forEach((p, i) => {
+          if (i > 0) chainEl.append(' › ')
+          const a = document.createElement('a')
+          a.className = 'ref-file'
+          a.setAttribute('data-path', p)
+          a.textContent = p
+          a.title = p
+          chainEl.append(a)
+        })
+        hint.append(chainEl)
+      }
+      this.dom.append(this.header, hint)
+    } else {
+      this.dom.append(this.header)
+    }
+
     const content = document.createElement('div')
     content.className = 'ref-file-block-content'
-    // 只读变体禁编辑；可编辑块不显式设 contenteditable（继承编辑器根的可编辑性——
+    // 只读 / 折叠变体禁编辑；可编辑块不显式设 contenteditable（继承编辑器根的可编辑性——
     // 显式 'true' 造成嵌套 contenteditable，可能干扰 ProseMirror 的输入/IME 组合同步）
-    if (node.attrs.readonly) content.contentEditable = 'false'
+    if (locked) content.contentEditable = 'false'
 
     // 头部点击（非编辑区，ProseMirror 不自行处理）→ 聚焦 + 光标移入块内开头，
     // 并同步 DOM selection（否则 DOM 光标与 view selection 不一致，ProseMirror 丢弃输入）。
     // 注意：内容区点击不要干预（ProseMirror 自然处理 selection——干预会破坏 DOM/view 一致性，
     // 导致输入进 DOM 但不进 doc）。
     this.header.addEventListener('mousedown', (e) => {
-      if (node.attrs.readonly) return
+      if (locked) return
       e.preventDefault()
       const pos = getPosRef()
       const editorView = editorViewRef as unknown as EditorView | null
@@ -80,7 +123,9 @@ export class FileBlockView implements NodeView {
     // 拦截内容区文本输入（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步）
     content.addEventListener('beforeinput', this.handleContentBeforeInput)
 
-    this.dom.append(this.header, content)
+    // header 已在上面按折叠/非折叠分支追加；
+    // 折叠时 content 保持空容器（提示卡是 contentDOM 外的手写 DOM，不污染内容结构）
+    this.dom.append(content)
     this.contentDOM = content
   }
 
@@ -126,6 +171,12 @@ export class FileBlockView implements NodeView {
     }
     // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截
     // deleteContentBackward 等由 ProseMirror keymap 处理（keydown → dispatch）
+  }
+
+  update(node: ProseNode): boolean {
+    // 返回 false → 让 PM 重建 NodeView（新 contentDOM → content 渲染 + view desc 建立，块内光标/输入正常）
+    // 物化等 content 整体替换由 PM 重建承载；若返回 true 且 PM 不 updateChildren 则内容不显示
+    return node.type.name !== 'file_block'
   }
 
   destroy() {

@@ -15,6 +15,8 @@ import {
   prepareMermaidRefs,
   escapeRefHash,
 } from './mermaid-ref'
+// 诊断埋点（D2）：mermaid 渲染成功/失败/耗时
+import { diag, diagEvent } from '../diagnostics/logger'
 
 type CrepeFeatureConfig = NonNullable<
   ConstructorParameters<typeof Crepe>[0]
@@ -23,6 +25,69 @@ type CrepeFeatureConfig = NonNullable<
 // 全局单例初始化（多标签共享同一 mermaid 实例）
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
 let mermaidSeq = 0
+
+// ---------- M18 §5：可复用的 mermaid 渲染纯函数（编辑器 preview 与 diff 自有 NodeView 共用，零分叉） ----------
+
+/** 渲染失败信号（区别于语法错误与静默降级；toString 即展示文案） */
+export class MermaidRenderError extends Error {}
+
+/**
+ * mermaid source → 渲染后 SVG HTML（escapeRefHash → mermaid.render → linkifyMermaidRefs →
+ * wrapMermaidPreview）。与编辑器 preview 面板共用同一条代码路径（§4.1.2：divergence 仅限挂载点）。
+ * 失败抛 MermaidRenderError（不带 DOM/调用栈依赖，node 可测）。
+ */
+export async function renderMermaidSvg(src: string): Promise<string> {
+  const t0 = performance.now()
+  const run = async (s: string, refs: string[]): Promise<string> => {
+    const { svg } = await mermaid.render(`mmd-${mermaidSeq++}`, escapeRefHash(s))
+    diagEvent('mermaid:render', {
+      target: 'mermaid',
+      ok: true,
+      ms: performance.now() - t0,
+      data: { srcLen: s.length, refs: refs.length },
+    })
+    // M9：foreignObject 内 [[path#frag]] 文本 → 可点击链接（去 [[ ]] 显示路径）
+    // 再包裹放大镜按钮（悬停显示，点击 Lightbox 放大查看，ESC 关闭）
+    return wrapMermaidPreview(linkifyMermaidRefs(svg, refs))
+  }
+  try {
+    return await run(src, [])
+  } catch (err) {
+    // M9 fallback：节点 label 里「未加引号」的 [[..]] 会让 mermaid parse error
+    // （裸 [[ 解析为子程序节点形状）→ 换成可解析占位符再渲染；prepare 已剔除
+    // 子程序节点形状（A[[x]]），避免破坏原生写法。
+    if (!/\[\[.+?\]\]/.test(src)) {
+      diagEvent('mermaid:render', {
+        target: 'mermaid',
+        ok: false,
+        ms: performance.now() - t0,
+        data: { error: err instanceof Error ? err.message : String(err) },
+      })
+      throw new MermaidRenderError(err instanceof Error ? err.message : String(err))
+    }
+    const prepared = prepareMermaidRefs(src)
+    if (!prepared.refs.length) {
+      diagEvent('mermaid:render', {
+        target: 'mermaid',
+        ok: false,
+        ms: performance.now() - t0,
+        data: { error: err instanceof Error ? err.message : String(err) },
+      })
+      throw new MermaidRenderError(err instanceof Error ? err.message : String(err))
+    }
+    try {
+      return await run(prepared.src, prepared.refs)
+    } catch (err2) {
+      diagEvent('mermaid:render', {
+        target: 'mermaid',
+        ok: false,
+        ms: performance.now() - t0,
+        data: { error: err2 instanceof Error ? err2.message : String(err2) },
+      })
+      throw new MermaidRenderError(err2 instanceof Error ? err2.message : String(err2))
+    }
+  }
+}
 
 // Mermaid 鱼形图标（斜杠命令菜单）
 const mermaidIcon = `
@@ -41,33 +106,28 @@ export function mermaidFeatureConfigs(): CrepeFeatureConfig {
       renderPreview: (language: string, content: string, applyPreview) => {
         if (language.toLowerCase() !== 'mermaid') return null
         const src = String(content)
-        const run = (s: string, refs: string[]) =>
-          mermaid
-            .render(`mmd-${mermaidSeq++}`, escapeRefHash(s))
-            // M9：foreignObject 内 [[path#frag]] 文本 → 可点击链接（去 [[ ]] 显示路径）
-            // 再包裹放大镜按钮（悬停显示，点击 Lightbox 放大查看，ESC 关闭）
-            .then(({ svg }) =>
-              applyPreview(wrapMermaidPreview(linkifyMermaidRefs(svg, refs)))
-            )
+        // M18：与 diff 自有 NodeView 共用同一条渲染路径（renderMermaidSvg）——零分叉
         ;(async () => {
+          const t0 = performance.now()
           try {
-            await run(src, [])
+            const svg = await renderMermaidSvg(src)
+            diagEvent('mermaid:render', {
+              target: `${language.toLowerCase()}`,
+              ok: true,
+              ms: performance.now() - t0,
+              data: { srcLen: src.length },
+            })
+            applyPreview(svg)
           } catch (err) {
-            // M9 fallback：节点 label 里「未加引号」的 [[..]] 会让 mermaid parse error
-            // （裸 [[ 解析为子程序节点形状）→ 换成可解析占位符再渲染；prepare 已剔除
-            // 子程序节点形状（A[[x]]），避免破坏原生写法。
-            if (!/\[\[.+?\]\]/.test(src)) throw err
-            const prepared = prepareMermaidRefs(src)
-            if (!prepared.refs.length) throw err
-            await run(prepared.src, prepared.refs)
+            console.error('[mermaid] 渲染失败:', err)
+            const msg = err instanceof Error ? err.message : String(err)
+            diag('error', 'mermaid', `渲染失败: ${msg}（源码片段: ${src.slice(0, 200)}）`)
+            diagEvent('mermaid:render', { target: 'mermaid', ok: false, ms: performance.now() - t0, data: { error: msg } })
+            applyPreview(
+              `<div style="color: var(--crepe-color-error, #ba1a1a)">⚠️ Mermaid 渲染失败：${msg}</div>`
+            )
           }
-        })().catch((err: unknown) => {
-          console.error('[mermaid] 渲染失败:', err)
-          const msg = err instanceof Error ? err.message : String(err)
-          applyPreview(
-            `<div style="color: var(--crepe-color-error, #ba1a1a)">⚠️ Mermaid 渲染失败：${msg}</div>`
-          )
-        })
+        })()
         // 返回 undefined → code-block 先显示 loading，渲染完成后 applyPreview(svg)
         return undefined
       },

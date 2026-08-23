@@ -608,6 +608,13 @@ file_block : block,        content: 'block+',                    // ![[…]]
 - **深度提升**：`MAX_DEPTH` 由 3 → 10（`resolveRefs` 多轮物化 `round < MAX_DEPTH`、`collectBlocks` walk 深度、超深 toast 三处同步生效）。支持 10 层块嵌入全层物化。
 - **回归**：`nested-ref-e2e` 重构覆盖三场景——①打开 3 层 A→B→C 物化 + 保存不写空；②插入宿主菜单插入 `![[B]]` 后立即见 B、C（无需关重开），宿主序列化含新标记；③10 层（`深/层1..层10`）打开后可见嵌套卡 9 张（层2..层10）、最深层 L10 内容物化可见、保存不写空最深层与层9 标记。16 断言全绿。
 
+**补充（2026-08-19）：块内光标不闪烁修复**
+
+- **问题**：嵌入块（file_block）内光标不闪烁/不可见，但输入正常。
+- **根因**：`materializeBlock` 用 `view.updateState(state)` + `domObserver.forceFlush()` 粗暴整体重建视图——物化后的块内容 DOM **不建立 ProseMirror view desc**（pmViewDesc），PM 无法把 selection/caret 渲染到块内；输入靠 `FileBlockView` 的 `beforeinput` 拦截手动 dispatch（所以正常），但光标因无 desc 不渲染。
+- **修复**：移除 `updateState`+`forceFlush`（改为物化 dispatch 后让 PM 自然处理）；`FileBlockView` 新增 `update(node)` 返回 `false` → 让 PM **重建该 NodeView**（新 contentDOM → 正确渲染 content 并建立 view desc）。块内 `beforeinput` 输入兜底保留（preventDefault 防双写，最稳）。
+- **验证**：点击块内正文后 DOM selection 能精确定位到块内文本节点（`#text`「B 的正文内容」、`inBlockContent:true`、精确 offset）——desc 已建立（修复前只能落块边界），生产下 caret 为正常色会闪烁；`nested-ref-e2e` 16（含编辑写回）、`m6d` 12 / `m6e` 19 / `m6c` 28 / `m6` 6（块内批注/写回/round-trip）、`ref` 16、`m4c` 5、`m3` 9、`table-enhance` 14 全绿，`npm run build` 通过。
+
 ### 记录缺口 / 待办
 
 - 编辑防抖校验开关（§5.1 默认关闭——v1 内置 1.5s，大文档建议后续加设置项）

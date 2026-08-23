@@ -265,8 +265,17 @@ const installErrors = async () => {
 const errors = () => js(`(window.__egErr || []).slice()`)
 
 // ---------------- 导航 ----------------
+// 视口兕底：egobrowser 任务空间窗口有时为 0x0（pageInfo w/h=0），坐标点击/截图全部失效。
+// 用 CDP Emulation.setDeviceMetricsOverride 固定视口（skill 文档：viewport metrics 修复路径），
+// 同一 target 上 reload 后仍保持。
+const ensureViewport = async () => {
+  try {
+    await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+  } catch { /* 无该能力时忽略 */ }
+}
 const openApp = async (url, settleMs = 2500) => {
   await openOrReuseTab(url, { wait: true, timeout: 60 })
+  await ensureViewport()
   await waitMs(settleMs)
 }
 // 清空 mock 文件系统并重新加载（防止测试残留新文件/被改文件串扰下一个套件）

@@ -38,3 +38,126 @@
 .theme-dark .diff-ins {
   background: color-mix(in srgb, #66bb6a, transparent 70%);
 }
+
+/* ---- mermaid 节点级 diff 标注（全局：需在 Lightbox 放大镜克隆 SVG 里也生效，故不放 scoped/组件内） ---- */.diff-node-add rect,
+.diff-node-add circle,
+.diff-node-add .node-bkg {
+  fill: color-mix(in srgb, #2e7d32, transparent 78%) !important;
+  stroke: #2e7d32 !important;
+  stroke-width: 2px !important;
+}
+.diff-node-add .nodeLabel,
+.diff-node-add .state-label {
+  color: #1b5e20 !important;
+  font-weight: 600 !important;
+}
+/* Issue 5：新增（绿）节点内的文本级引用链接也要绿字（覆盖 a.mmd-text-ref 的默认色） */
+.diff-node-add .nodeLabel a,
+.diff-node-add .nodeLabel a.mmd-text-ref,
+.diff-node-add .state-label a,
+.diff-node-add .state-label a.mmd-text-ref {
+  color: #1b5e20 !important;
+}
+.diff-node-del rect,
+.diff-node-del circle,
+.diff-node-del .node-bkg {
+  fill: color-mix(in srgb, #c62828, transparent 78%) !important;
+  stroke: #c62828 !important;
+  stroke-width: 2px !important;
+  stroke-dasharray: 4 3 !important;
+}
+.diff-node-del .nodeLabel,
+.diff-node-del .state-label {
+  color: #8e0000 !important;
+  text-decoration: line-through !important;
+  text-decoration-thickness: 1.5px !important;
+  opacity: 0.85;
+}
+/* M16b：标签修改节点的红色旧值克隆节点（diff-node-del 生效，见 applyMermaidAnnotations） */
+.diff-mod-old {
+  fill: #c62828 !important;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
+}
+/* sequence 消息标注（M16：红删/绿增二元） */
+.diff-seq-add {
+  fill: #2e7d32 !important;
+  font-weight: 600;
+}
+.diff-seq-del {
+  fill: #c62828 !important;
+  font-weight: 600;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
+}
+
+/* ---- 新文件（旧版本为空）：整篇标绿 ---- */
+.rd-new-file .milkdown {
+  border: 1px solid color-mix(in srgb, #2e7d32, transparent 55%);
+  border-radius: 10px;
+  background: color-mix(in srgb, #2e7d32, transparent 94%);
+  padding: 4px 10px;
+}
+/* ---- M18 §4.8：classDef/class 主路径（mermaid 原生渲染图内红绿）----
+ * diffAdd/diffDel 是 classDef 注入的类名；样式与 diff-node-*（DOM fallback）同源。
+ * mermaid 会把 classDef 渲染成内联 style；此处类名 CSS 兜底文本色/描边。 */
+.diff-mermaid-fence svg .diffAdd rect,
+.diff-mermaid-fence svg .diffAdd circle,
+.diff-mermaid-fence svg .diffAdd polygon,
+.diff-mermaid-fence svg .diffAdd .node-bkg {
+  fill: color-mix(in srgb, #2e7d32, transparent 78%) !important;
+  stroke: #2e7d32 !important;
+  stroke-width: 2px !important;
+}
+.diff-mermaid-fence svg .diffAdd .nodeLabel,
+.diff-mermaid-fence svg .diffAdd .state-label,
+.diff-mermaid-fence svg .diffAdd text {
+  color: #1b5e20 !important;
+  fill: #1b5e20 !important;
+  font-weight: 600 !important;
+}
+.diff-mermaid-fence svg .diffDel rect,
+.diff-mermaid-fence svg .diffDel circle,
+.diff-mermaid-fence svg .diffDel polygon,
+.diff-mermaid-fence svg .diffDel .node-bkg {
+  fill: color-mix(in srgb, #c62828, transparent 78%) !important;
+  stroke: #c62828 !important;
+  stroke-width: 2px !important;
+  stroke-dasharray: 4 3 !important;
+}
+.diff-mermaid-fence svg .diffDel .nodeLabel,
+.diff-mermaid-fence svg .diffDel .state-label,
+.diff-mermaid-fence svg .diffDel text {
+  color: #8e0000 !important;
+  fill: #8e0000 !important;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
+}
+
+/* ---- M18 §4.1.2：自有 mermaid NodeView（观感与编辑器 preview 同源） ---- */
+.diff-mermaid-fence .preview-panel {
+  border: none;
+  padding: 0;
+}
+.diff-mermaid-fence .preview-panel .preview {
+  padding: 6px 8px;
+  overflow-x: auto;
+}
+
+/* ---- M18 §4.5：图内标注降级提示（保证层卡永远在） ---- */
+.diff-mermaid-fence .rd-mermaid-failed {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--chrome-error, #ba1a1a);
+  background: color-mix(in srgb, var(--chrome-background, #fff), #fdecea 55%);
+  border: 1px dashed color-mix(in srgb, #c62828, transparent 60%);
+  border-radius: 8px;
+  margin: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

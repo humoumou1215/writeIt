@@ -1,21 +1,39 @@
-// M17：渲染模式——单 Crepe 渲染「新文档 + 结构级 diff 装饰」（替代 M13 的组合 md 注入管线）
-// 流程：patchMermaidFences（fence 节点级合并）→ 单 readonly Crepe（+ diff 装饰插件）渲染
-//   → 用 parserCtx 解析旧文档 → computeDocDiff → 构建 DecorationSet → dispatch 注入
-//   → 渲染后 DOM 标注（mermaid 节点/嵌入徽标）
-// 降级链：Crepe 失败/渲染异常 → 双栏全文对比（renderSplitFallback）
+// M18：渲染模式——确定性渲染管线（第四稿 lifecycle 状态机的替代，§4.1）
+// 流程：prefetch(IO) → model(纯函数，diagram/embed records + mergedMd + FenceRegistry)
+//   → 预填充 doc（write-once：editorStateOptionsCtx 在挂载前定稿，doc 自挂载起不再变化）
+//   → 自有 mermaid NodeView（变更 eager / 未变更 lazy）
+//   → 单点 settle（Promise.allSettled + 5s 兜底，无轮询/竞速截断）
+//   → overlay（徽标 + class 注入失效时的 scoped DOM 标注 fallback）
+// 降级链：Crepe 失败/渲染异常 → 双栏全文对比（renderSplitFallback，与主路径共享 mount 逻辑）
 import { Crepe } from '@milkdown/crepe'
-import { editorViewCtx, parserCtx } from '@milkdown/kit/core'
+import { editorStateOptionsCtx, parserCtx } from '@milkdown/kit/core'
+import type { Node } from '@milkdown/kit/prose/model'
+import { Fragment } from '@milkdown/kit/prose/model'
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
-import { DecorationSet } from '@milkdown/kit/prose/view'
+import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import { $prose } from '@milkdown/kit/utils'
 import { refPlugin, refConfigCtx, type RefConfig } from './ref'
 import { resolveRefs } from './ref/resolve'
 import { registerRefStringify } from './ref/stringify'
 import { featureConfigs } from './features'
-import { buildDiffDecorations, patchMermaidFences, type DiffNote } from './diff-deco'
-import type { MermaidNodeDiff } from './mermaid-diff'
-import { extractFlowchartNodes, extractSequenceMessages, extractStates } from './mermaid-diff'
-import type { DiffHunk } from '../git/types'
+import {
+  buildDiffDecorations,
+  mermaidDiffText,
+  makeNote,
+  type DiffNote,
+} from './diff-deco'
+import {
+  computeDocDiffModel,
+  docMermaidFences,
+  docFileBlocks,
+  type FenceRegistry,
+} from './diff/model'
+import { prefetchEmbedSources, collapsedInfoOf, type PrefetchResult } from './diff/prefetch'
+import { createDiffMermaidNodeView, SettleCollector } from './diff/nodeview'
+import { fenceIdOf } from './diff/fence-pair'
+import { diagRenderUnit, degradedState } from './diff/status'
+import type { DiffBase, DiffHunk } from '../git/types'
+import { diagEvent } from '../diagnostics/logger'
 import './diff.css'
 
 export type { DiffNote } from './diff-deco'
@@ -26,10 +44,8 @@ export interface RenderDiffOptions {
   hunks: DiffHunk[]
   refCfg: RefConfig
   path: string
-  /** 当前 diff 的对比基准（工作区 from=null to=HEAD；提交对比 from=sha^ to=sha）——嵌入摘要用它计算源文件改动 */
-  from: string | null
-  to: string
-  baseLabel: string
+  /** M18 对比基准（DiffBase；嵌入摘要/批量 IO 用它计算源文件改动） */
+  base: DiffBase
   onFallback?: (reason: string) => void
 }
 
@@ -40,30 +56,32 @@ export interface RenderDiffHandle {
 export interface RenderDiffResult {
   handle: RenderDiffHandle
   notes: DiffNote[]
-  mermaid: MermaidNodeDiff[]
+  mermaid: import('./mermaid-diff').MermaidNodeDiff[]
+  /** 新文件（旧版本为空）：整篇标绿 + 一张说明卡 */
+  isNewFile: boolean
   /** 渲染 Crepe 实例（批注抽屉定位/连线用；调用方负责 register/destroy） */
   crepe: Crepe
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+let newFileNoteSeq = 0
 
-// ---------- diff 装饰插件：meta 注入预构建的 DecorationSet ----------
+// ---------- diff 装饰插件：mount 前预构建的 DecorationSet（write-once）+ meta 更新 ----------
 
-/** 插件 key：transaction meta 携带构建好的 DecorationSet（构建于 doc 就绪后） */
 const diffDecoKey = new PluginKey<DecorationSet>('writeit-diff-deco')
 
-function diffDecoPlugin() {
+function diffDecoPlugin(getInitial: () => DecorationSet) {
   return $prose(
     () =>
       new Plugin<DecorationSet>({
         key: diffDecoKey,
         state: {
-          init: () => DecorationSet.empty,
+          // 初始装饰 = 挂载前定稿的预填充 doc 坐标（不再有 mount 后物化导致的映射漂移）
+          init: () => getInitial(),
           apply(tr, old) {
             const set = tr.getMeta(diffDecoKey)
             if (set) return set
             if (!tr.docChanged) return old
-            // 文档后续变化（嵌入物化等）→ 位置映射跟随
+            // 残余事务（object_ref 消歧的等尺寸替换等）→ 位置映射跟随（双保险）
             return old.map(tr.mapping, tr.doc)
           },
         },
@@ -76,141 +94,100 @@ function diffDecoPlugin() {
   )
 }
 
-/** 等待 mermaid 预览渲染（renderPreview 异步） */
-async function waitForRender(host: HTMLElement, waitMs = 2500): Promise<boolean> {
-  const start = Date.now()
-  const ready = () => !!host.querySelector('.mermaid, svg[data-processed], .preview-container, .preview svg, .mmd-zoomable')
-  await sleep(200)
-  if (ready()) return true
-  while (Date.now() - start < waitMs) {
-    await sleep(300)
-    if (ready()) return true
+// ---------- 预填充（§4.1.1：mount 前同步，消灭异步物化与时序问题） ----------
+
+/**
+ * 把宿主 doc 中所有 file_block 预填充为嵌入源的合并内容（write-once）：
+ *  - 有 sourceMap 条目 → content = parse(scopeMergedMd).content + materialized=true
+ *    （递归：该内容里的嵌套 file_block 同样预填充——bottom-up 内存重建，一次挂载）
+ *  - 折叠（环/超深）→ collapsed attrs（FileBlockView 渲染折叠提示卡；不入 sourceMap）
+ *  - 断链（读不到源）→ materialized=true + 空内容（避免 resolveRefs 读盘/toast，卡片空态提示）
+ */
+export function prefillDoc(hostDoc: Node, parser: (md: string) => Node | null, pf: PrefetchResult): Node {
+  const collapsedQueue = new Map<string, typeof pf.collapsedScopes>()
+  for (const c of pf.collapsedScopes) {
+    const list = collapsedQueue.get(c.writePath) ?? []
+    list.push(c)
+    collapsedQueue.set(c.writePath, list)
   }
-  return false
-}
+  const brokenSet = new Set(pf.brokenPaths)
 
-interface MountResult {
-  crepe: Crepe
-  notes: DiffNote[]
-}
+  const rebuildChildren = (n: Node): Fragment => {
+    const out: Node[] = []
+    n.content.forEach((child) => out.push(rebuild(child)))
+    return Fragment.fromArray(out)
+  }
 
-async function mountRenderCrepe(
-  container: HTMLElement,
-  md: string,
-  refCfg: RefConfig,
-  oldMd?: string
-): Promise<MountResult | null> {
-  try {
-    const crepe = new Crepe({
-      root: container,
-      defaultValue: md,
-      featureConfigs: featureConfigs(),
-    })
-    crepe.editor.config((ctx) => {
-      ctx.set(refConfigCtx.key, refCfg)
-      registerRefStringify(ctx)
-    })
-    // 先用 remark-ref 解析（[[path#frag]] / ![[path]] → fileRef / fileBlock），
-    // diff 装饰插件全程无标记语法，不再需要 marker 先行拆分
-    crepe.editor.use(refPlugin)
-    crepe.editor.use(diffDecoPlugin())
-    await crepe.create()
-    // 结构级 diff：解析旧文档 → 构建装饰 → 注入（doc 坐标即渲染坐标，无需再映射）
-    const notes: DiffNote[] = []
-    if (oldMd) {
-      try {
-        const ok = await crepe.editor.action((ctx) => {
-          const view = ctx.get(editorViewCtx)
-          const parser = ctx.get(parserCtx)
-          const oldDoc = parser(oldMd)
-          const newDoc = view.state.doc
-          if (!oldDoc) return false
-          const { decorations, notes: ns } = buildDiffDecorations(oldDoc, newDoc)
-          notes.push(...ns)
-          const tr = view.state.tr.setMeta(diffDecoKey, DecorationSet.create(newDoc, decorations))
-          view.dispatch(tr)
-          return true
-        })
-        if (!ok) console.warn('[render-diff] 旧文档解析失败，跳过 diff 标注')
-      } catch (e) {
-        console.warn('[render-diff] diff 装饰构建失败（文档继续渲染，无标注）:', e)
+  const rebuild = (node: Node): Node => {
+    if (node.type.name === 'file_block') {
+      const path = String(node.attrs.path ?? '')
+      const q = collapsedQueue.get(path)
+      const collapsed = q && q.length ? q.shift()! : null
+      if (collapsed) {
+        // 折叠：清空内容 + 折叠态 attrs（FileBlockView 渲染提示卡；resolveRefs 跳过）
+        return node.type.create(
+          { ...node.attrs, materialized: false, collapsed: collapsedInfoOf(collapsed) },
+          Fragment.empty
+        )
       }
+      const real = pf.writeToReal.get(path) ?? path
+      const entry = pf.sourceMap.get(real)
+      if (entry?.mergedMd != null) {
+        const parsed = parser(entry.mergedMd)
+        if (parsed) {
+          // 递归预填充该源内容里的嵌套 file_block（bottom-up）
+          return node.type.create(
+            { ...node.attrs, materialized: true, collapsed: null },
+            rebuildChildren(parsed)
+          )
+        }
+      }
+      // 断链/无内容：标记已物化（空容器），resolveRefs 不再重复读盘
+      if (brokenSet.has(real) || brokenSet.has(path)) {
+        return node.type.create(
+          { ...node.attrs, materialized: true, collapsed: null },
+          Fragment.empty
+        )
+      }
+      // 源无改动且未知（防御）：保持原容器（resolveRefs 残留路径兜底，不影响 write-once）
+      return node
     }
-    crepe.setReadonly(true)
-    try {
-      await Promise.race([resolveRefs(crepe.editor), sleep(1500)])
-    } catch {
-      /* 物化失败不影响渲染 */
+    if (node.isBlock && node.content.childCount > 0) {
+      return node.copy(rebuildChildren(node))
     }
-    return { crepe, notes }
-  } catch (e) {
-    console.warn('[render-diff] Crepe 挂载失败:', e, (e as Error).stack)
-    return null
+    return node
   }
+
+  return hostDoc.copy(rebuildChildren(hostDoc))
 }
 
-/** mermaid 渲染后 DOM 标注（M14：不用 classDef/id:::class 语法）：
- *  flowchart / stateDiagram → 按节点 id 定位 SVG <g> 元素加 class（add 绿 / del 红虚线划线）
- *  mod（同 id 标签变化）→ 节点绿（新）+ 节点下追加红划线旧值小字；
- *  sequence → 按消息文本精确匹配加 class（add 绿 / del 红）——M16b：二元语义 */
-function applyMermaidAnnotations(target: HTMLElement, mermaidList: MermaidNodeDiff[]) {
-  for (const d of mermaidList) {
-    const svg = target.querySelector(
-      '.mermaid svg, svg[data-processed], .preview svg, .mmd-zoomable svg'
+// ---------- 图内标注 fallback（§4.8：主路径 classDef/class 由 mermaid 原生渲染；
+// 仅当 class 注入失效——渲染了 SVG 但无 diff 类——时按 NodeView scope 做 DOM class 手术） ----------
+
+function applyMermaidClassesFallback(host: HTMLElement, registry: FenceRegistry) {
+  for (const f of registry.fences.values()) {
+    if (!f.changed || f.skip) continue
+    const view = host.querySelector(
+      `.diff-mermaid-fence[data-fence-id="${CSS.escape(f.fenceId)}"]`
     ) as HTMLElement | null
+    if (!view) continue
+    const svg = view.querySelector('svg') as SVGSVGElement | null
     if (!svg) continue
-    if (d.type === 'sequence') {
-      if (!d.messages?.length) continue
-      for (const msg of d.messages) {
-        const els = [...svg.querySelectorAll('text, tspan')]
-        // 精确匹配优先：避免「推送客户」误命中「推送客户资料」（includes 前缀包含）
-        const el =
-          els.find((e) => (e.textContent || '').trim() === msg.text) ??
-          els.find((e) => (e.textContent || '').includes(msg.text))
-        if (el) el.classList.add(msg.kind === 'add' ? 'diff-seq-add' : 'diff-seq-del')
-      }
-      continue
-    }
-    if (d.type !== 'flowchart' && d.type !== 'state') continue
-    const prefix = d.type === 'flowchart' ? 'flowchart' : 'state'
+    if (svg.querySelector('.diffAdd') || svg.querySelector('.diffDel')) continue
     const nodes = [...svg.querySelectorAll('g.node, g.state')] as HTMLElement[]
     const findById = (id: string) =>
       nodes.find((g) => {
         const gid = g.id || ''
-        return gid.includes(`-${prefix}-${id}-`) || gid.endsWith(`-${prefix}-${id}`)
+        return gid.includes(`-${id}-`) || gid.endsWith(`-${id}`)
       })
-    const apply = (id: string, cls: string) => {
-      if (!id) return
-      const el = findById(id)
-      if (el) el.classList.add(cls)
-    }
-    for (const id of d.add) apply(id, 'diff-node-add')
-    for (const id of d.del) apply(id, 'diff-node-del')
-    // M16b：标签修改 → 节点绿（新值）+ 节点下方红划线旧值（体现「删除后新增」）
-    for (const m of d.mod) {
-      const g = findById(m.id)
-      if (!g) continue
-      g.classList.add('diff-node-add')
-      g.classList.add('diff-node-mod')
-      const old = document.createElementNS('http://www.w3.org/2000/svg', 'text')
-      old.setAttribute('class', 'diff-mod-old')
-      old.textContent = m.old
-      const label = g.querySelector('.nodeLabel, .state-label, text') as SVGTextElement | null
-      if (label) {
-        const b = label.getBBox ? label.getBBox() : null
-        old.setAttribute('x', String(b ? b.x + b.width / 2 : 0))
-        old.setAttribute('y', String(b ? b.y + b.height + 14 : 14))
-        old.setAttribute('text-anchor', 'middle')
-        g.appendChild(old)
-      }
-    }
+    for (const id of [...f.add, ...f.mod.map((m) => m.id)]) findById(id)?.classList.add('diff-node-add')
+    for (const id of f.del) findById(id)?.classList.add('diff-node-del')
+    diagRenderUnit(`mermaid:${f.fenceId}`, degradedState('classDef 注入失效，走 DOM class 手术 fallback', f.fenceId))
   }
 }
 
-/** 嵌入块源文件有未提交改动 → 卡片角标 + 内嵌改动摘要；
- *  ① 嵌入行本身是本次改动的增/删/改 → 卡片头部徽标（新增引用/移除引用）
- *  ② 源文件有未提交改动 → 「内容有改动」角标 + 底部源文件改动摘要
- */
+// ---------- 嵌入卡片徽标（保留：新引用/内容有改动） ----------
+
 const EMBED_LINE_RE = /^\s*!\[\[([^\]]+)\]\]\s*$/
 
 interface EmbedChange {
@@ -218,9 +195,6 @@ interface EmbedChange {
   path: string
 }
 
-/** 从 hunks 收集嵌入引用行的变化（path 保持源码形式，无扩展名）。
- *  M16：二元语义——删除的引用由装饰层输出红色占位行，不挂卡片徽标；
- *  此处只统计新增引用（挂卡片绿徽标）。 */
 function collectEmbedChanges(hunks: DiffHunk[]): EmbedChange[] {
   const addSet = new Set<string>()
   for (const h of hunks) {
@@ -234,7 +208,6 @@ function collectEmbedChanges(hunks: DiffHunk[]): EmbedChange[] {
   return [...addSet].map((path) => ({ kind: 'add' as const, path }))
 }
 
-/** 卡片头部徽标容器（.ref-embed-badges 绝对定位于卡片右上，多徽标纵向排列；同一徽标不重复） */
 function addCardBadge(card: Element, cls: string, text: string, title: string) {
   let wrap = card.querySelector('.ref-embed-badges') as HTMLElement | null
   if (!wrap) {
@@ -250,246 +223,250 @@ function addCardBadge(card: Element, cls: string, text: string, title: string) {
   wrap.appendChild(b)
 }
 
-/** 从变更行推断 mermaid 结构变化概要（fence 开/闭行可能在 hunk 外无上下文，
- *  直接对 del 行集 / add 行集提取节点/消息集合做差集） */
-function buildMermaidSummary(delLines: string[], addLines: string[]): string | null {
-  const cand = [...delLines, ...addLines]
-  const HAS_SEQ = /->>|-->>/
-  const HAS_STATE = /^\s*state\s/m
-  const HAS_FLOW = /-->|==>|-\.->/
-  const labelOf = (t: string) =>
-    t === 'sequence' ? '时序图' : t === 'state' ? '状态图' : '流程图'
-  let parts: string[] = []
-  let label = ''
-
-  if (cand.some((t) => HAS_SEQ.test(t))) {
-    const o = extractSequenceMessages(delLines.join('\n'))
-    const n = extractSequenceMessages(addLines.join('\n'))
-    const added = n.filter((m) => !o.includes(m))
-    const removed = o.filter((m) => !n.includes(m))
-    label = labelOf('sequence')
-    if (added.length) parts.push(`新增 ${added.length} 个消息`)
-    if (removed.length) parts.push(`删除 ${removed.length} 个消息`)
-  } else if (cand.some((t) => HAS_STATE.test(t))) {
-    const o = extractStates(delLines.join('\n'))
-    const n = extractStates(addLines.join('\n'))
-    label = labelOf('state')
-    const addIds = [...n.keys()].filter((id) => !o.has(id))
-    const delIds = [...o.keys()].filter((id) => !n.has(id))
-    if (addIds.length) parts.push(`新增 ${addIds.length} 个状态`)
-    if (delIds.length) parts.push(`删除 ${delIds.length} 个状态`)
-  } else if (cand.some((t) => HAS_FLOW.test(t))) {
-    const o = extractFlowchartNodes(delLines.join('\n'))
-    const n = extractFlowchartNodes(addLines.join('\n'))
-    label = labelOf('flowchart')
-    const addIds = [...n.keys()].filter((id) => !o.has(id))
-    const delIds = [...o.keys()].filter((id) => !n.has(id))
-    if (addIds.length) parts.push(`新增 ${addIds.length} 个节点`)
-    if (delIds.length) parts.push(`删除 ${delIds.length} 个节点`)
-  }
-  if (!parts.length) return null
-  return `◆ ${label}：${parts.join('、')}`
-}
-
-/** 内嵌源文件改动摘要：仅变化行（+/-） + mermaid 结构变化概要；表格分隔行噪音省略 */
-/** 引用路径候选解析：优先带 .md 的已跟踪文件（diffFile 需要真实路径） */
-function resolveRefFilePath(p: string, base: DiffBaseRef): Promise<string | null> {
-  return (async () => {
-    const { git } = await import('../git')
-    for (const cand of [p, `${p}.md`, `${p}.markdown`, `${p}.txt`]) {
-      try {
-        const d = await git.diffFile(cand, base.from, base.to)
-        if (d && (d.hunks.length || d.exists)) return cand
-      } catch {
-        /* 尝试下一候选 */
-      }
-    }
-    return null
-  })()
-}
-
-/** 嵌入摘要结果缓存（path+from+to） */
-const embedSummaryCache = new Map<string, Promise<HTMLElement | null>>()
-
-async function renderEmbedDiffSummary(changedPath: string, base: DiffBaseRef): Promise<HTMLElement | null> {
-  const key = `${base.from ?? ''}..${base.to}::${changedPath}`
-  const hit = embedSummaryCache.get(key)
-  if (hit) return hit
-  const run = (async () => {
-    const { git } = await import('../git')
-    let diff: Awaited<ReturnType<typeof git.diffFile>>
-    try {
-      diff = await git.diffFile(changedPath, base.from, base.to)
-    } catch {
-      return null
-    }
-    const lines = diff.hunks.flatMap((h) => h.lines)
-    if (!lines.length) return null
-
-    const wrap = document.createElement('div')
-    wrap.className = 'ref-embed-diff-summary'
-    const title = document.createElement('div')
-    title.className = 'eds-title'
-    title.textContent = `源文件改动 → ${changedPath}`
-    title.title = `被嵌入模块（源文件）在「${base.label}」范围内的改动`
-    wrap.appendChild(title)
-
-    const delLines: string[] = []
-    const addLines: string[] = []
-    for (const l of lines) {
-      if (l.kind === 'add') addLines.push(l.text)
-      else if (l.kind === 'del') delLines.push(l.text)
-    }
-    // mermaid 结构变化概要
-    const mermaidRow = buildMermaidSummary(delLines, addLines)
-    if (mermaidRow) {
-      const row = document.createElement('div')
-      row.className = 'eds-line eds-mermaid'
-      row.textContent = mermaidRow
-      wrap.appendChild(row)
-    }
-    // mermaid 语法行已并入概要，避免重复逐行展示
-    const isMermaidSyntax = (t: string) => /->>|-->>|-->|==>|-\.->|^\s*state\s/.test(t)
-    const isSep = (s: string) => /^\s*\|/.test(s) && s.split('|').slice(1, -1).every((c) => /^:?-+:?$/.test(c.trim()))
-    for (const h of diff.hunks) {
-      for (const l of h.lines) {
-        if (l.kind === 'ctx') continue
-        if (isSep(l.text)) continue
-        if (isMermaidSyntax(l.text)) continue
-        const row = document.createElement('div')
-        row.className = 'eds-line ' + (l.kind === 'add' ? 'eds-add' : 'eds-del')
-        row.textContent = (l.kind === 'add' ? '+ ' : '− ') + l.text
-        wrap.appendChild(row)
-      }
-    }
-    return wrap
-  })()
-  embedSummaryCache.set(key, run)
-  return run
-}
-
-/** 嵌入 diff 对比基准 */
-interface DiffBaseRef {
-  from: string | null
-  to: string
-  label: string
-}
-
-/** 嵌入块源文件在对比范围内有改动 → 卡片角标 + 内嵌改动摘要；
- *  ① 引用行本身是本次改动（新增引用）→ 卡片头部绿徽标（删除由装饰层输出红色占位行）
- *  ② 源文件在 from..to 有改动（工作区 / commit 对比统一）→ 「内容有改动」角标 + 底部源文件改动摘要 */
-async function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined, base: DiffBaseRef) {
+function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined, changedWritePaths: Set<string>) {
   const embeds = collectEmbedChanges(hunks ?? [])
   const cards = [...target.querySelectorAll('.ref-file-block')]
-  await Promise.all(
-    cards.map(async (card) => {
-      const p = card.querySelector('.ref-file-block-path')?.textContent?.trim() ?? ''
-      if (!p) return
-      // ① 引用行本身是本次改动（新增引用）→ 绿徽标
-      if (embeds.some((c) => c.path === p) && !card.querySelector('.ref-embed-add')) {
-        addCardBadge(card, 'ref-embed-add', '新增引用', '当前文件新增了此引用')
-      }
-      // ② 源文件在对比范围内有改动 → 角标 + 摘要
-      if (card.querySelector('.ref-embed-diff-badge') || card.querySelector('.ref-embed-diff-summary')) return
-      const changedPath = await resolveRefFilePath(p, base)
-      if (!changedPath) return
-      const d = await (async () => {
-        const { git } = await import('../git')
-        try {
-          return await git.diffFile(changedPath, base.from, base.to)
-        } catch {
-          return null
-        }
-      })()
-      if (d && d.hunks.length) {
-        addCardBadge(card, 'ref-embed-diff-badge', '内容有改动', `源文件 ${changedPath} 在「${base.label}」有改动`)
-        const el = await renderEmbedDiffSummary(changedPath, base)
-        if (el && card.isConnected) card.appendChild(el)
-      }
-    })
-  )
-}
-
-/** 在渲染 doc 中按类型/路径给 -1 位置的 note 定位（mermaid → 按序 code_block；引用 → file_block 按 path） */
-function locateNotesByDoc(crepe: Crepe, notes: DiffNote[]) {
-  const mermaidNotes = notes.filter((n) => n.kind === 'mermaid')
-  const embedNotes = notes.filter((n) => n.kind === 'block' && n.text.startsWith('移除了引用'))
-  if (!mermaidNotes.length && !embedNotes.length) return
-  try {
-    crepe.editor.action((ctx) => {
-      const doc = ctx.get(editorViewCtx).state.doc
-      const mermaidPositions: number[] = []
-      doc.descendants((n, pos) => {
-        if (n.type.name === 'code_block' && (n.attrs.language as string) === 'mermaid') mermaidPositions.push(pos)
-        return true
-      })
-      mermaidNotes.forEach((n, i) => {
-        if (mermaidPositions[i] !== undefined) {
-          n.from = mermaidPositions[i]
-          n.to = mermaidPositions[i] + 1
-        }
-      })
-      if (embedNotes.length) {
-        doc.descendants((n, pos) => {
-          if (n.type.name === 'file_block') {
-            const p = String(n.attrs.path ?? '')
-            const hit = embedNotes.find((no) => no.from < 0 && (no.del === p || no.anchor.includes(p)))
-            if (hit) {
-              hit.from = pos
-              hit.to = pos + 1
-            }
-          }
-          return true
-        })
-      }
-    })
-  } catch {
-    /* 编辑器已销毁 */
+  for (const card of cards) {
+    const p = card.querySelector('.ref-file-block-path')?.textContent?.trim() ?? ''
+    if (!p) continue
+    if (embeds.some((c) => c.path === p) && !card.querySelector('.ref-embed-add')) {
+      addCardBadge(card, 'ref-embed-add', '新增引用', '当前文件新增了此引用')
+    }
+    if (changedWritePaths.has(p) && !card.querySelector('.ref-embed-diff-badge')) {
+      addCardBadge(card, 'ref-embed-diff-badge', '内容有改动', `被嵌入源文件「${p}」在本 diff 范围内有改动（块内已标红/绿）`)
+    }
   }
 }
 
-/** 渲染单 Crepe「新文档 + 结构级 diff 装饰」到 target。返回句柄 + 批注卡 + mermaid 变更（调用方负责 destroy） */
+// ---------- 主渲染管线 ----------
+
+interface PipelineState {
+  initialDecorations: DecorationSet
+  notes: DiffNote[]
+  diagramNotes: DiffNote[]
+  embedNotes: DiffNote[]
+}
+
+interface MountedPipeline {
+  crepe: Crepe
+  state: PipelineState
+  isNewFile: boolean
+  registry: FenceRegistry
+  collector: SettleCollector
+  pf: PrefetchResult
+  changedWritePaths: Set<string>
+}
+
+async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): Promise<MountedPipeline | null> {
+  const { oldMd, newMd, refCfg, base, path } = opts
+  const isNewFile = !oldMd || oldMd.trim() === ''
+
+  try {
+    // 0) 预取（IO）：嵌入源批量发现（一次往返）+ 链判定
+    const pf = await prefetchEmbedSources(
+      {
+        base,
+        hostPath: path,
+        fetchEntries: async (paths) => {
+          const { git } = await import('../git')
+          const res = await git.showFiles(paths, base)
+          return res.entries
+        },
+        readFile: async (p) => {
+          const { git } = await import('../git')
+          try {
+            return await git.showFile(p, 'WORKTREE')
+          } catch {
+            return null
+          }
+        },
+      },
+      newMd
+    )
+
+    // 1) model（纯函数第一趟：diagram/embed/collapse records + mergedMd + registry）
+    const modelDiff = computeDocDiffModel({
+      oldMd,
+      newMd,
+      base,
+      parser: undefined,
+      sourceMap: pf.sourceMap,
+      collapsedScopes: pf.collapsedScopes,
+    })
+    const registry = modelDiff.fences
+
+    // 徽标匹配源：writePath → changed
+    const changedWritePaths = new Set<string>()
+    for (const [wp, real] of pf.writeToReal) {
+      if (pf.sourceMap.get(real)?.changed) changedWritePaths.add(wp)
+    }
+
+    // 2) Crepe 挂载：editorStateOptionsCtx 注入预填充 doc（write-once）+ 预构建装饰
+    const state: PipelineState = { initialDecorations: DecorationSet.empty, notes: [], diagramNotes: [], embedNotes: [] }
+    const crepe = new Crepe({
+      root: target,
+      defaultValue: modelDiff.mergedMd,
+      featureConfigs: featureConfigs(),
+    })
+    crepe.editor.config((ctx) => {
+      ctx.set(refConfigCtx.key, refCfg)
+      registerRefStringify(ctx)
+      // 挂载前定稿：doc = 预填充 doc；装饰/卡片 = 该 doc 坐标（自 mount 起不再变化）
+      ctx.set(editorStateOptionsCtx, (give) => {
+        try {
+          if (!give.doc) return give
+          const parser = ctx.get(parserCtx) as (md: string) => Node | null
+          const prefilled = prefillDoc(give.doc, parser, pf)
+          const notes: DiffNote[] = []
+          const decorations: Decoration[] = []
+          if (!isNewFile) {
+            const oldDoc = parser(oldMd)
+            if (oldDoc) {
+              const r = buildDiffDecorations(oldDoc, prefilled)
+              notes.push(...r.notes)
+              decorations.push(...r.decorations)
+            }
+          }
+          // diagram 卡片锚定：变更 fence 位置 = 预填充 doc 中的 code_block（正文级 + 嵌套级）
+          const diagramNotes: DiffNote[] = []
+          for (const f of docMermaidFences(prefilled)) {
+            const fid = fenceIdOf(f.body)
+            const fe = registry.fences.get(fid)
+            if (!fe?.changed || fe.skip) continue
+            const dto = {
+              type: fe.type,
+              add: fe.add,
+              del: fe.del,
+              mod: fe.mod,
+              merged: fe.mergedBody ?? '',
+            } as import('./mermaid-diff').MermaidNodeDiff
+            diagramNotes.push(
+              makeNote('mermaid', mermaidDiffText(dto), undefined, undefined, mermaidDiffText(dto), f.from, Math.min(f.from + 1, prefilled.content.size))
+            )
+          }
+          // 嵌入卡片锚定 + 折叠保证层卡
+          const embedNotes: DiffNote[] = []
+          for (const blk of docFileBlocks(prefilled)) {
+            const real = pf.writeToReal.get(blk.path) ?? blk.path
+            const entry = pf.sourceMap.get(real)
+            if (entry?.changed) {
+              const baseName = real.split('/').pop() ?? real
+              embedNotes.push(
+                makeNote('block', `嵌入「${baseName}」源文件有改动（块内已标红/绿）`, undefined, undefined, `嵌入「${baseName}」`, blk.from, blk.from + blk.size)
+              )
+              // Issue 7b / §4.4：嵌入块内容级 diff——源文档坐标 offset 映射进宿主 doc 该块的 content 区
+              // （与「直接打开该源文件」相同的渲染规则；词/块级红绿 + 卡片）
+              if (entry.oldMd != null && entry.mergedMd != null) {
+                const oldSrcDoc = parser(entry.oldMd)
+                const newSrcDoc = parser(entry.mergedMd)
+                if (oldSrcDoc && newSrcDoc) {
+                  try {
+                    const r = buildDiffDecorations(oldSrcDoc, newSrcDoc, { offset: blk.from + 1 })
+                    decorations.push(...r.decorations)
+                    for (const n of r.notes) {
+                      notes.push({ ...n, text: `嵌入「${baseName}」：${n.text}` })
+                    }
+                  } catch (e) {
+                    console.warn('[render-diff] 嵌入块内容 diff 失败:', real, e)
+                  }
+                }
+              }
+            }
+          }
+          for (const c of pf.collapsedScopes) {
+            embedNotes.push(makeNote('block', c.summary, undefined, undefined, c.summary, -1, -1))
+          }
+          state.notes = notes
+          state.diagramNotes = diagramNotes
+          state.embedNotes = embedNotes
+          state.initialDecorations = DecorationSet.create(prefilled, decorations)
+          return { ...give, doc: prefilled }
+        } catch (e) {
+          console.warn('[render-diff] 预填充/装饰构建失败（降级为无标注渲染）:', e)
+          return give
+        }
+      })
+    })
+    crepe.editor.use(refPlugin)
+    // 自有 mermaid NodeView（覆写 code_block 视图；非 mermaid 委托 CodeMirrorBlock）
+    // ——必须在 features 之后 use（nodeViewCtx 后者生效）
+    const collector = new SettleCollector()
+    crepe.editor.use(createDiffMermaidNodeView({ registry, settleCollector: collector }))
+    crepe.editor.use(diffDecoPlugin(() => state.initialDecorations))
+    await crepe.create()
+    crepe.setReadonly(true)
+    // 残余：object_ref 消歧（等尺寸 attr 替换，不改 doc 尺寸；不参与 settle）
+    void resolveRefs(crepe.editor)
+    return { crepe, state, isNewFile, registry, collector, pf, changedWritePaths }
+  } catch (e) {
+    console.warn('[render-diff] Crepe 挂载失败:', e, (e as Error).stack)
+    return null
+  }
+}
+
+/** 渲染单 Crepe「预填充 doc + 结构级 diff 装饰」到 target。返回句柄 + 批注卡 + 变更（调用方负责 destroy） */
 export async function renderDiffToContainer(
   target: HTMLElement,
   opts: RenderDiffOptions
 ): Promise<RenderDiffResult | null> {
-  const { oldMd, newMd, hunks, refCfg, from, to, baseLabel, onFallback } = opts
-  const base = { from: from ?? null, to, label: baseLabel }
+  const { hunks, onFallback, path } = opts
   let crepe: Crepe | null = null
   try {
-    // 1) mermaid fence 节点级预合并（新源码为底 + 删除节点加回），其余照旧
-    const { md: patchedMd, mermaid, notes: mermaidNotes } = patchMermaidFences(oldMd, newMd)
-
     target.textContent = ''
-    const mounted = await mountRenderCrepe(target, patchedMd, refCfg, oldMd)
+    const mounted = await mountRenderCrepe(target, opts)
     if (!mounted) {
       onFallback?.('Crepe 渲染失败，降级为双栏全文对比')
       return null
     }
     crepe = mounted.crepe
-    const notes = [...mounted.notes]
-    // 2) mermaid / 移除引用 note 的 -1 位置按 doc 定位
-    notes.push(...mermaidNotes)
-    locateNotesByDoc(crepe, notes)
+    const { registry, collector } = mounted
+    const notes: DiffNote[] = [...mounted.state.notes, ...mounted.state.diagramNotes, ...mounted.state.embedNotes]
+    const isNewFile = mounted.isNewFile
 
-    await waitForRender(target, 2500)
-    // 3) mermaid 渲染完成 + 节点标注（异步）→ 立即 + 轮询补标；嵌入徽标/摘要
-    const annotateNow = () => {
-      applyMermaidAnnotations(target, mermaid)
-      void annotateEmbedDiffBadges(target, hunks, base)
+    // 2c) 新文件：整篇标绿 + 一张「新增文件」说明卡
+    if (isNewFile) {
+      target.classList.add('rd-new-file')
+      notes.push({
+        id: `dn-newfile-${++newFileNoteSeq}`,
+        kind: 'block',
+        text: `新增文件（${opts.newMd.trim() ? opts.newMd.split('\n').length : 0} 行内容，全文标绿）`,
+        anchor: '新增文件',
+        from: -1,
+        to: -1,
+      })
     }
-    annotateNow()
-    setTimeout(annotateNow, 400)
-    setTimeout(annotateNow, 1200)
-    setTimeout(annotateNow, 2500)
-    return {
-      handle: {
-        destroy: () => {
-          void crepe?.destroy()
-        },
+
+    // 3) 单点 settle：变更 fence 的 eager 渲染（Promise.allSettled + 5s 兜底；无轮询补标）
+    const settled = await collector.settle(5000)
+
+    // 4) overlay：徽标 + class 注入失效时的 scoped DOM fallback（一次性；连线由事件/ResizeObserver 重绘）
+    annotateEmbedDiffBadges(target, hunks, mounted.changedWritePaths)
+    applyMermaidClassesFallback(target, registry)
+    diagEvent('diff:render', {
+      target: path,
+      ok: settled.every((r) => r.ok),
+      data: { fences: settled.length, degraded: settled.filter((r) => !r.ok).map((r) => r.reason) },
+    })
+
+    const handle: RenderDiffHandle = {
+      destroy: () => {
+        void crepe?.destroy()
       },
+    }
+    const mermaidList = [...registry.fences.values()]
+      .filter((f) => f.changed)
+      .map((f) => ({
+        type: f.type,
+        add: f.add,
+        del: f.del,
+        mod: f.mod,
+        merged: f.mergedBody ?? '',
+      }))
+    return {
+      handle,
       notes,
-      mermaid,
+      mermaid: mermaidList as import('./mermaid-diff').MermaidNodeDiff[],
+      isNewFile,
       crepe,
     }
   } catch (e) {
@@ -523,9 +500,23 @@ export async function renderSplitFallback(
     newLayer.remove()
   }
   try {
+    const waitForRender = (host: HTMLElement, waitMs = 2500) => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+      const start = Date.now()
+      const ready = () => !!host.querySelector('.mermaid, svg[data-processed], .preview, .mmd-zoomable')
+      return (async () => {
+        await sleep(200)
+        if (ready()) return true
+        while (Date.now() - start < waitMs) {
+          await sleep(300)
+          if (ready()) return true
+        }
+        return false
+      })()
+    }
     ;[oldCrepe, newCrepe] = await Promise.all([
-      mountRenderCrepe(oldLayer, oldMd, refCfg).then((r) => r?.crepe ?? null),
-      mountRenderCrepe(newLayer, newMd, refCfg).then((r) => r?.crepe ?? null),
+      mountPlainCrepe(oldLayer, oldMd, refCfg),
+      mountPlainCrepe(newLayer, newMd, refCfg),
     ])
     if (disposed) {
       cleanup()
@@ -561,3 +552,23 @@ export async function renderSplitFallback(
     return null
   }
 }
+
+/** 降级链共享的最小化 mount（无 diff 装饰/预填充的普通 readonly Crepe） */
+async function mountPlainCrepe(root: HTMLElement, md: string, refCfg: RefConfig): Promise<Crepe | null> {
+  try {
+    const crepe = new Crepe({ root, defaultValue: md, featureConfigs: featureConfigs() })
+    crepe.editor.config((ctx) => {
+      ctx.set(refConfigCtx.key, refCfg)
+      registerRefStringify(ctx)
+    })
+    crepe.editor.use(refPlugin)
+    await crepe.create()
+    crepe.setReadonly(true)
+    return crepe
+  } catch (e) {
+    console.warn('[render-diff] 降级 mount 失败:', e)
+    return null
+  }
+}
+
+export type { FenceRegistry }

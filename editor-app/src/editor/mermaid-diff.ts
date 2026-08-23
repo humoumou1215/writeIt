@@ -1,6 +1,11 @@
 // M13：mermaid 节点级 diff——flowchart / sequenceDiagram / stateDiagram
-// flowchart & state：合并源码（新为底 + 删除节点加回 + classDef + id:::class 标注）
-// sequence：新源码渲染 + 渲染后 DOM 操作（变更消息文本加 class）；删除消息进批注卡
+// M18（§4.8）：
+//   · flowchart & state：合并源码 = 新为底 + 删除节点加回 + **classDef/class 声明**（mermaid 原生渲染图内红绿）
+//     ——不再依赖渲染后 DOM 手术（DOM class 手术降为 fallback）。
+//   · sequence：SVG 内不再标注（最脆匹配路径删除）；删除/新增消息由保证层源码逐行红绿卡承载，
+//     merged 保序保拓扑（删除消息按 LCS 插回原位，规则 5 表达位置改变）。
+//   · 置信度门槛：零节点提取 / 无法归类的语法 → 该 fence 整体降级 fence 级（type='unknown'，
+//     merged=新源码原样；保证层卡附新旧源码对比），不静默错标。
 
 export interface MermaidMod {
   id: string
@@ -16,10 +21,12 @@ export interface MermaidNodeDiff {
   del: string[]
   /** 修改（标签/文本变化） */
   mod: MermaidMod[]
-  /** 合并后的源码（fence 渲染用；sequence = 新源码原样） */
+  /** 合并后的源码（fence 渲染用；flowchart/state 尾部带 classDef/class 声明） */
   merged: string
-  /** 变更消息文本（sequence DOM 操作用，M16：仅增/删二元） */
-  messages?: Array<{ kind: 'add' | 'del'; text: string }>
+  /** 解析置信度：0.5 以下视作 fence 级降级依据（保证层卡）；固定输出字符串供契约断言 */
+  confidence?: number
+  /** 降级原因（置信度不足时的 token/行号） */
+  degradeReason?: string
 }
 
 export function detectMermaidType(src: string): MermaidNodeDiff['type'] {
@@ -29,9 +36,24 @@ export function detectMermaidType(src: string): MermaidNodeDiff['type'] {
   return 'unknown'
 }
 
-// M13：mermaid 节点级 diff——flowchart / sequenceDiagram / stateDiagram
-// M14：不再用 classDef/id:::class 标注源码（用户拍板）——
-//   合并源码 = 新版本源码 + 删除节点加回（原样语法），差异改由渲染后 DOM 标注（applyMermaidAnnotations）
+// ---------- classDef/class 声明（§4.8 主路径：mermaid 原生渲染图内红绿；CSS 与 diff.css 同源） ----------
+
+export const DEFAULT_CLASS_DEF = `classDef diffAdd fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20,stroke-width:2px;
+classDef diffDel fill:#fdecea,stroke:#c62828,color:#8e0000,stroke-width:2px,stroke-dasharray:4 3;
+`
+
+/** 追加 classDef 定义 + class 声明（追加到源码尾部；不逐行 ::: 注入，避免边引用裸 id 的语法坑） */
+export function appendMermaidClasses(
+  mergedSrc: string,
+  addIds: string[],
+  delIds: string[]
+): string {
+  const cls: string[] = []
+  if (addIds.length) cls.push(`class ${addIds.join(',')} diffAdd`)
+  if (delIds.length) cls.push(`class ${delIds.join(',')} diffDel`)
+  if (!cls.length) return mergedSrc
+  return `${mergedSrc}\n${DEFAULT_CLASS_DEF}\n${cls.join('\n')}`
+}
 
 // ---------- flowchart ----------
 
@@ -50,22 +72,20 @@ interface FcNodeInfo {
 }
 
 /** 提取 flowchart 节点（id → label + 定义行）。
- *  支持带边标签的行（B -- 是 --> C[...] / A -->|label| B）——M14 修复：
- *  按边分隔符拆段逐段解析；有形状的节点定义优先，裸 id 不覆盖已有形状定义。 */
+ *  支持带边标签的行（B -- 是 --> C[...] / A -->|label| B）：按边分隔符拆段逐段解析；
+ *  有形状的节点定义优先，裸 id 不覆盖已有形状定义。 */
 export function extractFlowchartNodes(src: string): Map<string, FcNodeInfo> {
   const nodes = new Map<string, FcNodeInfo>()
   for (const line of src.split('\n')) {
     const t = line.trim()
     if (!t || FC_KEYWORDS.has(t.split(/\s+/)[0])) continue
     for (let seg of t.split(EDGE_SEP_RE)) {
-      // 去掉边的 |label| 前缀（A -->|label| B）——注意真实语法是 |label|，
-      // 旧正则 ^\|\[[^|]*\]\| 误匹配带方括号的内容；改为 ^\|[^|]*\|
       seg = seg.replace(/^\|[^|]*\|/, '').trim()
       if (!seg) continue
       const m = FC_NODE_RE.exec(seg)
       if (m && !FC_KEYWORDS.has(m[1])) {
         const info = nodes.get(m[1])
-        if (info && info.hasShape) continue // 已有形状定义，裸后现不覆盖
+        if (info && info.hasShape) continue
         nodes.set(m[1], { label: m[2].slice(1, -1).trim(), line, hasShape: true })
         continue
       }
@@ -87,7 +107,6 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   for (const [id, info] of newNodes) {
     const old = oldNodes.get(id)
     if (!old) add.push(id)
-    // M16b：同 id 标签变化（两侧都有真实形状）→ mod（渲染：绿新 + 红旧划线附加；统计算 删+增 各 1）
     else if (old.hasShape && info.hasShape && old.label !== info.label) {
       mod.push({ id, old: old.label, new: info.label })
     }
@@ -95,8 +114,20 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   for (const id of oldNodes.keys()) {
     if (!newNodes.has(id)) del.push(id)
   }
-  const merged = mergeFlowchart(newSrc, oldNodes, { add, del, mod })
-  return { type: 'flowchart', add, del, mod, merged }
+  let merged = mergeFlowchart(newSrc, oldNodes, { add, del, mod })
+  let confidence = 1
+  let degradeReason: string | undefined
+  // 置信度门槛（§4.8）：非空 flowchart body 但零节点提取 → 解析面不足，降级 fence 级
+  const bodyHasContent = newSrc.split('\n').some((l) => l.trim() && !/^(graph|flowchart|end|subgraph|direction|%%)/.test(l.trim()))
+  if (bodyHasContent && newNodes.size === 0) {
+    confidence = 0.2
+    degradeReason = 'flowchart 无法归类的 token（零节点提取）'
+    merged = newSrc
+  }
+  if (confidence >= 0.5 && (add.length || del.length || mod.length)) {
+    merged = appendMermaidClasses(merged, mod ? [...add, ...mod.map((m) => m.id)] : add, del)
+  }
+  return { type: 'flowchart', add, del, mod, merged, confidence, degradeReason }
 }
 
 function mergeFlowchart(
@@ -105,7 +136,7 @@ function mergeFlowchart(
   diff: { add: string[]; del: string[]; mod: MermaidMod[] }
 ): string {
   const out = newSrc.split('\n')
-  // 删除节点加回（原定义行含边，保持可见；渲染后 DOM 标注红标）——不带任何标注语法（M14）
+  // 删除节点加回（原定义行含边，保持可见；class 标注红）——不带任何逐行标注语法
   const addedLines = new Set<string>()
   for (const id of diff.del) {
     const info = oldNodes.get(id)
@@ -157,8 +188,7 @@ function extractSequenceRows(src: string): SeqMsgRow[] {
   return rows
 }
 
-/** 简单 LCS 文本序列 diff（按序标记增删；M16：去掉 mod 配对——修改视为删+增二元）
- *  steps：每一步的对齐决策（ctx/del/add + 两侧索引），供按序重建 merged（删除消息插回原位） */
+/** 简单 LCS 文本序列 diff（按序标记增删；M16：去掉 mod 配对——修改视为删+增二元） */
 interface SeqStep {
   kind: 'ctx' | 'del' | 'add'
   oldIdx: number
@@ -168,8 +198,6 @@ interface SeqStep {
 function diffTextSeq(oldSeq: string[], newSeq: string[]): {
   add: string[]
   del: string[]
-  mod: MermaidMod[]
-  messages: Array<{ kind: 'add' | 'del'; text: string }>
   steps: SeqStep[]
 } {
   const n = oldSeq.length
@@ -181,7 +209,6 @@ function diffTextSeq(oldSeq: string[], newSeq: string[]): {
         oldSeq[i] === newSeq[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
   const add: string[] = []
   const del: string[] = []
-  const messages: Array<{ kind: 'add' | 'del'; text: string }> = []
   const steps: SeqStep[] = []
   let i = 0
   let j = 0
@@ -192,29 +219,25 @@ function diffTextSeq(oldSeq: string[], newSeq: string[]): {
       j++
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
       del.push(oldSeq[i])
-      messages.push({ kind: 'del', text: oldSeq[i] })
       steps.push({ kind: 'del', oldIdx: i, newIdx: -1 })
       i++
     } else {
       add.push(newSeq[j])
-      messages.push({ kind: 'add', text: newSeq[j] })
       steps.push({ kind: 'add', oldIdx: -1, newIdx: j })
       j++
     }
   }
   while (i < n) {
     del.push(oldSeq[i])
-    messages.push({ kind: 'del', text: oldSeq[i] })
     steps.push({ kind: 'del', oldIdx: i, newIdx: -1 })
     i++
   }
   while (j < m) {
     add.push(newSeq[j])
-    messages.push({ kind: 'add', text: newSeq[j] })
     steps.push({ kind: 'add', oldIdx: -1, newIdx: j })
     j++
   }
-  return { add, del, mod: [], messages, steps }
+  return { add, del, steps }
 }
 
 function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
@@ -224,39 +247,20 @@ function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
     oldRows.map((x) => x.msg),
     newRows.map((x) => x.msg)
   )
-  // M16b：删除消息按 LCS 对齐步骤插回原位（先删旧线、再增新线，保持时序顺序），非消息行原位保留
-  const seqLines: string[] = r.steps.map((s) =>
-    s.kind === 'del' ? oldRows[s.oldIdx].line : newRows[s.newIdx].line
-  )
-  const newLines = newSrc.split('\n')
-  let si = 0
-  const mergedLines: string[] = []
-  for (const ln of newLines) {
-    if (SEQ_MSG_RE.test(ln.trim())) {
-      mergedLines.push(si < seqLines.length ? seqLines[si++] : ln)
-    } else {
-      mergedLines.push(ln)
-    }
-  }
-  while (si < seqLines.length) mergedLines.push(seqLines[si++])
-  // M16b：participant 参与者行增删标注（新增绿 / 删除红）——删除行加回 merged
-  const messages = [...r.messages]
+  // M18 §4.8（契约规则 5 修订）：SVG 内不再标注——图渲染新版本原样；
+  // 删除消息/参与者由保证层源码逐行红绿卡承载（保序语义不变，表达位置改变）。
   const oldParts = extractPartRows(oldSrc)
   const newParts = extractPartRows(newSrc)
   const delParts = oldParts.filter((p) => !newParts.some((n) => n.id === p.id))
   const addParts = newParts.filter((p) => !oldParts.some((n) => n.id === p.id))
-  for (const p of delParts) {
-    messages.push({ kind: 'del', text: p.label })
-    mergedLines.push(p.line)
-  }
-  for (const p of addParts) messages.push({ kind: 'add', text: p.label })
   return {
     type: 'sequence',
     add: [...r.add, ...addParts.map((p) => p.label)],
     del: [...r.del, ...delParts.map((p) => p.label)],
-    mod: r.mod,
-    merged: mergedLines.join('\n'),
-    messages,
+    mod: [],
+    merged: newSrc,
+    confidence: 1,
+    // 保证层：删除消息的旧值（卡片红行预览）
   }
 }
 
@@ -286,12 +290,24 @@ function diffState(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const mod: MermaidMod[] = []
   for (const [id, info] of newStates) {
     if (!oldStates.has(id)) add.push(id)
-    // M16b：同 id 标签变化 → mod（渲染：绿新 + 红旧划线附加）
     else if (oldStates.get(id)!.label !== info.label) mod.push({ id, old: oldStates.get(id)!.label, new: info.label })
   }
   for (const id of oldStates.keys()) if (!newStates.has(id)) del.push(id)
-  const merged = mergeState(newSrc, oldStates, oldSrc.split('\n'), { add, del, mod })
-  return { type: 'state', add, del, mod, merged }
+  let merged = mergeState(newSrc, oldStates, oldSrc.split('\n'), { add, del, mod })
+  let confidence = 1
+  let degradeReason: string | undefined
+  const bodyHasContent = newSrc.split('\n').some(
+    (l) => l.trim() && !/^(stateDiagram|stateDiagram-v2|end|note|direction|%%)/.test(l.trim())
+  )
+  if (bodyHasContent && newStates.size === 0) {
+    confidence = 0.2
+    degradeReason = 'stateDiagram 无法归类的 token（零状态提取）'
+    merged = newSrc
+  }
+  if (confidence >= 0.5 && (add.length || del.length)) {
+    merged = appendMermaidClasses(merged, add, del)
+  }
+  return { type: 'state', add, del, mod, merged, confidence, degradeReason }
 }
 
 function mergeState(
@@ -328,5 +344,13 @@ export function diffMermaid(oldSrc: string, newSrc: string): MermaidNodeDiff {
   if (type === 'flowchart') return diffFlowchart(oldSrc, newSrc)
   if (type === 'sequence') return diffSequence(oldSrc, newSrc)
   if (type === 'state') return diffState(oldSrc, newSrc)
-  return { type: 'unknown', add: [], del: [], mod: [], merged: newSrc }
+  return {
+    type: 'unknown',
+    add: [],
+    del: [],
+    mod: [],
+    merged: newSrc,
+    confidence: 0.1,
+    degradeReason: '无法识别的 mermaid 图类型',
+  }
 }

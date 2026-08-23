@@ -13,6 +13,8 @@ import type { ExportContext, ExportModule, ExportOptions, ExportOutcome, ExportF
 import { mdToExportBlocks, mdToExportMarkdown, clearEmbedCache } from './mdast'
 import { getActiveTabMarkdown, getTabMarkdownByPath } from '../editor/manager'
 import { fs } from '../fs'
+// 诊断埋点（D2）：导出成功/失败
+import { diag, diagEvent } from '../diagnostics/logger'
 
 const FORMAT_LABEL: Record<ExportFormat, string> = { pdf: 'PDF', docx: 'DOCX', md: 'Markdown' }
 
@@ -160,6 +162,8 @@ export async function exportActiveTab(options: ExportOptions): Promise<ExportOut
   } catch (e) {
     console.error('[export] 生成失败:', e)
     toast(`导出失败：${(e as Error).message ?? '未知错误'}`, 'error')
+    diag('error', 'export', `导出失败: ${(e as Error).message ?? '未知错误'}`)
+    diagEvent('export', { target: tab.path, ok: false, data: { error: (e as Error).message } })
     return { ok: false, error: (e as Error).message }
   }
 }
@@ -253,6 +257,7 @@ async function persist(
       downloadBlob(item.blob, item.filename)
     }
     toast(`已导出 ${FORMAT_LABEL[item.format]}：${item.filename}`, 'success')
+    diagEvent('export', { target: item.filename, ok: true, data: { format: item.format, size: item.blob.size } })
     return { ok: true, format: item.format, filename: item.filename, savedPath, size: item.blob.size, usedExportTs: item.usedExportTs }
   } catch (e) {
     toast(`导出失败：${(e as Error).message ?? '未知错误'}`, 'error')

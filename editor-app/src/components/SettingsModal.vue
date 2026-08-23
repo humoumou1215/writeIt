@@ -16,8 +16,8 @@ import { refreshTree, openDirectory } from '../editor/manager'
 import { state, toast } from '../state/store'
 import MenuIcon from './MenuIcon.vue'
 
-// 图标列 5 个功能（与 App.vue 菜单栏顺序一致）
-const iconNames = ['files', 'git', 'settings', 'shortcuts', 'export'] as const
+// 图标列 6 个功能（与 App.vue 菜单栏顺序一致）
+const iconNames = ['files', 'git', 'settings', 'shortcuts', 'export', 'diagnostics'] as const
 
 const props = defineProps<{ initialTab?: 'general' | 'shortcuts' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -193,6 +193,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span>文件系统</span>
             <span class="badge">{{ fs.kind }}</span>
           </div>
+
+          <!-- 诊断（D2）：问题诊断取证开关 -->
+          <h4 class="group-title">🩺 诊断</h4>
+          <label class="row">
+            <span>启用诊断功能</span>
+            <input type="checkbox" v-model="settings.diagEnabled" @change="saveSettings" />
+          </label>
+          <label class="row">
+            <span>自动异常提示</span>
+            <input type="checkbox" v-model="settings.diagAutoPrompt" @change="saveSettings" />
+            <em class="hint-inline">应用异常时 toast 提醒可生成诊断包</em>
+          </label>
+          <label class="row">
+            <span>记录操作轨迹</span>
+            <input type="checkbox" v-model="settings.diagTrackTimeline" @change="saveSettings" />
+          </label>
+          <button class="btn full" @click="state.diagOpen = true">🩺 打开诊断 / 生成诊断包…</button>
+          <p class="hint">
+            遇到渲染 / 动画异常时，生成诊断包发给开发者即可（含环境、日志、操作轨迹与可选截图/文档，生成时可逐项取消勾选）。
+          </p>
 
           <!-- M15：数据源切换（Mock 演示 / 真实仓库），仅 vite dev 演示态 -->
           <div v-if="fs.kind === 'dev' || fs.kind === 'mock'" class="row ds-options">
@@ -476,6 +496,15 @@ select {
   font-size: 11px;
   color: var(--chrome-on-surface-variant);
   line-height: 1.6;
+}
+/* 诊断分组标题 */
+.group-title {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--chrome-primary);
+  border-top: 1px solid var(--chrome-outline);
+  padding-top: 10px;
 }
 .shortcut-list {
   display: flex;

@@ -23,6 +23,9 @@ const seed = async (kind) => {
   await L.waitMs(400)
   await L.clickText('.tree .name', '周报.md')
   await L.waitMs(8000)
+  // 抽屉默认收纳：读取批注前先展开
+  await js(`document.querySelector('.annotation-open-btn')?.click()`)
+  await L.waitMs(400)
 }
 
 // A: 原始周报（无需求表）→ 1 warning

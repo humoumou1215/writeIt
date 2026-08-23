@@ -114,7 +114,9 @@ export const readonlyGuardPlugin = new Plugin({
     for (const step of tr.steps) {
       const from = (step as { from?: number }).from ?? 0
       const to = (step as { to?: number }).to ?? from
-      if (ranges.some(([a, b]) => from < b && to > a)) {
+      for (const [a, b] of ranges) {
+        if (from >= b || to <= a) continue // 不触碰该只读块
+        if (from <= a && to >= b) continue
         return false
       }
     }
@@ -125,6 +127,11 @@ export const readonlyGuardPlugin = new Plugin({
 // ---------- 3. 断链装饰 ----------
 
 const brokenPaths = new Set<string>()
+
+/** 诊断探针：当前断链路径集合（引用健康指标） */
+export function getBrokenPaths(): string[] {
+  return [...brokenPaths]
+}
 
 export const brokenRefPlugin: PluginType = new Plugin({
   key: new PluginKey('BROKEN_REF'),

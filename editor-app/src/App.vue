@@ -42,10 +42,20 @@ import OutlinePanel from './components/OutlinePanel.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import ExportModal from './components/ExportModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import ClipboardAuthModal from './components/ClipboardAuthModal.vue'
 import ContextMenu from './components/ContextMenu.vue'
+import RefEditorMenu from './components/RefEditorMenu.vue'
 import TemplatePicker from './components/TemplatePicker.vue'
+// 诊断（D1/D2）：入口 + 弹窗 + 异常红点轮询
+import { openReportModal } from './diagnostics'
+import { hasUnviewedError } from './diagnostics/logger'
+import ReportModal from './diagnostics/ReportModal.vue'
 
 const wsTopbarEl = ref<HTMLElement | null>(null)
+
+// 状态栏 🩺 异常红点（logger 的置位非响应式 → 轻量轮询刷新）
+const diagBadge = ref(false)
+setInterval(() => (diagBadge.value = hasUnviewedError()), 500)
 
 // 无系统标题栏（decorations:false）→ 是否需要自绘标题条
 const isTauri = fs.kind === 'tauri'
@@ -182,17 +192,31 @@ function cycleTab(delta: number) {
   activateTab(next.id)
 }
 
+// 抽屉独立：文件树 / Git / 搜索 三个图标各自独立——点文件进文件抽屉（已显示则再点收起）
+function onFilesIcon() {
+  if (state.gitPanel.tab === 'files' && !state.sidebarCollapsed) {
+    state.sidebarCollapsed = true
+    return
+  }
+  if (state.sidebarCollapsed) state.sidebarCollapsed = false
+  state.gitPanel.tab = 'files'
+}
+
 function onGitIcon() {
   if (!isGitAvailable()) {
     toast('Git 功能仅在桌面应用中可用（当前为浏览器演示模式）', 'info')
     return
   }
-  // 侧边栏收起时点 🔀：先展开（Git 面板在侧边栏内，否则点了看不见）
+  // 抽屉独立：点 Git 进 Git 抽屉（已显示则再点收起）
+  if (state.gitPanel.tab === 'git' && !state.sidebarCollapsed) {
+    state.sidebarCollapsed = true
+    return
+  }
   if (state.sidebarCollapsed) state.sidebarCollapsed = false
   state.gitPanel.tab = 'git'
 }
 
-// M15：全局搜索 —— 图标/快捷键打开侧栏搜索面板（已打开则再次触发收起）
+// M15：全局搜索 —— 抽屉独立：点搜索进搜索抽屉（已显示则再点收起）
 function onSearchIcon() {
   if (state.gitPanel.tab === 'search' && !state.sidebarCollapsed) {
     state.sidebarCollapsed = true
@@ -211,7 +235,7 @@ function onTabMenuAction(action: string, tabId: string) {
   if (!tab) return
   if (action === 'gitDiff') {
     void import('./editor/manager').then((m) =>
-      m.openGitDiff(tab.path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+      m.openGitDiff(tab.path, { kind: 'worktree', label: '工作区 vs HEAD' })
     )
   } else if (action === 'revealInExplorer') {
     revealPathInExplorer(tab.path)
@@ -272,7 +296,7 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
           toast('Git 功能仅在桌面应用中可用', 'info')
         } else {
           await import('./editor/manager').then((m) =>
-            m.openGitDiff(path, { from: null, to: 'HEAD', label: '工作区 vs HEAD' })
+            m.openGitDiff(path, { kind: 'worktree', label: '工作区 vs HEAD' })
           )
         }
       }
@@ -292,6 +316,11 @@ async function onMenuAction(action: string, path: string, kind: 'file' | 'dir') 
       break
     case 'delete':
       await removeNode(path, kind)
+      break
+    case 'copy':
+      // 复制文件/目录：编辑器 Ctrl+V 粘贴为引用（目录粘贴路径文本）
+      await import('./editor/ref/clipboard-core').then((m) => m.copyNodesToClipboard([{ kind, path }]))
+      toast(`已复制：${path}`)
       break
     case 'revealInExplorer':
       revealPathInExplorer(path)
@@ -407,15 +436,15 @@ function onTreeRootDrop(e: DragEvent) {
         <div class="icon-col">
         <button
           class="icon-btn"
-          :class="{ active: !state.sidebarCollapsed }"
+          :class="{ active: state.gitPanel.tab === 'files' && !state.sidebarCollapsed }"
           :title="`文件目录（${settings.shortcuts.toggleSidebar || 'Ctrl+B'}）`"
-          @click="toggleSidebar"
+          @click="onFilesIcon"
         >
           <MenuIcon name="files" :set="settings.iconSet" />
         </button>
         <button
           class="icon-btn"
-          :class="{ active: state.gitPanel.tab === 'git' }"
+          :class="{ active: state.gitPanel.tab === 'git' && !state.sidebarCollapsed }"
           :title="`Git（分支/工作区/历史）`"
           :style="{ opacity: isGitAvailable() ? undefined : 0.35 }"
           @click="onGitIcon"
@@ -424,7 +453,7 @@ function onTreeRootDrop(e: DragEvent) {
         </button>
         <button
           class="icon-btn"
-          :class="{ active: state.gitPanel.tab === 'search' }"
+          :class="{ active: state.gitPanel.tab === 'search' && !state.sidebarCollapsed }"
           :title="`全局搜索（${settings.shortcuts.search || 'Ctrl+Shift+F'}）`"
           @click="onSearchIcon"
         >
@@ -450,6 +479,14 @@ function onTreeRootDrop(e: DragEvent) {
           @click="state.exportOpen = true"
         >
           <MenuIcon name="export" :set="settings.iconSet" />
+        </button>
+        <button
+          class="icon-btn"
+          :title="`问题诊断（生成诊断包给开发者）${diagBadge ? ' · 有异常记录' : ''}`"
+          @click="openReportModal"
+        >
+          <MenuIcon name="diagnostics" :set="settings.iconSet" />
+          <i v-if="diagBadge" class="diag-dot"></i>
         </button>
       </div>
 
@@ -562,6 +599,14 @@ function onTreeRootDrop(e: DragEvent) {
         </template>
       </span>
       <span class="spacer"></span>
+      <button
+        class="diag-entry"
+        :class="{ dot: diagBadge }"
+        :title="`问题诊断：生成诊断包${diagBadge ? '（有异常记录）' : ''}`"
+        @click="openReportModal"
+      >
+        🩺 诊断
+      </button>
       <span v-if="state.gitPanel.repo?.isRepo" class="git-badge" :title="state.gitPanel.repo.headHash ?? ''">
         ⓘ {{ state.gitPanel.repo.branch ?? '(detached)' }}
       </span>
@@ -577,8 +622,11 @@ function onTreeRootDrop(e: DragEvent) {
     <!-- 浮层 -->
     <SettingsModal v-if="state.settingsOpen" :initial-tab="settingsTab" @close="state.settingsOpen = false" />
     <ExportModal v-if="state.exportOpen" @close="state.exportOpen = false" />
+    <ReportModal v-if="state.diagOpen" @close="state.diagOpen = false" />
     <ConfirmDialog />
+    <ClipboardAuthModal />
     <ContextMenu @action="onMenuAction" />
+    <RefEditorMenu />
     <TabContextMenu @action="onTabMenuAction" />
     <TemplatePicker
       v-if="state.templatePick !== null"
@@ -690,6 +738,23 @@ function onTreeRootDrop(e: DragEvent) {
   justify-content: center;
   color: var(--chrome-on-surface-variant);
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+  position: relative;
+}
+/* 诊断：未查看异常红点 */
+.diag-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e53935;
+  border: 1.5px solid var(--chrome-surface);
+  animation: diag-dot-blink 1.6s ease-in-out infinite;
+}
+@keyframes diag-dot-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 .icon-btn:hover {
   background: var(--chrome-hover);
@@ -926,6 +991,30 @@ function onTreeRootDrop(e: DragEvent) {
   border-top: 1px solid var(--chrome-border);
   background: var(--chrome-surface);
   flex-shrink: 0;
+}
+/* 诊断入口（状态栏）：异常红点 */
+.diag-entry {
+  border: 1px solid var(--chrome-outline);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s;
+}
+.diag-entry:hover { background: var(--chrome-hover); }
+.diag-entry.dot::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e53935;
+  animation: diag-dot-blink 1.6s ease-in-out infinite;
 }
 .active-file {
   overflow: hidden;

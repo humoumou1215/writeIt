@@ -9,6 +9,7 @@ import type { Crepe } from '@milkdown/crepe'
 import { state } from '../state/store'
 import { loadRenderData, registerRenderInstance } from '../editor/manager'
 import type { RenderDiffHandle, RenderDiffResult, DiffNote } from '../editor/render-diff'
+import type { DiffHunk } from '../git'
 import { setRuntimeAnnotations, type Annotation } from '../annotations/service'
 
 const props = defineProps<{ tabId: string }>()
@@ -20,9 +21,35 @@ const hostEl = ref<HTMLDivElement | null>(null)
 const status = ref<string | null>(null)
 let handle: RenderDiffHandle | null = null
 let renderSeq = 0
+let fmtSeq = 0
+
+// ---------- Issue 3：仅表格列宽对齐（分隔行 --- 长度变化）→ 渲染无可视改动 ----------
+// markdown 表格的列宽对齐空格在解析成 PM 后被归一化，旧/新文档结构完全相同 →
+// buildDiffDecorations 无任何装饰/批注，diff 看似「没改」。此时补一张说明卡，避免困惑。
+function isSepRowText(text: string): boolean {
+  if (!text.includes('|')) return false
+  const cells = text.split('|').slice(1, -1).map((c) => c.trim())
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c))
+}
+function isOnlyTableFormatting(hunks: DiffHunk[] | null | undefined): boolean {
+  if (!hunks || !hunks.length) return false
+  let sepSeen = false
+  let any = false
+  for (const h of hunks) {
+    for (const l of h.lines) {
+      if (l.kind !== 'add' && l.kind !== 'del') continue
+      if (!l.text.trim()) continue // 纯空白/空行（如末尾自动补的空行）不参与判定
+      any = true
+      if (!l.text.includes('|')) return false // 含非表格行 → 不是「仅表格格式化」
+      if (isSepRowText(l.text)) sepSeen = true
+    }
+  }
+  return any && sepSeen
+}
 
 // ---------- M14：diff 批注注入（notes → Annotation[] → 存量抽屉） ----------
 // M17：note.from/to 为构建装饰时记录的精确 doc 位置，直接使用（缺失/越界 → 略过定位）
+// M18 §4.2：批注 id = note.id（内容派生）——与装饰 data-dnote 同源，重算稳定，连线/激活态保持
 function applyDiffNotes(result: RenderDiffResult) {
   registerRenderInstance(props.tabId, result.crepe)
   const list: Annotation[] = result.notes
@@ -30,7 +57,7 @@ function applyDiffNotes(result: RenderDiffResult) {
       const from = n.from >= 0 ? n.from : -1
       const to = n.to >= 0 ? Math.max(n.to, from + 1) : -1
       return {
-        id: `diff-${props.tabId}-${i}`,
+        id: n.id,
         from,
         to,
         anchorText: n.text,
@@ -39,6 +66,12 @@ function applyDiffNotes(result: RenderDiffResult) {
         persist: false,
         source: 'diff',
       } as Annotation
+    })
+    // Issue 4：批注卡自上而下按改动点在文档中的位置排序（from 升序；无定位的 -1 排末尾）
+    .sort((a, b) => {
+      const fa = a.from >= 0 ? a.from : Number.MAX_SAFE_INTEGER
+      const fb = b.from >= 0 ? b.from : Number.MAX_SAFE_INTEGER
+      return fa - fb
     })
   setRuntimeAnnotations(props.tabId, list)
 }
@@ -50,6 +83,7 @@ async function render() {
   handle?.destroy()
   handle = null
   status.value = null
+  hostEl.value?.classList.remove('rd-new-file')
   try {
     const { renderDiffToContainer, renderSplitFallback } = await import('../editor/render-diff')
     const { buildRenderRefCfg } = await import('../editor/manager')
@@ -58,10 +92,8 @@ async function render() {
       newMd: d.renderData.newMd,
       hunks: d.hunks,
       path: d.path,
-      refCfg: buildRenderRefCfg(),
-      from: d.base?.from ?? null,
-      to: d.base?.to ?? 'HEAD',
-      baseLabel: d.base?.label ?? '工作区 vs HEAD',
+      refCfg: buildRenderRefCfg(d.path),
+      base: d.base ?? { kind: 'worktree', label: '工作区 vs HEAD' },
       onFallback: (reason: string) => {
         if (seq !== renderSeq) return
         status.value = reason
@@ -82,6 +114,23 @@ async function render() {
       return
     }
     if (result && seq === renderSeq) {
+      // Issue 3：仅表格分隔行列宽对齐（PM 解析后无可视变化）→ 补一张说明卡
+      if (
+        result.notes.length === 0 &&
+        d.hunks.length &&
+        isOnlyTableFormatting(d.hunks) &&
+        d.renderData &&
+        d.renderData.oldMd !== d.renderData.newMd
+      ) {
+        result.notes.push({
+          id: `dn-fmt-${++fmtSeq}`,
+          kind: 'table',
+          text: '表格分隔行格式调整（列宽对齐），内容无变化，请忽略',
+          anchor: '表格 --- 字段调整，请忽略',
+          from: -1,
+          to: -1,
+        } as DiffNote)
+      }
       handle = result.handle
       applyDiffNotes(result)
     }
@@ -152,11 +201,13 @@ onBeforeUnmount(() => {
 .render-main {
   flex: 1;
   min-width: 0;
-  overflow: auto;
+  /* M16 修复：内层不得产生滚动条——否则与外层 .diff-body 右侧形成双重滚动条（两个进度条） */
+  overflow: visible;
   padding: 8px 12px 24px;
 }
 .render-host {
   min-height: 100%;
+  overflow: visible;
 }
 .render-status {
   padding: 24px 16px;
@@ -303,54 +354,5 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--chrome-primary, #4169e1), transparent 92%);
   padding: 2px 6px;
   margin: 2px 0;
-}
-/* mermaid 节点级标注（M14 渲染后 DOM 操作）——flowchart/state 节点 <g> */
-:deep(.diff-node-add rect),
-:deep(.diff-node-add circle),
-:deep(.diff-node-add .node-bkg) {
-  fill: color-mix(in srgb, #2e7d32, transparent 78%) !important;
-  stroke: #2e7d32 !important;
-  stroke-width: 2px !important;
-}
-:deep(.diff-node-add .nodeLabel),
-:deep(.diff-node-add .state-label) {
-  color: #1b5e20 !important;
-  font-weight: 600 !important;
-}
-:deep(.diff-node-del rect),
-:deep(.diff-node-del circle),
-:deep(.diff-node-del .node-bkg) {
-  fill: color-mix(in srgb, #c62828, transparent 78%) !important;
-  stroke: #c62828 !important;
-  stroke-width: 2px !important;
-  stroke-dasharray: 4 3 !important;
-}
-:deep(.diff-node-del .nodeLabel),
-:deep(.diff-node-del .state-label) {
-  color: #8e0000 !important;
-  text-decoration: line-through !important;
-  text-decoration-thickness: 1.5px !important;
-  opacity: 0.85;
-}
-/* M16b：标签修改节点 —— 节点本身绿（新值，diff-node-add 生效），节点下方追加红划线旧值小字 */
-:deep(.diff-mod-old) {
-  fill: #c62828 !important;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-decoration: line-through;
-  text-decoration-thickness: 1.5px;
-  opacity: 0.85;
-}
-/* sequence 消息标注（M16：红删/绿增二元） */
-:deep(.diff-seq-add) {
-  fill: #2e7d32 !important;
-  font-weight: 600;
-}
-:deep(.diff-seq-del) {
-  fill: #c62828 !important;
-  font-weight: 600;
-  text-decoration: line-through;
-  text-decoration-thickness: 1.5px;
-  opacity: 0.85;
 }
 </style>
