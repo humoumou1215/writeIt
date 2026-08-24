@@ -1,220 +1,82 @@
-# Agent.md — Operating Schema for Pi
+# Agent.md — WriteIt 工作区操作手册
 
-> This file is the **brain** of the Milkdown knowledge base. Pi (the agent) MUST follow it exactly. It defines structure, permissions, conventions, and the three core workflows (Ingest / Query / Lint). Humans edit this file; Pi executes it.
->
-> Philosophy (Karpathy LLM Wiki): the raw layer is immutable truth, the wiki is the compiled/linkable layer, and this schema makes Pi a *disciplined wiki curator* rather than a generic chatbot.
+> 本文件定义**整个项目**的结构、权限与约定，Pi 照此执行。人维护本文件；Pi 不修改本文件，如需改动告知人类。
+> 项目主线是 `editor-app/` 编辑器应用的开发；`raw/` + `wiki/` 知识库只是信息参考（操作手册在 `KB.md`，仅按需阅读）。
 
 ---
 
-## 1. Identity & Role
-
-- You are **Pi**, the knowledge-base curator for this workspace.
-- Your job is **not** to answer from memory — it is to *maintain* a structured, linkable Markdown wiki and answer from it.
-- Treat the wiki as a codebase: [[Index]] is the entry point; concept/entity pages are modules; `[[…]]` wikilinks are imports.
-
-## 2. Project Structure
+## 1. 目录结构与权限（全项目）
 
 ```
 writeIt/
-├── raw/                # Immutable source docs. Pi READS ONLY. Never write/edit/delete.
-│   ├── milkdown-docs/  #   官方文档语料（api / guide / plugin 子目录）
-│   └── milkdown-srouce/ #   milkdown 源码语料（注意目录拼写是 "srouce"；packages/ 下是各插件/组件/preset 包）
-├── wiki/               # Pi-owned, generated layer. Pi READS + WRITES.
-│   ├── index.md        # Master catalog — one line per page.
-│   ├── log.md          # Append-only activity timeline.
-│   ├── concepts/       # Ideas, systems, patterns (e.g. architecture, plugin system).
-│   ├── entities/       # Things/projects/deps (Milkdown, Crepe, ProseMirror, …).
-│   ├── sources/        # Provenance of each raw corpus.
-│   └── syntheses/      # Cross-cutting overviews (e.g. [[Overview]]).
-├── Agent.md            # This file. Human-configured, Pi-executed. NEVER edited by Pi.
-├── editor-app/         # ⚠️ 独立应用（Vue 3 + Vite + Tauri + @milkdown/crepe）
-│   ├── src/
-│   │   ├── editor/     #   manager.ts（多标签 Crepe 实例管理）+ mermaid.ts（图表配置工厂）
-│   │   │               #   + mermaid-diagrams.ts / demo.md / mermaid.md（图表数据源与示例）
-│   │   ├── fs/         #   文件系统抽象：types / mock（浏览器 Demo）/ web（FS Access API）/ tauri（IPC）
-│   │   ├── components/ #   FileTree / TabBar / EditorPane / SettingsPanel / 弹窗
-│   │   ├── state/      #   store / settings（主题）/ treeOps（文件树 CRUD）
-│   │   ├── App.vue     #   布局：顶栏 + 文件树 + 多标签 + 编辑器
-│   │   └── main.ts     #   入口（引入 crepe 基础样式）
-│   ├── src-tauri/      #   Tauri 壳（Rust 命令：read_tree / read_file / write_file / CRUD）
-│   ├── package.json    #   依赖：@milkdown/crepe、@milkdown/kit、vue、mermaid、@tauri-apps/*
-│   ├── README.md       #   架构 / 启动 / 打包说明（工作区入口文档）
-│   ├── node_modules/   #   已安装依赖
-│   └── dist/           #   npm run build 产物
-└── (outputs/)          # Optional: long-form query answers, if needed.
+├── editor-app/        # 主应用（Vue3 + Vite + Tauri + @milkdown/crepe）——开发主线
+│   ├── src/           #   editor/ fs/ annotations/ validate/ template/ git/ search/ export/ diagnostics/ components/ state/
+│   ├── src-tauri/     #   Tauri Rust 壳（目标平台 Windows / NSIS）
+│   ├── tests/         #   e2e（ego-browser 驱动）/ unit
+│   ├── scripts/  vite-plugins/   # 构建/脚本/插件
+│   └── package.json / vite.config.ts / dist/
+├── doc/               # 顶层功能文档（历史文档，即将清理）
+├── raw/               # 知识库源语料。只读。用法见 KB.md
+├── wiki/              # 知识库生成层。可读写。用法见 KB.md
+├── README.md
+├── Agent.md           # 本文件（项目操作手册）
+└── KB.md              # 知识库操作手册（仅按需阅读）
 ```
 
-> 历史：`editor/`（单页 Demo）与根 `index.html`（入口页）已删除——功能已全部并入 `editor-app/`，避免资产重复。
+**权限（硬规则）**
+- `editor-app/` → **开发主线**。Pi 可在 human 要求下修改代码 / 依赖 / 构建 / 打包 / 测试。
+- `raw/` → **只读**，绝不写 / 改名 / 删。
+- `wiki/` → 可读写（仅在处理知识库时）。
+- `doc/` 与 `editor-app/docs/` → **历史文档，即将删除。不要引用或依赖其内容**；等清理后删除。
+- `Agent.md` / `KB.md` → Pi **不修改**；如需改动，告知人类（须经 human 明确指示）。
 
-### Permissions (hard rules)
-- `raw/` → **READ ONLY.** If a wiki page is wrong, fix the wiki; never touch the source.
-- `wiki/` → Pi may create/update pages, `index.md`, `log.md`.
-- `Agent.md` → **NEVER modified by Pi.** If you think it needs changing, tell the human. （修改须经 human 明确指示）
-- `editor-app/` → 可运行独立应用（Vue + Vite + Tauri），Pi 可在 human 要求下修改代码/依赖/构建/打包。
-- Never delete past `log.md` entries.
+## 2. 知识库（索引）
 
-## 3. Wiki Conventions
+知识库只是信息参考，操作手册见 **`KB.md`**。需要维护或查询知识库时再读它，主线上无需关注。核心一句话：`raw/` 只读、`wiki/` 维护 `index.md`/`log.md`、用 `[[wikilinks]]`。
 
-### Frontmatter (every page)
-```yaml
----
-title: Human Readable Title
-type: concept | entity | source | synthesis | index
-tags: [milkdown, …]
-source: [[Milkdown Docs Corpus]]   # the raw corpus this derives from
-updated: YYYY-MM-DD
----
-```
+## 3. 约定（全项目通用）
 
-### Wikilinks
-- Use Obsidian-style `[[Page Title]]` for all internal links. The title MUST match the target page's `title:` exactly.
-- Link from specific → general and back: a concept page links its entities; an entity page links its concept pages. Build the **network**, not a tree.
-- Prefer linking on first meaningful mention within a page.
+- 与用户全程**中文**交流；重大改动**先讨论方案再实现**（用户多次强调）。
+- **安全**：浏览器 bundle **绝不内嵌 LLM API key**（BYOK `dangerouslyAllowBrowser:true` 或后端代理）。
+- 改代码/改依赖后 `npm run build` 验证。
 
-### Naming
-- Files: `kebab-case.md`. Pages: `Title Case` in frontmatter `title`.
-- One concept/entity per page (atomic). Don't cram unrelated topics.
+## 4. 研发经验速览（editor-app）
 
-### Accuracy
-- Every non-obvious claim must trace to `raw/`. If unsure, say so rather than invent.
-- When the raw is a build artifact (lists of exports), *synthesize* — don't just paste `@Symbol` lists. The wiki adds value through structure and links.
-
-## 4. Index Format (`wiki/index.md`)
-
-One line per page. Group by type (Start here / Concepts / Entities / Sources / Syntheses). Format:
-
-```
-- [Page Title](relative/path.md) — one-sentence summary.
-```
-
-Rules:
-- **Every** new wiki page gets exactly one new line here.
-- Keep summaries to one sentence; this file is scanned, not read deeply.
-- Maintain the **Raw module map** table so any raw file can be traced to its wiki coverage.
-
-## 5. Log Format (`wiki/log.md`)
-
-Append-only, dated, bulleted. One line per operation. Never rewrite history.
-
-```
-## YYYY-MM-DD
-- HH:MM did X (link relevant pages with [[…]]).
-```
-
-## 6. Workflows
-
-### A. Ingest (new source dropped into `raw/`)
-1. Read `wiki/index.md` to see what already exists.
-2. Read the new raw file(s); extract concepts/entities not yet in the wiki.
-3. Create or update pages in `wiki/`; add `[[…]]` cross-links both ways.
-4. Append a line to `wiki/index.md` for each new page; update the Raw module map.
-5. Append an entry to `wiki/log.md`.
-6. If a concept lacks a page but is referenced, create a **stub** (title + one line + `source:`) rather than leaving a dead link.
-
-### B. Query (answering a question)
-1. **Read `wiki/index.md` first.**
-2. Identify the 2–3 relevant pages; read only those.
-3. Answer from the wiki; cite pages via `[[…]]`.
-4. If the answer is high-value and not yet a page, offer to archive it back into the wiki (Ingest step).
-
-### C. Lint (periodic health pass)
-Run when asked, or every ~10 ingests. Read all wiki pages and:
-- Flag **contradictions** between pages and note them on both (with a `> [LINT]` callout).
-- Flag **missing backlinks** and add them.
-- Flag **orphans** (pages with no incoming links) and **dead links** (`[[…]]` with no target).
-- Create stubs for referenced-but-missing concepts.
-- Append a Lint summary to `wiki/log.md`.
-
-## 7. Pi's Constraints (must / must not)
-
-**Must**
-- Keep `wiki/index.md` and `wiki/log.md` always current.
-- Preserve `raw/` immutability.
-- Use `[[wikilinks]]` and bidirectional links.
-- Mark `updated:` on every page you touch.
-- Be explicit about uncertainty; never hallucinate API details — verify against `raw/`.
-
-**Must not**
-- Edit `Agent.md`.
-- Write to, rename, or delete anything in `raw/`.
-- Delete or rewrite `log.md` history.
-- Leave a `[[…]]` link with no target page (create a stub instead).
-- Dump raw `@Symbol` lists without synthesis.
-- Expose secrets: if documenting the AI feature, always restate the **no-browser-API-key** rule (BYOK `dangerouslyAllowBrowser:true` or backend proxy).
-
-## 8. Domain Notes (Milkdown)
-- Markdown is the source of truth; ProseMirror is the engine; Milkdown adds the Markdown + plugin layer.
-- Two build levels: low-level `Editor.make().use(...)` vs high-level `Crepe` / `CrepeBuilder`.
-- Most operationally important caveat in the corpus: **never embed LLM API keys in a browser bundle** (see [[AI Feature]]).
-- 本工作区的可运行编辑器应用位于 `editor-app/`（Vue 3 + Vite + Tauri 本地构建，**勿用 esm.sh CDN**——codemirror `basicSetup` 导出丢失 + CSS 404）。esm.sh CDN 方案已弃用，**不要回退到 CDN 方案**。
-- `editor-app/` 架构要点：文件系统抽象为 `FileSystem` 接口（mock / web / tauri 三种实现，可切换代理）；多标签编辑 = 每标签独立 Crepe 实例（保留各自撤销历史，切标签只切容器可见性）；文件内容只经 `getMarkdown()` 取出、`replaceAll()` 注入。
-- Mermaid 支持：`Crepe.Feature.CodeMirror` 的 `renderPreview` 钩子（渲染 `mermaid` 代码块预览）+ `Crepe.Feature.BlockEdit` 的 `buildMenu`（slash 命令「Mermaid」分组），实现见 `editor-app/src/editor/mermaid.ts`，数据源 `mermaid-diagrams.ts`（30 种图表）。
-- CodeMirror 代码块为 **IntersectionObserver 懒加载**：滚动到可视区才初始化编辑器（编辑器未显示时只渲染 placeholder，属正常行为）。
-- Tauri 目标平台为 **Windows**（NSIS 安装包）；本开发环境是 Linux，Rust 壳用 `cargo check` 验证，打包需在 Windows 机器执行。
-
----
-_Last revised: 2026-08-11 — 应用迁至 `editor-app/`（Vue + Vite + Tauri），删除 `editor/` 与根 `index.html`；新增 fs 抽象 / 多标签 / Mermaid 实现路径说明。_
-
-## 9. 研发经验（editor-app 开发，供后续 agent 直接使用）
-
-### 项目状态（截至 2026-08-11，v0.2.0 已打 tag 并发布）
-- **里程碑 M1-M6 全部完成**（引用语法/节点 → 触发菜单 → 文件树联动 → 模板机制+实体级 → 校验三通道 → 批注插件）；M7 未定。
-- 批注功能已按用户多轮反馈迭代至 v5：右侧抽屉（宽 300 可拖 50-480、统一折叠）、评论线程（不可删除、仅创建人标记已解决、○/✔ 状态圆）、Ctrl+Enter 提交/ESC 取消/Ctrl+R 快速评论、点击卡片=定位+激活连线、markdown 不渲染。
-- 设计文档 `editor-app/docs/design.md` §11 有完整里程碑状态、各里程碑实现记录（M6 v2/v3/v4/v5）、关键技术坑、缺口清单——**开发前先读**。
-
-### 架构速览（相对上文的补充）
-- `src/annotations/`：批注插件（M6，独立于校验）——remark-annotation（`<mark data-note>` 语法）、nodes（annotation schema）、service（AnnotationService：运行时批注 persist=false / 人工批注 persist=true；线程 JSON 存 note 属性 + HTML 实体转义/unescape + 旧格式兼容；addComment/setCommentResolved/removeAnnotationNode）、plugin（decorations：非空 inline 高亮 / 空范围锚定行）、card（锚点点击激活 + Ctrl+R 输入浮窗，ESC 关闭）、card-color（级别颜色）、user-name（Tauri git 用户名 / 设置降级）、styles
-- `src/components/AnnotationDrawer.vue`：批注抽屉（v3+）——固定右侧、拖拽宽度、折叠/展开、批注计数、评论线程 UI（○/✔ 状态圆、权限）、校验只读卡、连线（抽屉左边缘→锚点，悬停突出）
-- `src/validate/`：校验服务（M5）——service（rules 执行/三通道/strict 门禁）、validate-context（ValidationContext 表格/标题查询）；违规标注走批注体系（setRuntimeAnnotations）
-- `src/editor/ref/`：引用机制核心——`nodes.ts`（4 自定义节点 schema）、`remark-ref.ts`（mdast 解析）、`stringify.ts`（防转义）、`resolve.ts`（两段式物化+对象消歧）、`file-block-view.ts`（嵌入卡片 NodeView）、`app-plugin.ts`（点击跳转/只读守卫/断链装饰）、`menu/`（三级菜单 index.ts + RefMenu.vue）、`ref-tooltip.ts`（自定义悬停浮窗）、`styles.css`
-- `src/template/`：模板机制——`service.ts`（双域扫描/注册表）、`ts-loader.ts`（esbuild-wasm 转译 TS 并隔离执行）、`suggest-context.ts`（结构查询工具）、`types.ts`（SuggestObject/Rule 类型）
-- `src/editor/features.ts`：每个 Crepe 实例的 featureConfigs 组合（Mermaid + 模板组）
-- `src/fs/`：FileSystem 抽象（mock/web/tauri 三实现）；`shouldShowInTree()` 控制树过滤（模板域文件始终显示）
+### 架构要点
+- FS 抽象为 `FileSystem` 接口（mock / web / tauri 三实现，可切换代理）。
+- 多标签 = 每标签独立 Crepe 实例（独立撤销历史，切标签只切容器可见性）；内容只经 `getMarkdown()` 取、`replaceAll()` 注入。
+- CodeMirror 代码块为 **IntersectionObserver 懒加载**：滚动到可视区才初始化，未显示只渲染 placeholder，属正常。
+- Mermaid：`renderPreview` 钩子（mermaid 代码块预览）+ `buildMenu` slash 命令（见 `src/editor/mermaid.ts`）。
+- Tauri 目标平台为 **Windows**（NSIS）；本环境是 Linux，Rust 壳仅 `cargo check` 验证，打包在 Windows 上做。
 
 ### 测试（改代码后必跑）
-- **浏览器驱动唯一允许 ego-lite（ego-browser），【禁止 playwright】**。调试/回归全部走 `ego-browser nodejs`；不要在任何用例或脚本里 `require('playwright')`。
-- 套件在 `editor-app/tests/e2e/`（ego-lite 驱动真实 Chromium，需 dev server :5173；无额外依赖，不装 playwright）：
-  `ref-e2e`(16) / `menu-e2e`(26) / `m3-e2e`(9) / `m4-e2e`(13) / `m4b-e2e`(9) / `m4c-e2e`(5) / `m5-e2e`(9) / `m5-strict`(3) / `m6-e2e`(6) / `m6-toolbar`(9) / `m6c-e2e`(28) / `m6d-e2e`(12) / `m6e-e2e`(19) / `source-e2e` / `drag-e2e` / `m7-apidoc-e2e`(8) / `xxljob-e2e`(8) / `m8-db-e2e`(10) / `m9-placeholder-e2e`(8) / `mermaid-zoom-e2e`(16) / `mermaid-ref-e2e`(26) / `export-e2e` / `git-m11a-e2e` / `git-m11a-smoke` / `search-e2e` / `table-enhance-e2e`(11：表格增强：Enter换行+`<nbr/>`round-trip / Shift+Enter增行 / 动态列宽 / 多选复制粘贴) / `app-e2e`(28，会清空 demo-shots/)
-- 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后跑）；单个：`node tests/e2e/_run-one.js <name>`，看末尾「结果: X 通过 / Y 失败」；共享辅助库在 `tests/e2e/_egolite-lib.js`（js/click/wait/组合键等辅助，运行器自动拼接注入）。
-- 组合键（Ctrl+E / Ctrl+S / Ctrl+Shift+F 等）要用 `L.press('Control+e')`，它走 CDP 发真实修饰符；裸 `pressKey('Control+e')` 会被当成单一键名（应用收不到 ctrlKey）。
-- 实体级下钻用 `ArrowRight`（文件级 `Enter` 现为直接插入链接）；跨套件用 `L.freshApp()` 重置 mock 避免残留串扰。
-- 历史一次性调试脚本已随 playwright 禁令移除（`tests/scratch/` 删除，git 历史可查）。
-- 每轮回归后 `npm run build` 验证
+- 浏览器驱动**唯一允许 ego-lite（ego-browser），严禁 playwright**；任何用例/脚本不得 `require('playwright')`。
+- 套件在 `editor-app/tests/e2e/`（ego-lite 驱动真实 Chromium，需 dev server :5173）：`ref-e2e` / `menu-e2e` / `m3`–`m9` 系列 / `source-e2e` / `drag-e2e` / `export-e2e` / `git-m11a-e2e` / `search-e2e` / `table-enhance-e2e` / `app-e2e`（会清空 demo-shots/）等。
+- 一键全量：`npm run test:e2e`（run-all.js 汇总，app-e2e 最后）；单个：`node tests/e2e/_run-one.js <name>`。共享辅助库在 `tests/e2e/_egolite-lib.js`。
+- 组合键用 `L.press('Control+e')`（走 CDP 发真实修饰符）；裸 `pressKey('Control+e')` 会被当单一键名。实体级下钻用 `ArrowRight`。跨套件用 `L.freshApp()` 重置 mock。
 
 ### ego-lite 资源使用规范（必守）
-> 血泪经验：ego-browser 的每个 task space 都占用独立浏览器上下文与渲染资源，**若只开不关会不断堆积**
-> （实测可到上百个），最终拖垮 ego 守护进程：task space 频繁消亡（`Task space not found`）、CDP 超时、
-> 甚至偶发 `SyntaxError: Unexpected token 'import'`（lib 顶层 `await import` 被当 CJS 解析）等**假性环境故障**，
-> 并非代码 bug。务必遵守：
-- **测试一律用项目 harness**：单套件 `node tests/e2e/_run-one.js <name>`、全量 `npm run test:e2e`；
-  两者末尾都会 `completeTaskSpace(task.id, { keep: false })` 自动关空间，资源随开随关。
-- **手写 `ego-browser nodejs <<EOF … EOF` heredoc 仅用于短暂排障**，且必须在脚本末尾加
-  `await completeTaskSpace(task.id, { keep: false })` 后再收尾；禁止不留收尾地反复开空间。
-- **不要连续跑多轮全量/单套件而不清理**：每轮都新建空间，跑几轮后间歇性出现 `Task space not found`
-  或 `resetMockFs` / `location.reload` 超时，都是空间堆积信号 → 立刻清场。
-- **清场命令**（手动，或 run-all 末尾的清理）：`ego-browser nodejs < tests/e2e/_cleanup-spaces.ego.js`
-  （逐个 claim + complete keep:false 关闭）。
-- **判据**：`listTaskSpaces()` 或清理脚本输出「清理前 task spaces: N」；N 在个位数算正常，两位数以上先清理再继续。
-- 偶发 `Unexpected token 'import'` 多由空间堆积引起：先用 `ego-browser nodejs` 跑一条极简脚本
-  （如 `cliLog(1+1)`）确认运行时正常，若正常而读文件用例仍报 import 错，先清场重试，不要改代码产物。
+> 每个 task space 占用独立浏览器上下文与渲染资源，**只开不关会堆积**（可上百个），拖垮 ego 守护进程，产生 `Task space not found`、CDP 超时、偶发 `SyntaxError: Unexpected token 'import'` 等**假性环境故障**（非代码 bug）。
+- **一律用项目 harness**：`node tests/e2e/_run-one.js <name>` 或 `npm run test:e2e`——二者末尾自动 `completeTaskSpace(...,{keep:false})` 关空间。
+- 手写 `ego-browser nodejs <<EOF … EOF` 仅用于短暂排障，末尾必须 `await completeTaskSpace(task.id,{keep:false})`。
+- 不要连跑多轮不清理；出现 `Task space not found` / `resetMockFs` / `location.reload` 超时 = 空间堆积信号 → 清场：`ego-browser nodejs < tests/e2e/_cleanup-spaces.ego.js`。
+- 判据：`listTaskSpaces()` 输出「清理前 N」；N 两位数以上先清理再继续。偶发 `Unexpected token 'import'` 先跑极简脚本确认运行时，再清场重试，别改产物。
 
-### 调试钩子（window 上，测试/排障用）
-- `__editorDebug()` 活动编辑器 / `__editorGetMarkdown()` 当前 md / `__editorGoEnd()`（光标到文档末尾可输入处，末尾嵌入块自动补空段）
-- `__editorSetRefPath(old,new)` / `__refMenuState`（菜单 reactive 状态）/ `__refMenuPerf`（菜单打开耗时）/ `__mockFsDebug()`（mock 数据摘要：seededVersion/模板文件清单）
+### 调试钩子（window 上）
+`__editorDebug()` / `__editorGetMarkdown()` / `__editorGoEnd()` / `__editorSetRefPath(old,new)` / `__refMenuState` / `__refMenuPerf` / `__mockFsDebug()`。
 
-### 关键踩坑速查（详细见 design.md §11）
-1. **walk 未命中返回 `[]` 是真值** → 必须返回 `null` + `found !== null`
-2. **插入后定位新节点**：位置会漂移 → 用 ProseMirror 节点对象引用（dispatch 前后对比，持久化不变）
-3. **flip 中间件测 0 高**（内容异步渲染）→ 树加载后手动 computePosition 重定位（fixed 策略），别用 provider.update（会 onShow 递归循环）
-4. **滚动**：`inst.el` 自身是 `.editor-pane`（querySelector 查子查不到）；scrollIntoView 在嵌套滚动容器不可靠 → 手动算 scrollTop（标题偏上 15%）
-5. **编辑器挂载异步**：打开文件后要 waitForInstance 再操作
-6. **IME**：组合文本用 beforeinput 跟踪（keydown 记不到）；全角符号（＠！【）归一化再匹配
-7. **多标签**：多个菜单实例共享 window keydown → hasFocus + data-show 守卫，防 Enter 双重触发
-8. **esbuild-wasm**：初始化+首个 transform 各 ~450ms → 启动后台预热
-9. **mock 示例升级**：SEED_VERSION 版本化 + 演示核心文件跨版本强制覆盖（FORCE_UPDATE_PATHS）；`seededVersion` 与「模板缺失」双条件兜底
+### 关键踩坑速查
+1. walk 未命中返回 `[]` 是真值 → 返回 `null` + `found !== null`
+2. 插入后位置漂移 → 用 ProseMirror 节点对象引用定位新节点
+3. flip 中间件测 0 高（异步渲染）→ 树加载后手动 computePosition（fixed 策略），别用 provider.update（会 onShow 递归）
+4. 滚动：`inst.el` 是 `.editor-pane` 自身；scrollIntoView 在嵌套容器不可靠 → 手动算 scrollTop（标题偏上 15%）
+5. 编辑器挂载异步 → 打开文件后 waitForInstance 再操作
+6. IME：组合文本用 beforeinput 跟踪；全角符号（＠！【）归一化再匹配
+7. 多标签共享 window keydown → 用 hasFocus + data-show 守卫防 Enter 双重触发
+8. esbuild-wasm 初始化+首次 transform 各 ~450ms → 启动后台预热
+9. mock 示例升级：SEED_VERSION 版本化 + FORCE_UPDATE_PATHS 强制覆盖；`seededVersion` 与「模板缺失」双条件兜底
 
 ### 开发约定
-- 与用户全程中文交流；重大改动先讨论方案再实现（用户多次强调）
-- 触发词匹配：`matchTrigger` 取「终点离光标最近」的候选（段落旧 `[[` 不抢占）
-- 实体级 = 文件本身 + （suggest 对象 / Obsidian 标题）；`![[` 嵌入与断链替换不进实体级
-- 引用 chip 显示完整路径；悬停用自定义 tooltip（ref-tooltip.ts），不要原生 title
+- 触发词匹配：`matchTrigger` 取「终点离光标最近」的候选（段落旧 `[[` 不抢占）。
+- 实体级 = 文件本身 +（suggest 对象 / Obsidian 标题）；`![[` 嵌入与断链替换不进实体级。
+- 引用 chip 显示完整路径；悬停用自定义 tooltip（`ref-tooltip.ts`），不用原生 title。

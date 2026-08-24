@@ -122,6 +122,7 @@ writeIt/
 | [doc/settings.md](doc/settings.md) | 设置 / 主题 / 快捷键 |
 | [doc/packaging.md](doc/packaging.md) | Tauri 打包与 CI 发布 |
 | [doc/testing.md](doc/testing.md) | 测试体系与调试钩子 |
+| [doc/git-render-tests.md](doc/git-render-tests.md) | Git diff 渲染测试案例全清单：场景、预期渲染效果、运行方式 |
 | [doc/demo-workspace.md](doc/demo-workspace.md) | 演示内容库「消金业务合作平台」（独立仓库 + mock 同步 + 真实调试） |
 
 ## 六、给开发者

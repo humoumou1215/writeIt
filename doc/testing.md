@@ -56,10 +56,13 @@ node tests/e2e/_run-one.js m6c-e2e
 | `export-e2e` | M10 | — | 导出：默认 PDF/DOCX/MD + 设置导出页签 + export.ts 自定义 |
 | `git-m11a-e2e` | M11 | — | Git 工作台：面板/历史/范围对比/diff 视图（IPC mock 全流程） |
 | `git-m11a-smoke` | M11 | — | 浏览器降级 + 演示模式：Git 面板/README 渲染 diff |
+| `git-m18-fixture-e2e` | M18 | — | 渲染管线 fixture：write-once/NodeView/data-dnote/嵌入预填充/折叠卡 |
 | `search-e2e` | M15 | — | 全局搜索面板：全文搜索/跳转/快捷键/收起 |
 | `app-e2e` | 综合 | 28 | 全应用（清空 demo-shots/，最后跑） |
 
 > 历史一次性调试脚本已随 playwright 禁令移除（原 `tests/scratch/`，git 历史可查）。
+>
+> Git diff 渲染测试逐条详情（场景/预期效果/断言载体/运行方式）见 [`doc/git-render-tests.md`](../../doc/git-render-tests.md)；渲染相关单测见 `tests/unit/diff/{model,prefetch}.test.ts`。
 
 ## 3. 调试钩子（window 上，浏览器控制台可用）
 

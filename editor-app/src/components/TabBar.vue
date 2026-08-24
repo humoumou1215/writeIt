@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { state } from '../state/store'
+import { fs } from '../fs'
 import { activateTab, closeTab } from '../editor/manager'
+
+const isTauri = fs.kind === 'tauri'
 
 function onMiddleClick(e: MouseEvent, id: string) {
   if (e.button === 1) {
@@ -21,10 +24,30 @@ function onContextMenu(e: MouseEvent, id: string) {
     path: tab.path,
   }
 }
+
+// ---------- 自绘窗口控制（最小化/最大化/关闭；并入标签栏，复用整行为拖拽区） ----------
+async function winMinimize() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().minimize()
+}
+async function winToggleMaximize() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const w = getCurrentWindow()
+  if (await w.isMaximized()) await w.unmaximize()
+  else await w.maximize()
+}
+async function winClose() {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().close()
+}
 </script>
 
 <template>
-  <div class="tabbar">
+  <div
+    class="tabbar"
+    :data-tauri-drag-region="isTauri ? '' : undefined"
+  >
+    <span v-if="!state.tabs.length" class="app-name">WriteIt</span>
     <div
       v-for="tab in state.tabs"
       :key="tab.id"
@@ -49,6 +72,13 @@ function onContextMenu(e: MouseEvent, id: string) {
       </button>
     </div>
     <span v-if="!state.tabs.length" class="empty-hint">在左侧选择文件打开，或右键目录新建</span>
+
+    <!-- 窗口控制（并入标签栏右端；整行为无系统标题栏时的拖拽区） -->
+    <div v-if="isTauri" class="tb-controls">
+      <button class="tb-btn" title="最小化" @click="winMinimize"><span class="g">─</span></button>
+      <button class="tb-btn" title="最大化" @click="winToggleMaximize"><span class="g">▢</span></button>
+      <button class="tb-btn tb-close" title="关闭" @click="winClose"><span class="g">✕</span></button>
+    </div>
   </div>
 </template>
 
@@ -57,11 +87,13 @@ function onContextMenu(e: MouseEvent, id: string) {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  padding: 6px 10px 0;
+  padding: 6px 4px 0;
   overflow-x: auto;
   flex-shrink: 0;
   background: var(--chrome-surface);
   border-bottom: 1px solid var(--chrome-border);
+  user-select: none;
+  -webkit-user-select: none;
 }
 .tab {
   display: flex;
@@ -76,7 +108,8 @@ function onContextMenu(e: MouseEvent, id: string) {
   border-bottom: none;
   max-width: 220px;
   white-space: nowrap;
-  user-select: none;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
 }
 .tab:hover {
   background: var(--chrome-hover);
@@ -126,5 +159,49 @@ function onContextMenu(e: MouseEvent, id: string) {
   font-size: 12px;
   color: var(--chrome-on-surface-variant);
   padding: 4px 8px;
+  white-space: nowrap;
+}
+/* 无标签时：应用名居左，作为拖拽抓手 */
+.app-name {
+  align-self: center;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--chrome-on-surface-variant);
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+/* ===== 窗口控制（右端；整行拖拽区内的可点击区） ===== */
+.tb-controls {
+  display: flex;
+  height: 100%;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+.tb-btn {
+  width: 44px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--chrome-on-surface-variant);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  cursor: default;
+}
+.tb-btn:hover {
+  background: var(--chrome-hover);
+  color: var(--chrome-on-background);
+}
+.tb-btn.tb-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+.g {
+  pointer-events: none;
+  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 </style>
