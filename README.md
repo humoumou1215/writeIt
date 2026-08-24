@@ -1,133 +1,103 @@
-# WriteIt（Milkdown Note）
+# WriteIt
 
-> 面向**文档结构化与内容治理**的 Markdown 编辑器 —— 基于 **Tauri 2 + Vue 3 + Vite + @milkdown/crepe**。
-> 打开本地目录 → 文件树管理 → 多标签编辑，内置**引用机制、模板机制、文档校验、批注评论、Git 工作台、Mermaid 图表**等一整套内容工程能力。
+基于 **Tauri 2 + Vue 3 + Vite + @milkdown/crepe** 的 Markdown 内容工程桌面编辑器，以及与开发过程伴生的 **Milkdown 知识库**（`raw/` 源语料 + `wiki/` 生成层）。
 
-| | |
-|---|---|
-| 技术栈 | Vue 3 · Vite 7 · TypeScript · Tauri 2 · @milkdown/crepe 7.22 |
-| 编辑器内核 | [Milkdown](https://milkdown.dev/)（ProseMirror 之上的 Markdown 编辑器框架） |
-| 目标平台 | Windows（NSIS 安装包 + 便携版）· macOS（.app + DMG）· 浏览器调试 |
-| 代码目录 | [`editor-app/`](editor-app/)（应用本体） · [`demo/`](demo/)（演示工作区） · [`raw/`](raw/)（milkdown 源码语料，只读） · [`wiki/`](wiki/)（知识库） |
-
----
-
-## 一、这是什么
-
-WriteIt 是一个**把 Markdown 笔记当成工程资产来管理**的桌面编辑器。除了常规的所见即所得编辑，它还提供：
-
-- **引用机制**：`[[路径]]` 链接、`[[路径#锚点]]` 对象/标题引用、`![[路径]]` 整文件嵌入（可编辑/只读），引用即点击跳转，断链自动标红提示；**复制文件 Ctrl+V 直接粘贴为引用**（默认链接，编辑器右键可选块嵌入/只读嵌入、切换类型）。
-- **模板机制**：`.template/` 目录定义文档模板，首行 `doctype:` 声明类型，可配套 **TypeScript 规则文件**（`*.rules.ts` / `*.suggest.ts`）——运行时用 esbuild-wasm 转译执行，实现「结构查询 + 对象引用 + 自动校验」。
-- **文档校验**：按模板规则自动检查（如"需求表必须存在"、"版本章节必填"），违规在文档内高亮、汇总进右侧抽屉、可落盘报告；strict 模式下保存前强制把关。
-- **批注与评论**：选中文本加批注，形成评论线程，支持回复、标记已解决；与校验违规共用同一抽屉。
-- **Git 工作台**：侧边栏面板（分支/工作区/历史 + 范围对比）+ 编辑区 diff 视图（**文本**：分栏/统一/词级高亮；**渲染**：mermaid 节点级标注、嵌入卡片角标、改动批注卡）；支持还原（整文件/单段）、分支切换；浏览器 mock 演示仓库基于**真实 git diff 数据**。
-- **Mermaid 图表**：代码块一键预览 SVG、斜杠菜单插入 8 种图表模板、图表内可写 `[[引用]]` 并点击跳转。
-- **多标签编辑**：每个标签独立编辑器实例（撤销历史/光标互不影响），切标签不重建。
-- **三种运行形态**：浏览器 Demo（mock 文件系统）→ 浏览器真实目录（File System Access API）→ Tauri 桌面应用，同一套代码无缝切换。
-
-## 二、快速开始
-
-### 浏览器模式（无需 Rust，最快体验）
-
-```bash
-cd editor-app
-npm install
-npm run dev          # http://localhost:5173
+```
+┌──────────────────────────────────────────────────────┐
+│ 顶栏: 打开目录 · 保存 · 上/下文件 · 设置(主题/自动保存)   │
+├──────────┬───────────────────────────────────────────┤
+│ 文件树    │ 标签栏 (多标签 · 脏标记 ●)                   │
+│ (CRUD)   │ ┌──────────────────────────────────────┐ │
+│          │ │ Crepe 编辑器 (每个标签独立实例)          │ │
+│          │ └──────────────────────────────────────┘ │
+├──────────┴───────────────────────────────────────────┤
+│ 状态栏: 标签数 · 当前文件 · 保存模式 · 分支徽标           │
+└──────────────────────────────────────────────────────┘
 ```
 
-- 默认使用 **mock 文件系统**（localStorage 模拟，内置示例工作区），开箱即用。
-- 在设置里点「📂 打开本地目录…」，Chrome/Edge 可用 File System Access API 打开真实目录。
-
-### 桌面应用模式（Tauri）
-
-```bash
-cd editor-app
-npm install
-npm run tauri dev    # 需要 Rust 工具链（cargo）
-```
-
-### 构建 / 测试 / 打包
-
-```bash
-cd editor-app
-npm run build        # 前端产物（dist/）
-npm run test:e2e     # ego-lite（ego-browser）端到端全量回归（需先启动 dev server :5173）
-npm run tauri build  # 打包桌面安装包（当前系统平台）
-```
-
-> 详细打包方式见 [doc/packaging.md](doc/packaging.md)，测试说明见 [doc/testing.md](doc/testing.md)。
-
-## 三、功能速览
-
-| 功能 | 入口 / 快捷键 | 说明 |
-|---|---|---|
-| 保存 | `Ctrl+S`（可自定义） | 手动保存；可选自动保存（1/2/5/10 秒防抖） |
-| 打开目录 | `Ctrl+O` / 侧边栏「📂」 | 浏览器切真实目录 / Tauri 原生目录选择 |
-| 新建文件/目录 | `Ctrl+N` / 侧边栏按钮 / 右键菜单 | 支持「基于模板新建」 |
-| 文件树 | 侧边栏 | 完整 CRUD：右键菜单、拖拽移动、重命名引用联动、🎯 定位当前文件 |
-| 多标签 | `Ctrl+Tab` / `Ctrl+W` / 中键关闭 | 每标签独立撤销历史；脏标记 ● |
-| 引用菜单 | 输入 `@` / `[[` / `![[` | 三级递进：模式 → 文件树 → 实体级（对象/标题） |
-| 粘贴为引用 | 复制文件（文件树/系统管理器）→ Ctrl+V | 默认链接引用；编辑器右键选 块嵌入/只读嵌入，引用右键切换类型 |
-| 源码模式 | `Ctrl+E` | 所见即所得 ↔ Markdown 源码（textarea）切换 |
-| Mermaid | ` ```mermaid ` 代码块 👁 / `/` 菜单「Mermaid」 | 预览 SVG、插入模板、图表内引用跳转 |
-| 模板 | `/` 菜单「模板」组 | 插入模板内容；右键目录「新建自模板」 |
-| 校验 | 打开/编辑自动运行 | 违规进右侧抽屉；strict 模式保存前确认 |
-| 批注 | 选中文本 → 工具条「添加批注」/ `Ctrl+R` | 评论线程、回复、标记已解决；代码块内批注自动升级为整块批注 |
-| 全局搜索 | 图标列 🔍 / `Ctrl+Shift+F` | 全文搜索 + 替换：结果按文件分组、点击/Enter 精确跳转定位 + 编辑器内命中高亮、↑↓ 键盘导航、大小写开关；见 [doc/search.md](doc/search.md) |
-| Git 工作台 | 图标列 🔀 / `Ctrl+Shift+D` / 右键「Git 改动」 | 分支/工作区/历史面板；文本+渲染双模式 diff；还原/分支切换；浏览器 mock 演示 |
-| 导出 | 图标列「📤」独立按钮 | 当前文档导出 PDF / DOCX / Markdown；嵌入块内容展开；模板 `export.ts` 可自定义 |
-| 问题诊断 | 图标列 🩺 / 状态栏「诊断」 | 一键生成诊断包（zip）：环境 / 设置 / 应用状态 / 事件日志 / 操作轨迹 + 可选 SVG 界面快照、文档内容、DOM 快照；全局异常自动提示+红点；见 [editor-app/docs/diagnostics.md](editor-app/docs/diagnostics.md) |
-| 设置 | `Ctrl+,` / ⚙️ | 主题（6 套）、快捷键录制、自动保存等 |
-
-完整快捷键表与设置说明见 [doc/settings.md](doc/settings.md)。
-
-## 四、仓库结构
+## 仓库结构
 
 ```
 writeIt/
-├── README.md           # 本文件
-├── doc/                # 📖 功能板块详细文档（主要实现 + 使用说明）
-├── editor-app/         # 应用本体（Vue + Vite + Tauri + @milkdown/crepe）
-│   ├── src/
-│   │   ├── editor/     #   多标签管理 + 引用机制 + Git diff 组合/渲染 + Mermaid + 源码模式
-│   │   ├── template/   #   模板机制（doctype / rules.ts / suggest.ts / esbuild-wasm）
-│   │   ├── validate/   #   校验服务（三通道 + strict 门禁）
-│   │   ├── annotations/#   批注插件（<mark data-note> + 评论线程 + 抽屉）
-│   │   ├── git/        #   Git 工作台数据层（mock 演示后端 + 真实 diff 数据）
-│   │   ├── fs/         #   文件系统抽象（mock / web / tauri）
-│   │   ├── state/      #   全局状态 / 设置 / 文件树操作
-│   │   ├── components/ #   FileTree / TabBar / EditorPane / GitPanel / DiffView / 抽屉…
-│   │   └── App.vue     #   布局：侧边栏 + 标签栏 + 编辑器 + 状态栏
-│   ├── src-tauri/      #   Rust 壳（文件系统 + git CLI 命令 / 窗口 / 打包配置）
-│   ├── tests/e2e/      #   ego-lite 端到端回归套件（禁 playwright）
-│   └── docs/design.md  #   里程碑设计文档（M1-M14 完整实现记录）
-├── demo/               # （已迁出）演示内容库 → /Users/huyongsheng/project/消金业务合作平台（独立 git 仓库）
-├── raw/                # milkdown 官方源码语料（只读，供知识库引用）
-└── wiki/               # milkdown 知识库（Agent.md 管理）
+├── editor-app/        # ★ 主应用：Markdown 编辑器（Vue3 + Vite + Tauri + @milkdown/crepe）
+│   ├── src/           #   editor/ fs/ annotations/ validate/ template/ git/ search/ export/ diagnostics/ table/ components/ state/
+│   ├── src-tauri/     #   Tauri Rust 壳（文件系统 + git CLI 命令、打包配置）
+│   ├── tests/         #   e2e（ego-browser 驱动）/ unit
+│   ├── scripts/ vite-plugins/   # 构建 / 脚本 / Vite 插件
+│   └── README.md      #   ★ 应用级详细文档（架构 / 功能 / 快捷键 / 打包）
+├── raw/               # 知识库源语料（只读）：官方文档 + 源码语料
+├── wiki/              # 知识库生成层（可读写）：concepts/ entities/ sources/ syntheses/ + index & log
+├── AGENT.md           # 项目操作手册（Pi 工作区约定，不随代码修改）
+├── KB.md              # 知识库操作手册
+└── .github/           # CI：GitHub Actions 自动三平台构建
 ```
 
-## 五、文档导航（doc/）
+> `raw/` 只读、`wiki/` 维护约定详见 `KB.md`；`AGENT.md` 定义整个工作区的结构、权限与约定。
 
-| 文档 | 内容 |
-|---|---|
-| [doc/architecture.md](doc/architecture.md) | 总体架构：分层、数据流、插件体系、异步容错原则 |
-| [doc/editor-core.md](doc/editor-core.md) | 编辑器核心：多标签管理、保存流程、脏检测、源码模式 |
-| [doc/filesystem.md](doc/filesystem.md) | 文件系统抽象：mock / web / tauri 三实现与切换 |
-| [doc/reference.md](doc/reference.md) | 引用机制：语法、节点、两段式解析、触发菜单、写回事务 |
-| [doc/template.md](doc/template.md) | 模板机制：模板域、doctype、rules/suggest TS、斜杠菜单 |
-| [doc/validation.md](doc/validation.md) | 校验机制：规则执行、三通道呈现、strict 门禁 |
-| [doc/annotation.md](doc/annotation.md) | 批注与评论：语法、线程、抽屉、权限 |
-| [doc/mermaid.md](doc/mermaid.md) | Mermaid 图表：预览、模板、图表内引用 |
-| [doc/git.md](doc/git.md) | Git 工作台：面板、文本/渲染 diff、mermaid 节点级、还原/分支、mock 演示 |
-| [doc/settings.md](doc/settings.md) | 设置 / 主题 / 快捷键 |
-| [doc/packaging.md](doc/packaging.md) | Tauri 打包与 CI 发布 |
-| [doc/testing.md](doc/testing.md) | 测试体系与调试钩子 |
-| [doc/git-render-tests.md](doc/git-render-tests.md) | Git diff 渲染测试案例全清单：场景、预期渲染效果、运行方式 |
-| [doc/demo-workspace.md](doc/demo-workspace.md) | 演示内容库「消金业务合作平台」（独立仓库 + mock 同步 + 真实调试） |
+## 特性速览
 
-## 六、给开发者
+主应用（详细见 [`editor-app/README.md`](editor-app/README.md)）提供一整套 Markdown 内容工程能力：
 
-- 开发前先读 [`editor-app/docs/design.md`](editor-app/docs/design.md)（§11 有里程碑状态与踩坑记录）。
-- 改代码后必跑回归：`npm run test:e2e`（ego-lite/ego-browser 驱动，需 dev server :5173；**本项目禁止 playwright**），完成后 `npm run build` 验证。
-- 与用户交流全程中文；重大改动先讨论方案再实现。
-- **禁止在浏览器包里嵌入 LLM API key**（BYOK / 后端代理）。
+- **文件系统**：打开本地目录 → 文件树完整 CRUD；`mock / web / tauri` 三层实现可无缝切换（浏览器调试 / Chrome File System Access / 桌面应用）。
+- **多标签编辑**：每个标签独立 Crepe 实例（独立撤销历史、光标、滚动），切标签只切容器可见性不重建，Ctrl+S / 自动保存 + 脏标记。
+- **引用机制**：`[[路径]]` / `[[路径#锚点]]` / `![[路径]]`（可编辑/只读嵌入）三级触发，点击跳转、断链标红、重命名联动、复制粘贴即引用。
+- **模板机制**：`.template/` 目录 + `doctype:` 声明，可配 `rules.ts`（校验）与 `suggest.ts`，`/` 菜单插入。
+- **批注评论**：选中文本添加批注线程（回复 / 标记已解决），违规进批注抽屉。
+- **文档校验**：按模板规则自动检查，strict 模式保存前把关。
+- **Git 工作台**：分支徽标 / 提交历史 / 工作区改动，文本（分栏/统一）与渲染（组合 md + mermaid 节点级）双模式 diff，F7 逐处导航、单段还原。
+- **Mermaid 图表**：代码块预览 + `/` 菜单 8 种精选模板，30 种图表类型示例一键演示。
+- **嵌入多层/引用**：多层块嵌入、文件底部「引用了 / 被引用」展示区、表格增强、大纲面板。
+- **全文搜索**：遍历文件树逐行匹配，搜索序号防乱序，点击结果精确定位。
+- **导出**：PDF（内置中文字体）/ DOCX / Markdown，模板 `export.ts` 可定制，单文件与批量。
+- **诊断分析**：包内上报（版本 + 构建时间），收集运行时异常生成诊断报告。
+- **6 套主题**：Frame / Classic / Nord × 浅/深，`?raw` 离线打包，外壳自动同步配色。
+
+## 快速开始
+
+```bash
+cd editor-app
+
+# 浏览器模式（Vue + Vite 调试，无需 Rust 工具链）
+npm install
+npm run dev           # http://localhost:5173
+# 默认使用 mock 文件系统（localStorage 示例工作区）
+# Chrome/Edge 可在设置里用 File System Access API 打开真实目录
+
+# 桌面模式（需要 Rust 工具链）
+npm install
+npm run tauri dev     # 或 npm run build 后用 tauri dev
+```
+
+**开发模式说明**：`npm run dev` 前的 `predev` 会自动执行 `sync:demo` 同步演示数据。
+前端通过 `src/fs` 的 `FileSystem` 接口统一访问，`mock / web / tauri` 三种实现共存、可探测切换。
+
+## 测试
+
+```bash
+cd editor-app
+npm run test:unit     # 单元测试
+npm run test:e2e      # 端到端回归（ego-browser 驱动真实 Chromium，需 dev server :5173）
+```
+
+> e2e 一律使用项目 harness（`npm run test:e2e` 或 `node tests/e2e/_run-one.js <name>`），
+> **严禁使用 playwright**；浏览器驱动唯一允许 ego-lite / ego-browser。
+
+## 构建与打包
+
+| 平台 | 方式 | 产物 |
+|---|---|---|
+| Windows | `npm run tauri build -- --bundles nsis` | `*.-setup.exe` 安装包 + 便携版 |
+| macOS | `npm run tauri build -- --bundles app,dmg` | `.app` + `.dmg` |
+| Linux | `npm run tauri build -- --bundles deb` / `appimage` | `.deb` / `.AppImage` |
+
+Tauri 只打**当前系统**的包（无法交叉编译）；`.github/workflows/build.yml` 在 tag 触发时自动三平台构建并发布 Release。
+
+## 相关文档
+
+- [`editor-app/README.md`](editor-app/README.md) — 应用级完整文档（布局 / 快捷键 / 多标签设计 / Git 工作台 / 打包细节）
+- `KB.md` — 知识库操作手册（`raw/` 只读、`wiki/` 维护约定）
+- `AGENT.md` — 项目操作手册（Pi 工作区结构 / 权限 / 约定）
+
+## 许可
+
+私有 / 未指定开源许可。
