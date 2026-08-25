@@ -13,17 +13,29 @@ import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
 import { contentHash } from '../git/hash'
-import { refPlugin, resolveRefs, refConfigCtx } from './ref'
+import { refPlugin, resolveRefs, refConfigCtx, getRefConfig } from './ref'
 import type { RefConfig } from './ref/config'
 import { registerRefStringify } from './ref/stringify'
 import {
   writeBackBlocks,
-  broadcastBlockRefresh,
   hasBlockChanges,
   collectBlockContentsSync,
-  cacheRefFileContent,
-  collectSourcePaths,
+  serializeBlockContent,
+  resolveRealPath,
 } from './ref/writeback'
+import { fillBlockContent, genBlockId, resolveBlockRefs } from './ref/resolve'
+import {
+  setRegistryBroadcastHandler,
+  getEntry,
+  getView,
+  setTruth,
+  updateViewContent,
+  scheduleBroadcast,
+  flushBroadcast as registryFlushBroadcast,
+  registerView as registryRegisterView,
+  unregisterTab as registryUnregisterTab,
+  registryDiag,
+} from './ref/registry'
 import {
   refreshBrokenState,
   resolveRefPath,
@@ -504,6 +516,7 @@ export async function syncTabsAfterReplace(updated: Map<string, string>): Promis
       tab.savedContent = inst.crepe.getMarkdown()
       tab.dirty = false
       tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+      tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
       tab.lastModified = Date.now()
     } finally {
       setTimeout(() => (inst.suppressing = false), 0)
@@ -527,6 +540,7 @@ async function reloadTabFromDisk(tabId: string): Promise<void> {
     tab.savedContent = inst.crepe.getMarkdown()
     tab.dirty = false
     tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+    tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
     tab.lastModified = Date.now()
     // diff 数据过期：清空重新加载（base 不变时 openGitDiff 会复用 → 强制失效）
     if (tab.diff) tab.diff = null
@@ -773,22 +787,25 @@ export function getTabMarkdownByPath(path: string): string | null {
   })
   return inst
 }
-;(window as unknown as { __editorBlockAppend?: unknown }).__editorBlockAppend = (pathSubstr: string, text: string) => {
+;(window as unknown as { __editorBlockAppend?: unknown }).__editorBlockAppend = (pathSubstr: string, text: string, idx = 0) => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return 'no-inst'
   let res = 'no-block'
   inst.crepe.editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const doc = view.state.doc
-    let blockPos = -1
+    const matches: number[] = []
     doc.descendants((n, p) => {
       if (n.type.name === 'file_block' && (n.attrs.path as string).includes(pathSubstr)) {
-        blockPos = p
-        return false
+        matches.push(p)
       }
       return true
     })
-    if (blockPos < 0) return
+    const blockPos = matches[idx]
+    if (blockPos === undefined) {
+      res = 'no-block@' + matches.length
+      return
+    }
     const node = doc.nodeAt(blockPos)
     if (!node) return
     const end = blockPos + node.nodeSize - 1
@@ -796,9 +813,12 @@ export function getTabMarkdownByPath(path: string): string | null {
     const para = view.state.schema.nodes.paragraph.create(null, view.state.schema.text(text))
     const tr = view.state.tr.insert(end, para)
     view.dispatch(tr)
-    res = 'inserted'
+    res = 'inserted@' + matches.length
   })
   return res
+}
+;(window as unknown as { __registryDiag?: unknown }).__registryDiag = () => {
+  return registryDiag()
 }
 ;(window as unknown as { __editorOpenPath?: unknown }).__editorOpenPath = (path: string) => {
   void openTab(path)
@@ -1497,6 +1517,7 @@ export async function openTab(path: string, contentOverride?: string, kind: 'edi
     dirty: false,
     lastModified: Date.now(),
     blockSnapshot: null,
+    lastSyncBlocks: null,
     userEditedAt: 0,
     lastExternalSyncAt: 0,
     viewMode: 'wysiwyg',
@@ -1818,6 +1839,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     templateService,
     // 嵌入链判定的链根（环检测含宿主的用例）；Tab 关闭/重命名后重开即重判
     hostPath: tab.path,
+    // P2：registry 视图注册/广播定位
+    tabId,
+    // P1：写回守卫——源文件在标签中打开且有「真实未保存编辑」时，宿主保存不覆盖它
+    isTabUserEdited: (realPath) => {
+      const srcTab = state.tabs.find((t) => t.path === realPath && t.kind === 'editor')
+      if (!srcTab) return false
+      return srcTab.userEditedAt > srcTab.lastExternalSyncAt
+    },
     // 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
     // 在工作区内 → 相对路径；无根路径/工作区外 → 文件名（Obsidian 式全库匹配）
     resolveExternalPath: (absPath) => {
@@ -1915,9 +1944,12 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     const t = state.tabs.find((x) => x.id === tabId)
     if (t) {
       t.blockSnapshot = collectBlockContentsSync(crepe.editor)
+      t.lastSyncBlocks = new Map(t.blockSnapshot ?? [])
       // 打开时的物化 dispatch 不是用户编辑——重置时间戳基线
       t.userEditedAt = 0
     }
+    // P2：分配 blockId + 注册块/文档视图（registry 广播定位基础）
+    void syncTabViewsToRegistry(tabId)
   })
   void refreshBrokenState(crepe.editor)
   // 引用底部展示区：物化完成后重扫（应用链引用）/断链态稳定后刷新可见性
@@ -1987,8 +2019,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const nowDirty = md !== t.savedContent || blockDirty
       if (t.dirty !== nowDirty) t.dirty = nowDirty
       t.lastModified = Date.now()
-      // §6.7：块编辑 → 源文件标签联动刷新（防抖）
-      if (blockDirty) scheduleExternalSync(tabId)
+      // P2：块编辑 → 提交 registry 真相 + 防抖广播（兄弟块/源标签/其他宿主实时收敛）
+      if (blockDirty) void propagateBlockEdits(tabId)
+      // P3：源文档编辑 → 若被嵌入则广播到所有嵌入块（脏读根治）
+      propagateDocEdit(tabId, md)
       // 引用底部展示区：文档变更后防抖刷新（向外引用更新 + 反向引用重扫）
       scheduleRefsFooterRefresh(tabId)
       // M5：编辑防抖实时校验 → 已由 validatePlugin 的 $prose 监听接管（manager 不再调度）
@@ -2015,6 +2049,8 @@ export function unmountEditor(tabId: string) {
   inst.crepe.destroy().catch(() => undefined)
   inst.el.remove()
   instances.delete(tabId)
+  // P2：清理 registry 视图（块 + 文档）
+  registryUnregisterTab(tabId)
   clearOutline(tabId)
 }
 
@@ -2055,6 +2091,7 @@ async function refreshTabToContent(
       srcTab.lastExternalSyncAt = Date.now()
     }
     srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
+    srcTab.lastSyncBlocks = new Map(srcTab.blockSnapshot ?? [])
     srcTab.lastModified = Date.now()
     // M7：源标签处于源码模式 → textarea 同步为最新内容（与 doc/磁盘一致）
     if (srcTab.viewMode === 'source' && srcInst.srcTa) {
@@ -2074,54 +2111,252 @@ function syncBlockSnapshots(tabIds: string[]): void {
     const inst = instances.get(tid)
     if (!t || !inst) continue
     t.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+    t.lastSyncBlocks = new Map(t.blockSnapshot ?? [])
     const blockDirty = hasBlockChanges(inst.crepe.editor, t.blockSnapshot)
     const md = inst.crepe.getMarkdown()
     t.dirty = md !== t.savedContent || blockDirty
   }
 }
 
-/** 块编辑防抖联动：本标签块变更 → 源文件标签实时刷新（源标签无自身编辑时） */
-const externalSyncTimers = new Map<string, ReturnType<typeof setTimeout>>()
-function scheduleExternalSync(tabId: string) {
-  const prev = externalSyncTimers.get(tabId)
-  if (prev) clearTimeout(prev)
-  externalSyncTimers.set(
-    tabId,
-    setTimeout(() => {
-      externalSyncTimers.delete(tabId)
-      void syncSourceTabs(tabId)
-    }, 600)
-  )
+/** 块编辑防抖联动 → P2 改为 registry 广播驱动：编辑块提交真相 + 防抖广播（见 propagateBlockEdits） */
+
+/**
+ * P2/P3 registry 广播执行器（装配层注入）：把 realPath 的应然内容应用到所有视图（除 origin）。
+ *  · block 视图：按 blockId 精确定位 → 冲突检测（视图有未传播自身编辑 → 保留本地 + 提示）→ 填充
+ *  · doc 视图：源标签无真实用户编辑 → 预览刷新（replaceAll）；有 → 最后保存者胜，跳过
+ * 应用后回写视图 lastContent，保证下一轮广播/保存的脏基线正确。
+ */
+setRegistryBroadcastHandler((realPath, originKey, entry) => {
+  const truth = entry.content
+  if (truth == null) return
+  for (const view of entry.views.values()) {
+    if (view.key === originKey) continue
+    const inst = instances.get(view.tabId)
+    if (!inst) continue
+    if (view.kind === 'block' && view.blockId) {
+      applyBlockBroadcast(inst, realPath, view, truth)
+    } else if (view.kind === 'doc') {
+      void applyDocBroadcast(inst, realPath, view, truth)
+    }
+  }
+})
+
+/** 块视图应用：定位 + 冲突检测 + 填充 + 基线回写 */
+function applyBlockBroadcast(
+  inst: Instance,
+  realPath: string,
+  view: { key: string; tabId: string; blockId: string | null; readonly: boolean; lastContent: string | null },
+  truth: string
+): void {
+  const editor = inst.crepe.editor
+  if (view.readonly) return // 只读变体固定快照：不接收任何内容广播
+  const pos = findBlockPosByBlockId(editor, view.blockId!)
+  if (pos == null) return
+  // 折叠/未物化态防御：折叠卡是只读治理态，绝不接收内容广播（防误展开）
+  const foldedOrUnmaterialized = editor.action((ctx) => {
+    const n = ctx.get(editorViewCtx).state.doc.nodeAt(pos)
+    return !!n && n.type.name === 'file_block' && (Boolean(n.attrs.collapsed) || !Boolean(n.attrs.materialized))
+  })
+  if (foldedOrUnmaterialized) return
+  // 冲突检测：视图自上次渲染后有未传播的自身编辑 → 不覆盖（保留本地），显式提示
+  const cur = serializeBlockContent(editor, pos)
+  if (view.lastContent != null && cur !== '' && cur !== view.lastContent) {
+    const cfg = getRefConfig(editor)
+    cfg?.toast(`嵌入块内容已被本地修改，与源「${realPath}」不同步（已保留本地内容，保存时提示冲突）`, 'info')
+    console.warn('[registry] 冲突：跳过覆盖', realPath, view.key)
+    return
+  }
+  if (view.lastContent === truth) return // 已是最新
+  inst.suppressing = true
+  try {
+    fillBlockContent(editor, pos, '', view.readonly, truth)
+    // 广播填充的是「块序列化值」（对象引用序列化为 [[path#obj]] 语法）——
+    // 填充后必须重新消歧块内引用，否则显示原始链接而非对象文本（用户问题3根因：
+    // 保存后块内容“消失/被替换”）。
+    void resolveBlockRefs(editor, pos)
+  } finally {
+    setTimeout(() => (inst.suppressing = false), 0)
+  }
+  updateViewContent(realPath, view.key, truth)
+  // 关键：markdownUpdated 由 listener 防抖 200ms 递送（晚于 suppressing 解除）——
+  // 必须立刻把本标签块快照追平（同 saveTab/refreshTabToContent 既有模式），
+  // 否则防抖回调把广播刷新误判为用户编辑 → 假脏/回环。
+  const t = state.tabs.find((x) => x.id === view.tabId)
+  if (t) t.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
 }
 
-/** B 块编辑 → 源文件 A 标签（打开且无自身编辑）内容刷新为最新（块内容 = A 应然内容） */
-async function syncSourceTabs(tabId: string): Promise<void> {
+/** 文档视图应用：源标签无真实用户编辑 → 预览刷新；应用后回写基线 */
+async function applyDocBroadcast(
+  inst: Instance,
+  realPath: string,
+  view: { key: string; tabId: string; lastContent: string | null },
+  truth: string
+): Promise<void> {
+  const srcTab = state.tabs.find((t) => t.id === view.tabId && t.kind === 'editor')
+  if (!srcTab) return
+  // 源标签有真实用户编辑 → 不覆盖（最后保存者胜）
+  if (srcTab.userEditedAt > srcTab.lastExternalSyncAt) return
+  if (inst.crepe.getMarkdown() === truth) {
+    updateViewContent(realPath, view.key, truth)
+    return
+  }
+  await refreshTabToContent(inst, srcTab, truth, false)
+  updateViewContent(realPath, view.key, inst.crepe.getMarkdown())
+}
+
+/** 按 blockId 定位 file_block 位置（无 pos 漂移困扰） */
+function findBlockPosByBlockId(editor: import('@milkdown/kit/core').Editor, blockId: string): number | null {
+  let pos: number | null = null
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_block' && n.attrs.blockId === blockId) {
+        pos = p
+        return false
+      }
+      return true
+    })
+  })
+  return pos
+}
+
+/** 收集标签文档中所有 file_block 的 (blockId, path, readonly, pos, folded) */
+function collectBlockViews(editor: import('@milkdown/kit/core').Editor): Array<{
+  blockId: string | null
+  path: string
+  readonly: boolean
+  pos: number
+  folded: boolean
+}> {
+  return editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const out: Array<{ blockId: string | null; path: string; readonly: boolean; pos: number; folded: boolean }> = []
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_block') {
+        out.push({
+          blockId: n.attrs.blockId as string | null,
+          path: n.attrs.path as string,
+          readonly: Boolean(n.attrs.readonly),
+          pos: p,
+          folded: Boolean(n.attrs.collapsed) || !Boolean(n.attrs.materialized),
+        })
+      }
+      return true
+    })
+    return out
+  })
+}
+
+/**
+ * 块编辑提交（markdownUpdated 触发）：逐块 diff 保存时快照 → 编辑块提交 registry 真相 + 防抖广播。
+ * 同源多块同时被编辑且内容不同 = 并发歧义 → 本次不传播（保存写回会提示，绝不静默）。
+ */
+async function propagateBlockEdits(tabId: string): Promise<void> {
   const inst = instances.get(tabId)
   if (!inst) return
   try {
-    const sources = await collectSourcePaths(inst.crepe.editor)
-    for (const path of sources) {
-      const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === path)
-      if (!srcTab) continue
-      const srcInst = instances.get(srcTab.id)
-      if (!srcInst) continue
-      // A 有自身编辑 → 不刷新（最后保存者胜）；无编辑 → 刷新为块内容（本标签同源块的最新内容）
-      if (srcInst.crepe.getMarkdown() !== srcTab.savedContent) continue
-      const blockContent = collectBlockContentsSync(inst.crepe.editor)
-      const content = [...blockContent.entries()].find(([p]) => sameSourceCheck(p, path))?.[1]
-      if (content === undefined) continue
-      if (srcInst.crepe.getMarkdown() === content) continue // 已是最新
-      await refreshTabToContent(srcInst, srcTab, content, false)
+    const editor = inst.crepe.editor
+    const cfg = editor.action((ctx) => ctx.get(refConfigCtx.key))
+    const tab = state.tabs.find((t) => t.id === tabId)
+    if (!cfg || !tab) return
+    const snap = tab.blockSnapshot
+    // 按真实路径聚合本轮编辑。基线 = 该块视图的 lastContent（最近一次渲染/同步的内容）——
+    // 已传播的兄弟块不会被误判为编辑源；视图未注册时兜底用保存时快照。
+    const edits = new Map<string, { contents: Set<string>; keys: string[] }>()
+    for (const b of collectBlockViews(editor)) {
+      if (b.readonly || !b.blockId) continue
+      const content = serializeBlockContent(editor, b.pos)
+      if (content === '') continue
+      const real = await resolveRealPath(cfg, b.path)
+      if (!real) continue
+      const key = `${tabId}#${b.blockId}`
+      const view = getView(real, key)
+      const base = view?.lastContent ?? snap?.get(b.path) ?? null
+      if (base != null && content === base) continue
+      const e = edits.get(real) ?? { contents: new Set<string>(), keys: [] }
+      e.contents.add(content)
+      e.keys.push(key)
+      edits.set(real, e)
     }
-  } catch (e) {
-    console.warn('[sync] 源标签联动失败:', e)
+    for (const [real, e] of edits) {
+      if (e.contents.size > 1) {
+        cfg.toast(`同源多处嵌入被并发编辑且内容不同（${real}），已暂停实时同步（保存时会提示）`, 'info')
+        console.warn('[registry] 并发编辑歧义，不传播:', real, [...e.contents].map((c) => c.slice(0, 30)))
+        continue
+      }
+      const content = [...e.contents][0]
+      const originKey = e.keys[0]
+      setTruth(real, content)
+      updateViewContent(real, originKey, content) // 编辑块自身已是真相（origin 跳过广播）
+      scheduleBroadcast(real, originKey)
+    }
+  } catch (err) {
+    console.warn('[registry] 块编辑传播失败:', err)
   }
 }
 
-function sameSourceCheck(a: string, b: string): boolean {
-  if (a === b) return true
-  const norm = (p: string) => p.replace(/\.(md|markdown|txt)$/i, '')
-  return norm(a) === norm(b)
+/**
+ * 文档编辑提交（P3：源标签输入 → 嵌入块实时同步）：本路径被块订阅时才传播。
+ * 提交真相 + 防抖广播；编辑源（doc 视图）跳过广播。
+ */
+function propagateDocEdit(tabId: string, md: string): void {
+  const tab = state.tabs.find((t) => t.id === tabId && t.kind === 'editor')
+  if (!tab) return
+  const entry = getEntry(tab.path)
+  if (!entry || entry.views.size === 0) return // 无订阅者（没被嵌入）
+  if (![...entry.views.values()].some((v) => v.kind === 'block')) return
+  setTruth(tab.path, md)
+  updateViewContent(tab.path, `doc:${tabId}`, md)
+  scheduleBroadcast(tab.path, `doc:${tabId}`)
+}
+
+/** 标签物化完成后：分配 blockId + 注册块/文档视图（幂等；replaceAll 重建后重新注册） */
+async function syncTabViewsToRegistry(tabId: string): Promise<void> {
+  const inst = instances.get(tabId)
+  const tab = state.tabs.find((t) => t.id === tabId && t.kind === 'editor')
+  if (!inst || !tab) return
+  const editor = inst.crepe.editor
+  const cfg = editor.action((ctx) => ctx.get(refConfigCtx.key))
+  if (!cfg) return
+  // 分配缺失的 blockId（一次事务）
+  editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const tr = view.state.tr
+    let changed = false
+    view.state.doc.descendants((n, p) => {
+      if (n.type.name === 'file_block' && !n.attrs.blockId) {
+        tr.setNodeMarkup(p, undefined, { ...n.attrs, blockId: genBlockId() })
+        changed = true
+      }
+      return true
+    })
+    if (changed) view.dispatch(tr)
+  })
+  // 注册块视图（内容 = 当前序列化）。折叠/未物化的块不注册——折叠卡是只读治理态，
+  // 若注册会成为广播目标，循环/自嵌用例会被广播“展开/污染”折叠卡（治理回归）。
+  for (const b of collectBlockViews(editor)) {
+    if (!b.blockId) continue
+    const foldedOrUnmaterialized = b.folded
+    if (foldedOrUnmaterialized) continue
+    if (b.readonly) continue // 只读变体固定快照：不注册视图（物化时已填充源快照）
+    const real = await resolveRealPath(cfg, b.path)
+    if (!real) continue
+    const content = serializeBlockContent(editor, b.pos)
+    const key = registryRegisterView(real, { tabId, kind: 'block', blockId: b.blockId, readonly: b.readonly }, content)
+    updateViewContent(real, key, content)
+  }
+  // 注册文档视图（该标签自身 = realPath 的投影；canonical = getMarkdown round-trip）
+  const canonical = inst.crepe.getMarkdown()
+  registryRegisterView(tab.path, { tabId, kind: 'doc' }, canonical)
+}
+
+/** 订阅了某 realPath 的所有标签 id（保存广播后同步这些标签的块快照） */
+function registryEntryTabIds(realPath: string): string[] {
+  const e = getEntry(realPath)
+  if (!e) return []
+  const ids = new Set<string>()
+  for (const v of e.views.values()) ids.add(v.tabId)
+  return [...ids]
 }
 
 export async function saveTab(tabId: string): Promise<boolean> {
@@ -2178,11 +2413,16 @@ export async function saveTab(tabId: string): Promise<boolean> {
   tab.savedContent = md
   // §6.7：保存后记录块内容快照（脏检测第二条件）
   tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
+  tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
   tab.dirty = false
   tab.lastModified = Date.now()
+  // 保存即“源已同步”：刷新同步基线，后续宿主写回不再被自己的旧编辑标记挡住
+  //（userEditedAt 只在保存后的新用户输入时再更新 → isTabUserEdited 语义正确）
+  tab.lastExternalSyncAt = Date.now()
   // 等一帧再解除抑制，避免保存后的 markdownUpdated 误判
   setTimeout(() => (inst.suppressing = false), 0)
-  // 广播①：写回的源文件 → 源标签（若打开且无自身编辑）刷新为最新 + 脏灭；其他引用标签块物化刷新
+  // 广播①：写回的源文件 → 源标签（若打开且无自身编辑）刷新为最新 + 脏灭；
+  // 其他引用标签块物化刷新（P2：registry 广播——块视图按 blockId 精确填充，跳过已一致视图）
   for (const [p, content] of written) {
     const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === p)
     if (srcTab) {
@@ -2197,13 +2437,13 @@ export async function saveTab(tabId: string): Promise<boolean> {
       }
       // A 有用户编辑 → 不刷新（最后保存者胜，脏保持）
     }
-    void broadcastBlockRefresh(p, tabId, instances)
+    registryFlushBroadcast(p, null)
   }
-  // 广播②：本文档保存后，若它是某嵌入块的源文件 → 其他标签的块刷新物化 + 更新缓存 + 块快照同步
-  cacheRefFileContent(tab.path, md)
-  const refreshed = await broadcastBlockRefresh(tab.path, tabId, instances)
-  syncBlockSnapshots(refreshed)
-  // 保存后：磁盘 + 各打开标签内容可能变化 → 重扫所有引用底部展示区（反向引用随之更新）
+  // 广播②：本文档保存后，若它是某嵌入块的源文件 → registry 真相落盘 + 广播刷新各标签块 + 快照同步
+  setTruth(tab.path, md)
+  registryFlushBroadcast(tab.path, null)
+  const refreshed = registryEntryTabIds(tab.path)
+  syncBlockSnapshots(refreshed)  // 保存后：磁盘 + 各打开标签内容可能变化 → 重扫所有引用底部展示区（反向引用随之更新）
   refreshAllRefsFooters()
   // 保存可能命中模板域（.template/ 下的 md / rules / suggest 等）→ 重扫模板注册表，
   // 使模板内容/规则改动即时生效（无需重启或重开目录；注册表重建后惰性缓存同步失效）。

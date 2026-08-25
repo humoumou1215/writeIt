@@ -50,6 +50,74 @@ export function makeNote(
   return { id, kind, text, del: clip(del), add: clip(add), anchor, from, to }
 }
 
+/** 原始 makeNote（构建期遮蔽去重版本内部调用它；避免同值多处修改产出相同 id 导致连线串指） */
+const makeNoteStd = makeNote
+
+// ---------- 结构实体收集（引用 / 批注）：供实体级批注卡（M18 §4.9 引用记录接入渲染） ----------
+
+interface RefEntity {
+  path: string
+  fragment: string | null
+  pos: number
+  nodeSize: number
+}
+
+/** 收集 doc 内所有 file_ref / object_ref（内含引用实体的 path + fragment/object） */
+function collectRefEntities(doc: Node): RefEntity[] {
+  const out: RefEntity[] = []
+  doc.descendants((n, pos) => {
+    if (n.type.name === 'file_ref' || n.type.name === 'object_ref') {
+      out.push({
+        path: String(n.attrs.path ?? ''),
+        fragment: (n.attrs.fragment as string | null) ?? (n.attrs.object as string | null) ?? null,
+        pos,
+        nodeSize: n.nodeSize,
+      })
+    }
+    return true
+  })
+  return out
+}
+
+interface AnnEntity {
+  id: string
+  note: string
+  text: string
+  pos: number
+  nodeSize: number
+}
+
+/** 收集 doc 内所有 annotation 批注（mark，按 attrs.id 分组；note = 评论线程 JSON） */
+function collectAnnEntities(doc: Node): AnnEntity[] {
+  const byId = new Map<string, { note: string; text: string; pos: number; end: number }>()
+  doc.descendants((n, pos) => {
+    for (const m of n.marks) {
+      if (m.type.name === 'annotation') {
+        const id = String(m.attrs.id ?? '')
+        if (!id) continue
+        const rec = byId.get(id)
+        if (!rec) {
+          byId.set(id, {
+            note: String(m.attrs.note ?? ''),
+            text: n.textContent,
+            pos,
+            end: pos + n.nodeSize,
+          })
+        } else {
+          rec.end = pos + n.nodeSize
+          rec.text += '…' + n.textContent
+        }
+      }
+    }
+    return true
+  })
+  const out: AnnEntity[] = []
+  for (const [id, rec] of byId) {
+    out.push({ id, note: rec.note, text: rec.text, pos: rec.pos, nodeSize: rec.end - rec.pos })
+  }
+  return out
+}
+
 /** M18 §4.2：装饰携带 data-dnote（record.id）——连线/定位/批注卡锚定的身份接口 */
 export function dnote(recordId: string): Record<string, string> {
   return { 'data-dnote': recordId }
@@ -143,6 +211,28 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDif
   const decorations: Decoration[] = []
   const notes: DiffNote[] = []
   const off = opts?.offset ?? 0
+
+  // 遮蔽去重：同 id（同值多处修改，如 10-多hunk折叠 的三处「将改→已经改过」）追加序号，
+  // 保证每个 note 的 data-dnote 唯一 → 连线/定位分别命中各自锚点（F22 同值锚点 used 去重分配）
+  const usedNoteIds = new Set<string>()
+  const makeNote = (
+    kind: DiffNote['kind'],
+    text: string,
+    del: string | undefined,
+    add: string | undefined,
+    anchor: string,
+    from: number,
+    to: number
+  ): DiffNote => {
+    let n = makeNoteStd(kind, text, del, add, anchor, from, to)
+    if (usedNoteIds.has(n.id)) {
+      let i = 2
+      while (usedNoteIds.has(n.id + '-' + i)) i++
+      n = { ...n, id: n.id + '-' + i }
+    }
+    usedNoteIds.add(n.id)
+    return n
+  }
 
   let changes: ReturnType<typeof computeDocDiff>
   try {
@@ -298,6 +388,56 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDif
     decorations.push(Decoration.widget(posB + off, el, { side: -1, key: `diff-del-block-${group[0].fromA}`, ...dnote(note.id) }))
   }
 
+  // ---- 结构实体级：引用（file_ref/object_ref）增删改 + 批注（annotation）增删改（§4.9 接入渲染） ----
+  const oEnd = (p: number, size: number) => Math.min(Math.max(p + size, p + 1), newDoc.content.size + off)
+
+  const oldRefs = collectRefEntities(oldDoc)
+  const newRefs = collectRefEntities(newDoc)
+  const refKey = (r: RefEntity) => `${r.path}#${r.fragment ?? ''}`
+  const newRefKeys = new Set(newRefs.map(refKey))
+  for (const r of oldRefs) {
+    if (newRefKeys.has(refKey(r))) continue // 未变化的引用（位置移动不算）
+    const disp = `[[${r.path}${r.fragment ? '#' + r.fragment : ''}]]`
+    const posB = Math.min(r.pos, newDoc.content.size - 1) + off
+    const note = makeNote('block', `移除引用：${disp}`, r.path, undefined, `移除引用 ${disp}`, posB, posB + 1)
+    notes.push(note)
+    const el = document.createElement('span')
+    el.className = 'diff-del diff-del-block'
+    el.textContent = `移除引用：${disp}`
+    decorations.push(Decoration.widget(posB, el, { side: -1, key: `diff-ref-del-${r.pos}`, ...dnote(note.id) }))
+  }
+  const oldRefKeys = new Set(oldRefs.map(refKey))
+  for (const r of newRefs) {
+    if (oldRefKeys.has(refKey(r))) continue
+    const disp = `[[${r.path}${r.fragment ? '#' + r.fragment : ''}]]`
+    const from = r.pos + off
+    const note = makeNote('block', `新增引用：${disp}`, undefined, r.path, `新增引用 ${disp}`, from, oEnd(from, r.nodeSize))
+    notes.push(note)
+    decorations.push(Decoration.inline(from, oEnd(from, r.nodeSize), { class: 'diff-ins', ...dnote(note.id) }))
+  }
+
+  const oldAnn = collectAnnEntities(oldDoc)
+  const newAnn = collectAnnEntities(newDoc)
+  const newAnnNotes = new Set(newAnn.map((a) => a.note))
+  for (const a of oldAnn) {
+    if (newAnnNotes.has(a.note)) continue // 评论线程不变的批注：锚定文本变化由普通文本 diff 覆盖
+    const posB = Math.min(a.pos, newDoc.content.size - 1) + off
+    const note = makeNote('block', '移除批注', a.note, undefined, '移除批注', posB, posB + 1)
+    notes.push(note)
+    const el = document.createElement('span')
+    el.className = 'diff-del diff-del-block'
+    el.textContent = '移除批注'
+    decorations.push(Decoration.widget(posB, el, { side: -1, key: `diff-ann-del-${a.pos}`, ...dnote(note.id) }))
+  }
+  const oldAnnNotes = new Set(oldAnn.map((a) => a.note))
+  for (const a of newAnn) {
+    if (oldAnnNotes.has(a.note)) continue
+    const from = a.pos + off
+    const note = makeNote('block', '新增批注', undefined, a.note, '新增批注', from, oEnd(from, a.nodeSize))
+    notes.push(note)
+    decorations.push(Decoration.inline(from, oEnd(from, a.nodeSize), { class: 'diff-ins', ...dnote(note.id) }))
+  }
+
   return { decorations, notes }
 }
 
@@ -390,16 +530,20 @@ function meaningfulMermaid(d: MermaidNodeDiff): boolean {
 export function mermaidDiffText(d: MermaidNodeDiff): string {
   const label = d.type === 'flowchart' ? '流程图' : d.type === 'sequence' ? '时序图' : d.type === 'state' ? '状态图' : '图表'
   const unit = d.type === 'sequence' ? '消息' : '节点'
+  // 二元语义：新增 = 纯新增 + 标签修改（新值绿），删除 = 纯删除（与图内 svgDel 一一对应）；
+  // 标签修改（mod）的旧值由卡片 del 预览承载，不再计入「删除 N」（否则统计>图内红数）——F25 口径=视觉
   const ac = d.add.length + d.mod.length
-  const dc = d.del.length + d.mod.length
+  const dc = d.del.length
   const parts: string[] = []
   if (ac) parts.push(`新增 ${ac} 个${unit}`)
   if (dc) parts.push(`删除 ${dc} 个`)
+  if (d.mod.length) parts.push(`${d.mod.length} 处标签修改`)
   return parts.length ? `${label}：${parts.join('、')}` : `${label}：无结构变化`
 }
 
 function mermaidNote(d: MermaidNodeDiff): DiffNote {
-  return makeNote('mermaid', mermaidDiffText(d), undefined, undefined, mermaidDiffText(d), -1, -1)
+  const modOld = d.mod.map((m) => `${m.id}: ${m.old}→${m.new}`).join('；')
+  return makeNote('mermaid', mermaidDiffText(d), modOld || undefined, undefined, mermaidDiffText(d), -1, -1)
 }
 
 /**

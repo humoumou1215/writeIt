@@ -182,6 +182,67 @@ mark.annotation {
 mark.annotation:hover {
   background: color-mix(in srgb, #f5d76e, transparent 40%);
 }
+/* v8 多层/重叠批注：嵌套 mark（同处多条）背景逐层加深、下划线逐层下移，视觉可辨重叠数 */
+mark.annotation mark.annotation {
+  background: color-mix(in srgb, #f5d76e, transparent 52%);
+  border-bottom-width: 2px;
+  border-bottom-style: solid;
+  text-underline-offset: 0;
+}
+mark.annotation mark.annotation mark.annotation {
+  background: color-mix(in srgb, #f5d76e, transparent 40%);
+  border-bottom-width: 3px;
+  border-bottom-style: solid;
+  text-underline-offset: 0;
+}
+
+/* 重叠批注选择气泡（点击命中 ≥2 条时展示，点选激活） */
+.annotation-picker {
+  position: fixed;
+  z-index: 1300;
+  min-width: 220px;
+  max-width: 280px;
+  background: var(--chrome-surface);
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  font-size: 12px;
+}
+.annotation-picker-title {
+  font-size: 11px;
+  color: var(--chrome-on-surface-variant);
+  padding: 2px 4px 6px;
+}
+.annotation-picker-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  margin: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--chrome-on-surface);
+}
+.annotation-picker-item:hover {
+  background: var(--chrome-hover);
+}
+.annotation-picker-item .ap-author {
+  font-weight: 600;
+  font-size: 11px;
+}
+.annotation-picker-item .ap-anchor,
+.annotation-picker-item .ap-content {
+  font-size: 11px;
+  color: var(--chrome-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* 运行时批注（校验违规）：inline 高亮 / 锚定行整块高亮 */
 .annotation-dynamic {

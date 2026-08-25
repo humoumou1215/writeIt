@@ -55,9 +55,11 @@ if (addBtnCount > 0) {
   // 5. 打开源文件 笔记/待办清单.md（若侧边栏已收纳先展开）
   if ((await L.q('.content-col.collapsed')) > 0) {
     await L.clickEl('.icon-col .icon-btn', 0)
-    await L.waitMs(400)
+    // 树布局恢复慢（批注浮窗折叠侧边栏后，重新展开约需 2s 才重新测量节点宽度）
+    await L.waitMs(3500)
   }
   await L.clickText('.tree .node', '笔记')
+  await L.waitMs(1200)
   await L.waitMs(400)
   await L.clickText('.tree .name', '待办清单.md')
   await L.waitMs(6000)

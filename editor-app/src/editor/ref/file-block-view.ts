@@ -13,10 +13,12 @@ export class FileBlockView implements NodeView {
   dom: HTMLElement
   contentDOM: HTMLElement | null
   private readonly header: HTMLElement
+  private curNode: ProseNode
 
   private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.editorView = editorViewRef
+    this.curNode = node
     const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
     const locked = Boolean(node.attrs.readonly) || Boolean(collapsed)
     this.dom = document.createElement('div')
@@ -174,9 +176,21 @@ export class FileBlockView implements NodeView {
   }
 
   update(node: ProseNode): boolean {
-    // 返回 false → 让 PM 重建 NodeView（新 contentDOM → content 渲染 + view desc 建立，块内光标/输入正常）
-    // 物化等 content 整体替换由 PM 重建承载；若返回 true 且 PM 不 updateChildren 则内容不显示
-    return node.type.name !== 'file_block'
+    // 返回 true → PM 用 updateChildren 维护 contentDOM 子节点（desc 保留、DOM 复用、光标稳定）。
+    // 之前恒返回 false → 每次输入/物化都强制重建 NodeView → 光标/selection 丢失（用户问题2根因），
+    // 且 beforeinput 手动 dispatch 与 PM 原生输入叠加产生双插（问题1根因）。
+    // attrs 变化（collapsed 折叠态 / readonly）影响卡片 UI 结构（折叠提示卡/只读徽标）——
+    // 这些由 PM 重建承载（返回 false 安全重建），普通 content 变化返回 true 让 PM 增量更新。
+    const prev = this.curNode
+    this.curNode = node
+    if (
+      !prev ||
+      Boolean(prev.attrs.collapsed) !== Boolean(node.attrs.collapsed) ||
+      prev.attrs.readonly !== node.attrs.readonly
+    ) {
+      return false // 折叠/只读态切换 → 交还 PM 完整重建（卡面结构变化）
+    }
+    return true
   }
 
   destroy() {

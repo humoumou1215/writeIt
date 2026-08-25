@@ -11,15 +11,18 @@ import type { Node } from '@milkdown/kit/prose/model'
 import { Fragment } from '@milkdown/kit/prose/model'
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
-import { $prose } from '@milkdown/kit/utils'
+import { $prose, $remark } from '@milkdown/kit/utils'
 import { refPlugin, refConfigCtx, type RefConfig } from './ref'
 import { resolveRefs } from './ref/resolve'
 import { registerRefStringify } from './ref/stringify'
 import { featureConfigs } from './features'
+import { annotationSchema } from '../annotations/nodes'
+import { remarkAnnotation } from '../annotations/remark-annotation'
 import {
   buildDiffDecorations,
   mermaidDiffText,
   makeNote,
+  patchMermaidFences,
   type DiffNote,
 } from './diff-deco'
 import {
@@ -240,6 +243,26 @@ function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefi
 
 // ---------- 主渲染管线 ----------
 
+/** 合并后批注全局去重：text/ref/annotation/diagram/embed 卡可能产同名 id（同值多处），
+ *  追加序号保证 data-dnote 唯一 → 连线/定位分别命中各自锚点 */
+function dedupeNotes(all: DiffNote[]): DiffNote[] {
+  const seen = new Set<string>()
+  const out: DiffNote[] = []
+  for (const n of all) {
+    if (seen.has(n.id)) {
+      let i = 2
+      while (seen.has(n.id + '-' + i)) i++
+      const id = n.id + '-' + i
+      seen.add(id)
+      out.push({ ...n, id })
+    } else {
+      seen.add(n.id)
+      out.push(n)
+    }
+  }
+  return out
+}
+
 interface PipelineState {
   initialDecorations: DecorationSet
   notes: DiffNote[]
@@ -354,6 +377,21 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
               embedNotes.push(
                 makeNote('block', `嵌入「${baseName}」源文件有改动（块内已标红/绿）`, undefined, undefined, `嵌入「${baseName}」`, blk.from, blk.from + blk.size)
               )
+              // M18 §4.9：嵌套源的 mermaid 图级卡下沉到宿主（嵌入源的具体改动 → 具体批注卡 + 锚点，而非只有笼统「内容有改动」）
+              try {
+                const patched = patchMermaidFences(entry.oldMd ?? '', entry.newMd ?? '')
+                for (const pn of patched.notes) {
+                  embedNotes.push({
+                    ...pn,
+                    text: `嵌入「${baseName}」：${pn.text}`,
+                    anchor: `嵌入「${baseName}」：${pn.anchor}`,
+                    from: blk.from,
+                    to: blk.from + blk.size,
+                  })
+                }
+              } catch {
+                /* 嵌套图级卡失败不影响其它 */
+              }
               // Issue 7b / §4.4：嵌入块内容级 diff——源文档坐标 offset 映射进宿主 doc 该块的 content 区
               // （与「直接打开该源文件」相同的渲染规则；词/块级红绿 + 卡片）
               if (entry.oldMd != null && entry.mergedMd != null) {
@@ -388,6 +426,8 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
       })
     })
     crepe.editor.use(refPlugin)
+    // M18：批注实体解析（<mark data-note> → annotation 节点）——使批注增删改作为实体参与 diff（结构实体卡）
+    crepe.editor.use([...annotationSchema, ...$remark('renderDiffAnnotationRemark', () => remarkAnnotation as never)])
     // 自有 mermaid NodeView（覆写 code_block 视图；非 mermaid 委托 CodeMirrorBlock）
     // ——必须在 features 之后 use（nodeViewCtx 后者生效）
     const collector = new SettleCollector()
@@ -420,7 +460,11 @@ export async function renderDiffToContainer(
     }
     crepe = mounted.crepe
     const { registry, collector } = mounted
-    const notes: DiffNote[] = [...mounted.state.notes, ...mounted.state.diagramNotes, ...mounted.state.embedNotes]
+    const notes: DiffNote[] = dedupeNotes([
+      ...mounted.state.notes,
+      ...mounted.state.diagramNotes,
+      ...mounted.state.embedNotes,
+    ])
     const isNewFile = mounted.isNewFile
 
     // 2c) 新文件：整篇标绿 + 一张「新增文件」说明卡

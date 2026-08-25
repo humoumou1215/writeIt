@@ -70,7 +70,7 @@ C.check('循环引用：折叠卡存在（data-collapsed）', cycle.collapsed >=
 C.check('循环引用：折叠提示文案', cycle.collapseHint.some(t => t.includes('循环引用')))
 
 // ---------- 7：批注抽屉 ----------
-await L.clickEl('.annotation-open-btn', 0, { label: '打开批注抽屉' })
+await L.clickEl('.ad-toggle.expand', 0, { label: '打开批注抽屉' })
 await L.waitMs(800)
 const cards = await js(`(() => ({
   count: document.querySelectorAll('.ad-card').length,

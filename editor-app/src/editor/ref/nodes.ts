@@ -200,6 +200,9 @@ export const fileBlockSchema = $nodeSchema('file_block', (_ctx) => {
       /** 运行时折叠态（不序列化；round-trip 无损）：{ reason: 'cycle'|'depth'; chain: string[] } | null。
        *  环 / 超深（第 11 层起）折叠提示卡，见 embed-nesting-governance.md */
       collapsed: { default: null },
+      /** P2：运行时块身份（uuid，不序列化；round-trip 无损）——registry 广播/收敛精确定位，
+       *  避免 pos 漂移误伤相邻块；replaceAll 重建后重新分配（内容真相在 registry，不受影响） */
+      blockId: { default: null },
     },
     parseDOM: [
       {

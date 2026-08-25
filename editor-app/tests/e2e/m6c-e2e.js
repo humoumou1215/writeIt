@@ -21,8 +21,8 @@ await L.waitMs(6000)
 
 // 1. 抽屉默认收纳（打开文件不展开）+ 批注卡（1 人工 + 1 校验违规）
 C.check('抽屉默认收纳（不展开）', (await L.q('.annotation-drawer.open')) === 0)
-C.check('折叠态显示小胶囊展开按钮', (await L.q('.annotation-open-btn')) > 0)
-await L.clickEl('.annotation-open-btn', 0, { label: '展开抽屉' })
+C.check('折叠态显示右缘把手（展开方向）', (await L.q('.ad-toggle.expand')) > 0)
+await L.clickEl('.ad-toggle.expand', 0, { label: '展开抽屉' })
 await L.waitMs(500)
 C.check('点击展开按钮后抽屉打开', (await L.q('.annotation-drawer.open')) > 0)
 C.check('抽屉显示 2 张卡（人工 + 校验）', (await L.q('.ad-card')) === 2)
@@ -86,6 +86,9 @@ const resolvedDot = await js(`(() => {
   return comment ? comment.querySelector('.ad-resolve-dot').classList.contains('resolved') : false
 })()`)
 C.check('点击圆 → 已解决（✔）', resolvedDot === true)
+// 把手数字 = 未解决批注卡数：线程仍有「张三」未解决 → 不误减（2 = 1 违规 + 1 人工未解决）
+const numAfterResolve = await js(`(() => { const n = document.querySelector('.ad-toggle-num'); return n ? n.textContent : '' })()`)
+C.check('部分已解决不降低未解决数（线程未全部解决）', numAfterResolve === '2')
 await js(`(() => {
   const comment = Array.from(document.querySelectorAll('.ad-comment')).find(c => (c.querySelector('.ad-author') ? c.querySelector('.ad-author').textContent : '').includes('我'))
   comment.querySelector('.ad-resolve-dot').click()
@@ -125,30 +128,39 @@ C.check('再点人工卡头部展开', (await L.q('.ad-card.active:not(.collapse
 const connDisplay = await js(`(() => { const svg = document.querySelector('.annotation-connector'); return svg ? getComputedStyle(svg).display : 'none' })()`)
 C.check('连线显示', connDisplay !== 'none')
 
-// 7. 宽度拖拽（50-480 限制）
+// 7. 宽度拖拽（50-480 限制）：左缘把手向左拖 = 变宽
 await js(`(() => {
-  const drawer = document.querySelector('.annotation-drawer.open')
-  const r = drawer.getBoundingClientRect()
-  const resizer = drawer.querySelector('.annotation-drawer-resizer')
-  const rect = resizer.getBoundingClientRect()
-  resizer.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: rect.left, clientY: rect.top + 50 }))
-  document.dispatchEvent(new MouseEvent('mousemove', { clientX: rect.left - 400, clientY: rect.top + 50 }))
-  document.dispatchEvent(new MouseEvent('mouseup', {}))
+  const btn = document.querySelector('.ad-toggle.collapse')
+  const rect = btn ? btn.getBoundingClientRect() : null
+  if (!btn || !rect) return
+  btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: rect.left + 10, clientY: rect.top + 24 }))
+  window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1, clientX: rect.left - 300, clientY: rect.top + 24 }))
+  window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: rect.left - 300, clientY: rect.top + 24 }))
 })()`)
 await L.waitMs(400)
 const w1 = await js(`document.querySelector('.annotation-drawer.open') ? document.querySelector('.annotation-drawer.open').getBoundingClientRect().width : -1`)
 C.check('拖拽宽度受限（50-480）', w1 >= 50 && w1 <= 480)
 
-// 8. 折叠：右下角小胶囊按钮
-await L.clickEl('.annotation-drawer-head .ad-icon-btn[title="折叠抽屉"]', 0, { label: '折叠' })
+// 8. 折叠：点击左缘把手（收纳方向）
+await L.clickEl('.ad-toggle.collapse', 0, { label: '折叠' })
 await L.waitMs(400)
-C.check('折叠后显示展开按钮', (await L.q('.annotation-open-btn')) > 0)
+C.check('折叠后显示右缘展开把手', (await L.q('.ad-toggle.expand')) > 0)
 const collapsedW = await js(`document.querySelector('.annotation-drawer') ? document.querySelector('.annotation-drawer').getBoundingClientRect().width : -1`)
 C.check('折叠态不占布局宽度（0px）', collapsedW === 0)
-const btnH = await js(`document.querySelector('.annotation-open-btn') ? document.querySelector('.annotation-open-btn').getBoundingClientRect().height : 9999`)
-C.check('折叠按钮为小尺寸（非整条竖栏）', btnH > 0 && btnH < 100)
+const btnH = await js(`document.querySelector('.ad-toggle.expand') ? document.querySelector('.ad-toggle.expand').getBoundingClientRect().height : 9999`)
+C.check('把手为小尺寸（非整条竖栏）', btnH > 0 && btnH < 100)
+const btnNum = await js(`(() => { const b = document.querySelector('.ad-toggle.expand'); const n = b ? b.querySelector('.ad-toggle-num') : null; return n ? n.textContent : '' })()`)
+C.check('把手上显示批注数量数字（2）', btnNum === '2')
 const connGone = await js(`(() => { const svg = document.querySelector('.annotation-connector'); return svg ? getComputedStyle(svg).display : 'none' })()`)
 C.check('折叠后连线隐藏', connGone === 'none')
+
+// 9. 再次展开：宽度恢复到保存值（回归：折叠动画曾把 width 污染为 0 → 内容缩到右缘不可见）
+await L.clickEl('.ad-toggle.expand', 0, { label: '再次展开' })
+await L.waitMs(600)
+const w2 = await js(`(() => { const d = document.querySelector('.annotation-drawer.open'); return d ? Math.round(d.getBoundingClientRect().width) : -1 })()`)
+C.check('再次展开后抽屉恢复宽度（>0 并可读）', w2 > 0)
+const cardsAgain = await js(`(() => { const d = document.querySelector('.annotation-drawer.open'); if (!d) return -1; const r = d.getBoundingClientRect(); const head = d.querySelector('.ad-card .ad-card-head'); return head ? (head.getBoundingClientRect().left + head.getBoundingClientRect().width / 2 < window.innerWidth) : -1 })()`)
+C.check('再次展开后卡片中心在视口内（不缩到右边外）', cardsAgain === true)
 
 cliLog(C.summary())
 await completeTaskSpace(task.id, { keep: false })

@@ -24,7 +24,7 @@ const seed = async (kind) => {
   await L.clickText('.tree .name', '周报.md')
   await L.waitMs(8000)
   // 抽屉默认收纳：读取批注前先展开
-  await js(`document.querySelector('.annotation-open-btn')?.click()`)
+  await js(`document.querySelector('.ad-toggle.expand')?.click()`)
   await L.waitMs(400)
 }
 

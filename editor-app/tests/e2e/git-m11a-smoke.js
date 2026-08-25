@@ -63,7 +63,7 @@ C.check('M14 mermaid 新增节点（diff-node-add）', (await L.q('.render-host 
 C.check('M14 mermaid 删除节点（diff-node-del）', (await L.q('.render-host svg g.node.diff-node-del')) >= 1)
 
 // 批注抽屉（默认收纳：先展开再读卡）
-await js(`document.querySelector('.annotation-open-btn')?.click()`)
+await js(`document.querySelector('.ad-toggle.expand')?.click()`)
 await L.waitMs(400)
 try { await waitForElement('.annotation-drawer .ad-card', { timeout: 8 }).catch(() => {}) } catch {}
 C.check('M14 批注抽屉「改动说明」卡 ≥5', (await L.qText('.annotation-drawer .ad-card .ad-card-title', '改动说明')) >= 5)

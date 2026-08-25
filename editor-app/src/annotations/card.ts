@@ -1,10 +1,20 @@
-// 批注交互（v3 抽屉模式）：
+// 批注交互（v3 抽屉模式 / v8 重叠批注）：
 //   点击正文锚点（mark.annotation / .annotation-dynamic）→ 激活批注 + 展开抽屉（drawer 订阅展开）
+//   v8：批注为 mark（可嵌套/重叠）——点击处可能命中多条批注（DOM 嵌套）→
+//       1 条直接激活；≥2 条弹「批注选择气泡」，点选后激活对应卡片
 //   批注内容展示/评论线程/连线全部在 AnnotationDrawer.vue；本模块保留锚点激活 + 添加批注输入浮窗。
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { setActiveAnnotation, addAnnotation, findCodeBlockInSelection, addBlockAnnotation } from './service'
+import {
+  setActiveAnnotation,
+  addAnnotation,
+  findCodeBlockInSelection,
+  findCrossFileBlockInSelection,
+  addBlockAnnotation,
+  getPersistedAnnotations,
+  type Annotation,
+} from './service'
 import { state, toast } from '../state/store'
 
 let activeTabId = ''
@@ -16,21 +26,24 @@ function onDocumentClick(e: MouseEvent) {
   if (!anchor) return
   const tabId = activeTabId
   if (!tabId) return
-  // 持久化批注：mark 元素 → pos → 线程 id（p-<pos>，与 service 一致）
-  if (anchor.tagName.toLowerCase() === 'mark' && editorRef) {
-    let pos = -1
-    editorRef.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      const raw = view.posAtDOM(anchor, 0)
-      for (const p of [raw - 1, raw]) {
-        const n = p >= 0 ? view.state.doc.nodeAt(p) : null
-        if (n && n.type.name === 'annotation') {
-          pos = p
-          break
-        }
-      }
-    })
-    if (pos >= 0) setActiveAnnotation(tabId, `p-${pos}`)
+  // 持久化批注（mark）：从 target 向上收集所有嵌套 annotation mark 的 id（重叠批注）
+  if (anchor.tagName.toLowerCase() === 'mark') {
+    const ids: string[] = []
+    let el: HTMLElement | null = anchor
+    while (el) {
+      const id = el.getAttribute('data-a')
+      if (id && !ids.includes(id)) ids.push(id)
+      el = el.parentElement
+        ? (el.parentElement.closest('mark.annotation, .annotation-dynamic') as HTMLElement | null)
+        : null
+    }
+    if (!ids.length) return
+    if (ids.length === 1) {
+      setActiveAnnotation(tabId, ids[0])
+      return
+    }
+    // 该处有多条批注 → 选择气泡（列出各批注，点选激活）
+    showAnnotationPicker(tabId, ids, e.clientX, e.clientY)
     return
   }
   // 运行时批注（校验）：data-annotation-id
@@ -68,45 +81,104 @@ export function setAnnotationCardContext(tabId: string, editor: Editor | null): 
   editorRef = editor
 }
 
+// ---------- 重叠批注选择气泡 ----------
+let pickerEl: HTMLDivElement | null = null
+let onPickerDocClick: ((e: MouseEvent) => void) | null = null
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;')
+}
+
+/** 点击处命中 ≥2 条批注 → 气泡列出（作者 + 锚文本 + 首条评论），点选激活对应卡片 */
+function showAnnotationPicker(tabId: string, ids: string[], x: number, y: number): void {
+  hideAnnotationPicker()
+  // 从当前编辑器 doc 收集批注详情（mark id → Annotation）
+  const annsById = new Map<string, Annotation>()
+  editorRef?.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    for (const a of getPersistedAnnotations(view.state.doc)) annsById.set(a.id, a)
+  })
+  const el = document.createElement('div')
+  el.className = 'annotation-picker'
+  el.setAttribute('role', 'listbox')
+  const title = document.createElement('div')
+  title.className = 'annotation-picker-title'
+  title.textContent = `该处有 ${ids.length} 条批注`
+  el.appendChild(title)
+  for (const id of ids) {
+    const ann = annsById.get(id)
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'annotation-picker-item'
+    const author = esc(ann?.thread[0]?.author ?? '?')
+    const anchor = esc(ann?.anchorText ?? '')
+    const content = esc(ann?.thread[0]?.content ?? '')
+    item.innerHTML = `<span class="ap-author">${author}</span><span class="ap-anchor">${anchor}</span><span class="ap-content">${content}</span>`
+    item.addEventListener('click', () => {
+      hideAnnotationPicker()
+      setActiveAnnotation(tabId, id)
+    })
+    el.appendChild(item)
+  }
+  const MARGIN = 8
+  const w = Math.min(280, window.innerWidth - MARGIN * 2)
+  el.style.left = `${Math.max(MARGIN, Math.min(x, window.innerWidth - w - MARGIN))}px`
+  el.style.top = `${Math.min(y + 12, window.innerHeight - 160)}px`
+  document.body.appendChild(el)
+  pickerEl = el
+  // 点击气泡外部关闭（capture 阶段，避免与 onDocumentClick 冲突）
+  onPickerDocClick = () => {
+    if (!pickerEl) {
+      document.removeEventListener('click', onPickerDocClick!, true)
+      onPickerDocClick = null
+      return
+    }
+    hideAnnotationPicker()
+  }
+  setTimeout(() => {
+    if (onPickerDocClick) document.addEventListener('click', onPickerDocClick, true)
+  }, 0)
+}
+
+function hideAnnotationPicker(): void {
+  pickerEl?.remove()
+  pickerEl = null
+  if (onPickerDocClick) {
+    document.removeEventListener('click', onPickerDocClick, true)
+    onPickerDocClick = null
+  }
+}
+
 // ---------- 添加批注输入浮窗（Toolbar / Ctrl+R 入口）----------
 let inputEl: HTMLDivElement | null = null
 let inputEditor: Editor | null = null
 let inputFrom = -1
 let inputTo = -1
-// v7 变体 D：选区涉及 code_block → 整块批注（锚点=代码块摘要，批注节点放代码块上方段落）
+// v7 变体 D：选区涉及 code_block → 整块批注（锚点=代码块摘要，批注 mark 放代码块上方段落）
 let inputBlockMode = false
 let inputBlockPos = -1
 
 // Enter 确认提交（Ctrl+R / Toolbar 共用逻辑）
-// 返回新批注节点在 doc 中的位置（其后的光标恢复用；doc 已插入节点，原选区已漂移）
+// 返回 { from, to }（恢复选区用；addMark 不改变文档结构，原选区位置即新批注位置）。
 async function submitAnnotation(
   text: string
-): Promise<{ pos: number; nodeSize: number; shift?: number } | null> {
+): Promise<{ from: number; to: number; shift?: number } | null> {
   if (!inputEditor || inputTo <= inputFrom) return null
   const { resolveUserName } = await import('./user-name')
   const name = await resolveUserName()
-  let info: { pos: number; nodeSize: number; shift?: number } | null = null
   // 变体 D：代码块内选中 → 整块批注（返回的 shift 供光标恢复到代码块内原位）
   if (inputBlockMode && inputBlockPos >= 0) {
-    info = addBlockAnnotation(inputEditor, inputBlockPos, text, name)
-    if (info) setActiveAnnotation('', `p-${info.pos}`)
-    return info
+    const info = addBlockAnnotation(inputEditor, inputBlockPos, text, name)
+    if (info) {
+      setActiveAnnotation('', info.id)
+      return { from: inputFrom, to: inputTo, shift: info.shift }
+    }
+    return null
   }
-  addAnnotation(inputEditor, inputFrom, inputTo, text, name)
+  const id = addAnnotation(inputEditor, inputFrom, inputTo, text, name)
   // 激活新批注（抽屉展开定位）
-  inputEditor.action((ctx) => {
-    const view = ctx.get(editorViewCtx)
-    const doc = view.state.doc
-    doc.descendants((n, p) => {
-      if (n.type.name === 'annotation' && p >= inputFrom - 5 && p <= inputTo + 5) {
-        info = { pos: p, nodeSize: n.nodeSize }
-        setActiveAnnotation('', `p-${p}`)
-        return false
-      }
-      return true
-    })
-  })
-  return info
+  if (id) setActiveAnnotation('', id)
+  return { from: inputFrom, to: inputTo }
 }
 
 // 关闭浮窗后把焦点还给编辑器，并把选区恢复到原选中文本（或新批注文本）
@@ -133,17 +205,27 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
   inputEditor = editor
   inputFrom = from
   inputTo = to
+  // v8.1：选区「跨越」嵌入块（file_block）→ 不支持，toast 提示（完全在块内选中不拦截，m6d 语义）
+  let embedCrossed = false
   // 变体 D：检测选区是否涉及 code_block → 整块批注模式
   inputBlockMode = false
   inputBlockPos = -1
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
+    if (findCrossFileBlockInSelection(view.state.doc, from, to)) {
+      embedCrossed = true
+      return
+    }
     const cb = findCodeBlockInSelection(view.state.doc, from, to)
     if (cb) {
       inputBlockMode = true
       inputBlockPos = cb.pos
     }
   })
+  if (embedCrossed) {
+    toast('暂不支持跨越嵌入块选区的批注，请对嵌入块，或在嵌入块内单独选中文本添加批注', 'info')
+    return
+  }
   if (!inputEl) {
     inputEl = document.createElement('div')
     inputEl.className = 'annotation-input'
@@ -162,16 +244,15 @@ export function showAnnotationInput(editor: Editor, from: number, to: number): v
         const text = ta.value.trim()
         hideAnnotationInput()
         if (text && inputEditor && inputTo > inputFrom) {
-          // 提交是异步的（用户名解析）：恢复选区要等插入完成后，定位到新批注文本内部
+          // 提交是异步的（用户名解析）：恢复选区要等插入完成后
           void submitAnnotation(text)
             .then((info) => {
               if (info) {
-                if (info.shift) {
-                  // 块级批注：光标恢复到代码块内原选区（插入段落使位置整体后移 shift）
-                  restoreEditorFocusSeq(inputFrom + info.shift, inputTo + info.shift)
-                } else {
-                  restoreEditorFocusSeq(info.pos + 1, info.pos + info.nodeSize - 1)
-                }
+                // addMark 不改变文档结构：直接恢复原选区；变体D 插入段落使代码块内位置后移 shift
+                restoreEditorFocusSeq(
+                  info.from + (info.shift ?? 0),
+                  info.to + (info.shift ?? 0)
+                )
               } else {
                 restoreEditorFocusSeq(inputFrom, inputTo)
               }

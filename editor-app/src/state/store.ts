@@ -16,6 +16,10 @@ export interface Tab {
   lastModified: number
   /** §6.7：可编辑 file_block 内容快照（保存时记录；脏检测第二条件用） */
   blockSnapshot: Map<string, string> | null
+  /** P1：每次块编辑传播后的“最近同步值”（path → 已传播内容）。
+   *  与 blockSnapshot（保存时快照）区分：传播基线 = 最近同步值，避免连续编辑时
+   *  把已传播的旧块误判为“并发编辑”而卡住收敛。 */
+  lastSyncBlocks: Map<string, string> | null
   /** §6.7：用户真实输入时间戳（区分用户编辑 vs 程序化刷新；0 = 无用户编辑） */
   userEditedAt: number
   /** §6.7：最近一次外部联动/写回刷新时间戳（保存/联动时判断用户是否编辑过） */

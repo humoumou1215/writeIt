@@ -100,7 +100,7 @@ if (pbox) {
   await L.press('Enter')
   await L.waitMs(1500)
   const md3 = await L.pageMd()
-  const marks3 = md3.match(/<mark data-note='[^']*'>[^<]*<\/mark>/g) || []
+  const marks3 = md3.match(/<mark data-note='[^']*'[^>]*>[^<]*<\/mark>/g) || []
   C.check('段落批注锚点=选中文本', marks3.length >= 2 && !marks3[1].includes('代码块'))
 } else {
   cliLog('❌ 无段落框')

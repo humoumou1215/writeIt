@@ -21,6 +21,11 @@ import {
   type CollapsedInfo,
 } from './embed-chain'
 import { diagEvent } from '../../diagnostics/logger'
+import {
+  getTruth as registryGetTruth,
+  registerView as registryRegisterView,
+  updateViewContent as registryUpdateViewContent,
+} from './registry'
 
 // ---------- 源内容缓存（同前：限制条数，避免内存膨胀） ----------
 
@@ -284,16 +289,52 @@ export async function materializeBlock(
     return 'fold'
   }
 
-  // 正常物化（ok）：读取源文件 → 解析 → 填入容器；清除可能残留的折叠态
-  //（环/超深解除后重新物化的块，collapsed 必须清空，否则折叠卡叠加在物化内容上——治理定稿 A1）
+  // 正常物化（ok）：内容 = registry 应然（未初始化才落盘惰性读）→ 解析 → 填入容器；
+  // 清除可能残留的折叠态（环/超深解除后重新物化的块，collapsed 必须清空，否则折叠卡叠加
+  // 在物化内容上——治理定稿 A1）。P2：物化即注册视图，lastContent 与应然对齐。
   let source: string
-  try {
-    source = await readRefFile(cfg, selfReal)
-  } catch {
-    cfg.toast(`引用失败：找不到文件「${path}」`, 'error')
-    return 'broken'
+  const truth = registryGetTruth(selfReal)
+  if (truth != null) {
+    source = truth
+  } else {
+    try {
+      source = await readRefFile(cfg, selfReal)
+    } catch {
+      cfg.toast(`引用失败：找不到文件「${path}」`, 'error')
+      return 'broken'
+    }
   }
 
+  const blockId = fillBlockContent(editor, pos, path, readonly, source)
+  if (blockId && cfg.tabId) {
+    // 只读变体是固定快照：不注册视图 → 永不成为广播目标（内容保持物化时源快照）
+    if (!readonly) {
+      registryRegisterView(selfReal, {
+        tabId: cfg.tabId,
+        kind: 'block',
+        blockId,
+        readonly,
+      }, source)
+      registryUpdateViewContent(selfReal, `${cfg.tabId}#${blockId}`, source)
+    }
+  }
+  return 'ok'
+}
+
+/**
+ * 把给定内容解析并填入已存在的 file_block 容器（物化/兄弟块收敛/广播刷新共用）。
+ * 调用方负责在 suppressing 期内调用（避免 markdownUpdated 误标用户编辑/引发同步回环）。
+ * P2：缺 blockId 时分配运行时块身份（不序列化）——registry 精确定位的基础。
+ * 返回块 id（成功）或 null（块不存在 / 只读属性不匹配 / 内容解析失败）。
+ */
+export function fillBlockContent(
+  editor: Editor,
+  pos: number,
+  _path: string,
+  readonly: boolean,
+  source: string
+): string | null {
+  let blockId: string | null = null
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const parser = ctx.get(parserCtx)
@@ -311,24 +352,57 @@ export async function materializeBlock(
     const tr = view.state.tr.replaceWith(from, to, parsed.content)
     // 空源文件（解析为空）会留下空块：block+ 不允空块，setNodeMarkup 会抛错——补默认段落
     ensureBlockHasContent(tr, pos)
+    // P2：分配块身份（幂等；已存在则保留，保证跨广播稳定）
+    const existing = atPos.attrs.blockId as string | null
+    const id = existing ?? genBlockId()
     // 标记物化成功：未物化的块（内容为空）不参与写回，避免保存时覆盖源文件
-    tr.setNodeMarkup(pos, undefined, { ...atPos.attrs, materialized: true, collapsed: null })
+    tr.setNodeMarkup(pos, undefined, { ...atPos.attrs, materialized: true, collapsed: null, blockId: id })
     view.dispatch(tr)
+    blockId = id
     // 物化后：FileBlockView.update() 返回 false → PM 重建该 NodeView（新 contentDOM → content
     // 渲染 + 建立 view desc）→ 块内光标/输入正常。不再用 updateState+forceFlush 粗暴重建
     // （那会破坏 desc：块内光标不渲染、输入只能靠 beforeinput 兜底）。
   })
-  return 'ok'
+  return blockId
+}
+
+/** 生成运行时块身份（浏览器 crypto.randomUUID；兜底自增+随机） */
+function genBlockId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+  } catch {
+    /* 降级 */
+  }
+  return `b${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+export { genBlockId }
+
+/** 用内存中已知内容物化块（同源兄弟块收敛 / 广播刷新；不读文件，内容来源为最新块/registry） */
+export function materializeBlockFromContent(
+  editor: Editor,
+  pos: number,
+  path: string,
+  readonly: boolean,
+  content: string
+): string | null {
+  return fillBlockContent(editor, pos, path, readonly, content)
 }
 
 /** 收集需要消歧/定型的引用：object_ref（未解析）+ file_ref#fragment */
 function collectRefs(
-  editor: Editor
+  editor: Editor,
+  from?: number,
+  to?: number
 ): Array<{ pos: number; type: 'object_ref' | 'file_ref'; path: string; fragment: string | null; object: string | null }> {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const refs: Array<{ pos: number; type: 'object_ref' | 'file_ref'; path: string; fragment: string | null; object: string | null }> = []
     view.state.doc.descendants((node, pos) => {
+      // 范围过滤（块内消歧用；默认全文档）
+      if (from != null && (pos < from || pos + node.nodeSize > (to ?? Number.MAX_SAFE_INTEGER))) return true
       if (node.type.name === 'object_ref' && node.attrs.resolvedText == null) {
         refs.push({
           pos,
@@ -420,6 +494,37 @@ async function resolveObjectRef(
     }
     view.dispatch(tr)
   })
+}
+
+/** 块内引用消歧：广播填充块内容后，块内 file_ref#fragment / 未定型 object_ref 需重新
+ *  消歧（与打开文件时的完整 resolve 流程一致）——否则块显示原始链接而非对象文本
+ *  （用户问题3根因：保存后块内容“消失/被替换”）。返回处理的引用数。 */
+export async function resolveBlockRefs(editor: Editor, blockPos: number): Promise<number> {
+  const cfg = getRefConfig(editor)
+  if (!cfg) return 0
+  let count = 0
+  try {
+    const node = editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      return view.state.doc.nodeAt(blockPos)
+    })
+    if (!node || node.type.name !== 'file_block') return 0
+    const to = blockPos + node.nodeSize
+    // 倒序防位置漂移
+    const refs = collectRefs(editor, blockPos, to).sort((a, b) => b.pos - a.pos)
+    for (const r of refs) {
+      const prev = editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        return view.state.doc.nodeAt(r.pos)
+      })
+      if (!prev || prev.type.name !== r.type) continue
+      await resolveObjectRef(editor, r)
+      count++
+    }
+  } catch (e) {
+    console.warn('[ref] 块内引用消歧失败:', blockPos, e)
+  }
+  return count
 }
 
 /** 全文档 resolve：物化 file_block + 消歧/定型对象引用（链判定收敛，不再依赖跑满深度轮数） */

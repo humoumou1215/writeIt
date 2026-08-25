@@ -170,7 +170,7 @@ C.check('M13 行内修改（删除字划线/新增字绿底）', (await L.qText(
 await L.waitMs(2000)
 C.check('M14 块级纯删除/新增也走行内标记', (await L.q('.render-host .diff-del')) >= 2 && (await L.q('.render-host .diff-ins')) >= 2)
 // 抽屉默认收纳：读取 diff 批注前先展开
-await js(`document.querySelector('.annotation-open-btn')?.click()`)
+await js(`document.querySelector('.ad-toggle.expand')?.click()`)
 await L.waitMs(400)
 C.check('M14 批注抽屉「改动说明」卡', (await L.q('.annotation-drawer .ad-card .ad-card-title')) >= 1)
 C.check('M13 mermaid 渲染图（svg）', (await L.q('.render-host svg, .render-host .mermaid')) > 0)

@@ -105,13 +105,13 @@ function onDocClick(e: MouseEvent) {
   expandedId.value = null
 }
 
-/** 源码模式：点击位置落在某个 <mark data-note 内 → 激活对应批注 + 滚动居中 + 选中高亮 */
+/** 源码模式：点击位置落在某个 <mark data-a data-note 内 → 激活对应批注 + 滚动居中 + 选中高亮 */
 function activateSourceMark(ta: HTMLTextAreaElement) {
   const offset = ta.selectionStart ?? 0
   const hit = findSourceMarks(ta).find((mk) => offset >= mk.tagStart && offset <= mk.tagEnd)
   if (!hit) return
   const ann = anns.value.find(
-    (a) => a.level === 'comment' && a.persist && JSON.stringify(a.thread) === JSON.stringify(hit.thread)
+    (a) => a.level === 'comment' && a.persist && a.id === hit.id
   )
   if (!ann) return
   if (state.activeTabId) setActiveAnnotation(state.activeTabId, ann.id)
@@ -123,6 +123,14 @@ const warningCount = computed(() => anns.value.filter((a) => a.level === 'warnin
 const commentCount = computed(() => anns.value.filter((a) => a.level === 'comment').length)
 /** M14：diff 改动说明卡计数（level=info + source=diff） */
 const infoCount = computed(() => anns.value.filter((a) => a.source === 'diff' || a.level === 'info').length)
+/** 未解决批注卡数量：校验/提示/diff 说明卡恒为未解决；人工批注卡 = 评论未全部已解决 */
+const unresolved = computed(() => {
+  const readOnly = anns.value.filter((a) => a.level !== 'comment')
+  const openThreads = anns.value.filter(
+    (a) => a.level === 'comment' && !a.thread.every((c) => c.resolved)
+  )
+  return readOnly.length + openThreads.length
+})
 
 // ---------- 用户名（tauri git / 设置） ----------
 const userName = ref(settings.annotationUsername || '我')
@@ -143,23 +151,19 @@ async function reply(ann: Annotation) {
   const { getActiveInstance } = await import('../editor/manager')
   const inst = getActiveInstance()
   if (!inst) return
-  const pos = annPos(ann, inst)
-  if (pos < 0) return
-  addComment(inst.crepe.editor, pos, text, userName.value)
+  if (!inst) return
+  if (ann.persist) {
+    // v8：人工批注按逻辑批注 id（mark attrs.id）定位，不依赖 pos
+    addComment(inst.crepe.editor, ann.id, text, userName.value)
+  }
   draft.value[ann.id] = ''
-}
-
-/** 运行时批注无固定 pos（decorations 映射）；持久化批注 pos 即节点位置 */
-function annPos(ann: Annotation, inst: { crepe: { editor: unknown } }): number {
-  if (ann.persist) return ann.from
-  return ann.from
 }
 
 async function toggleResolved(ann: Annotation, c: Comment) {
   const { getActiveInstance } = await import('../editor/manager')
   const inst = getActiveInstance()
   if (!inst) return
-  setCommentResolved(inst.crepe.editor as never, ann.from, c.id, !c.resolved, userName.value)
+  setCommentResolved(inst.crepe.editor as never, ann.id, c.id, !c.resolved, userName.value)
 }
 
 /** 点击批注卡 = 定位 + 激活（显示该卡连线）+ 展开/折叠 */
@@ -177,7 +181,7 @@ async function locate(ann: Annotation) {
         // M6：源码模式 → 直接滚动 textarea 到 <mark data-note（不切出源码视图）
         const { getSourceTextarea } = await import('../editor/manager')
         const ta = getSourceTextarea(tabId)
-        const r = ta ? findSourceMarkRange(ta, ann.thread) : null
+        const r = ta ? findSourceMarkRange(ta, ann) : null
         if (r) scrollSourceToMark(ta!, r.start, r.end)
       } else {
         const { scrollToPos } = await import('../editor/manager')
@@ -281,17 +285,18 @@ function initials(name: string): string {
 // ---------- 源码模式：锚点 = textarea 里的 <mark data-note 文本 ----------
 // 视图切到源码后 .milkdown 被隐藏，coordsAtPos 返回左上角垃圾坐标；
 // 改为在源码 textarea 里按等宽字体度量 mark 的屏幕位置（含折行估算）。
-const SOURCE_MARK_RE = /<mark\s+data-note=(["'])((?:(?!\1).)*)\1[^>]*>/g
+const SOURCE_MARK_RE = /<mark\s+([^>]*?)data-note=(["'])((?:(?!\2).)*)\2[^>]*>/g
 
 interface SourceMarkInfo {
   tagStart: number
   tagEnd: number
   contentStart: number
   contentEnd: number
+  id: string
   thread: Comment[]
 }
 
-/** 找出 textarea 中所有 <mark data-note> 标签（区间 + 解析后的线程） */
+/** 找出 textarea 中所有 <mark data-note> 标签（区间 + 解析后的 id 与线程） */
 function findSourceMarks(ta: HTMLTextAreaElement): SourceMarkInfo[] {
   const value = ta.value
   const out: SourceMarkInfo[] = []
@@ -303,14 +308,22 @@ function findSourceMarks(ta: HTMLTextAreaElement): SourceMarkInfo[] {
     const close = value.indexOf('</mark>', contentStart)
     const contentEnd = close >= 0 ? close : contentStart
     const tagEnd = close >= 0 ? close + 7 : contentStart // '</mark>'.length = 7
-    out.push({ tagStart, tagEnd, contentStart, contentEnd, thread: parseThread(m[2]) })
+    const a = /data-a=["']([^"']*)["']/.exec(m[1] ?? '')
+    out.push({
+      tagStart,
+      tagEnd,
+      contentStart,
+      contentEnd,
+      id: a?.[1] ?? '',
+      thread: parseThread(m[3]),
+    })
   }
   return out
 }
 
-/** 按线程匹配：找与某批注线程一致的 mark 内容区间 */
-function findSourceMarkRange(ta: HTMLTextAreaElement, thread: Comment[]): { start: number; end: number } | null {
-  const hit = findSourceMarks(ta).find((mk) => JSON.stringify(mk.thread) === JSON.stringify(thread))
+/** 按逻辑批注 id：找与某批注一致的 mark 内容区间 */
+function findSourceMarkRange(ta: HTMLTextAreaElement, ann: Annotation): { start: number; end: number } | null {
+  const hit = findSourceMarks(ta).find((mk) => mk.id === ann.id)
   return hit ? { start: hit.contentStart, end: hit.contentEnd } : null
 }
 
@@ -364,7 +377,7 @@ function sourceMarkRect(
   ta: HTMLTextAreaElement,
   ann: Annotation
 ): { left: number; right: number; top: number; bottom: number; height: number } | null {
-  const range = findSourceMarkRange(ta, ann.thread)
+  const range = findSourceMarkRange(ta, ann)
   if (!range) return null
   const cs = getComputedStyle(ta)
   const lineHeight = parseFloat(cs.lineHeight) || 20.8
@@ -552,7 +565,7 @@ watch(
           void import('../editor/manager').then((m) => {
             const ta = m.getSourceTextarea(tabId ?? '')
             if (ta) {
-              const r = findSourceMarkRange(ta, active.thread)
+              const r = findSourceMarkRange(ta, active)
               if (r) scrollSourceLine(ta, r.start)
             }
           })
@@ -569,26 +582,72 @@ function scheduleConnector() {
   if (open.value) requestAnimationFrame(drawConnector)
 }
 
-// ---------- 拖拽宽度 ----------
-let dragging = false
-function onDragStart(e: MouseEvent) {
+// ---------- 收纳/展开 + 拖拽宽度（与大纲抽屉一致：一个把手，点击切换，拖拽调宽） ----------
+let widthTimer: ReturnType<typeof setTimeout> | null = null
+/** 宽度过渡动画：setTimeout 时间戳插值（ease-out）。不用 CSS transition / rAF——
+ *  两者在无头驱动下会被节流到 ~1fps，抽屉会长时间卡在中间宽度；
+ *  时间戳驱动即使定时器被节流也必然收敛到终值（每步按 elapsed 计算）。 */
+function animateWidth(from: number, to: number, dur = 160, done?: () => void) {
+  if (widthTimer) clearTimeout(widthTimer)
+  const t0 = performance.now()
+  const tick = () => {
+    const p = Math.min((performance.now() - t0) / dur, 1)
+    width.value = Math.round(from + (to - from) * (1 - Math.pow(1 - p, 3)))
+    if (p < 1) {
+      widthTimer = setTimeout(tick, 16)
+    } else {
+      widthTimer = null
+      done?.()
+    }
+  }
+  tick()
+}
+function toggleOpen() {
+  if (open.value) {
+    // 折叠：宽度过渡到 0，但结束时恢复用户宽度（供下次展开用，避免污染 width.value）
+    const saved = Math.max(50, Math.min(480, settings.annotationDrawerWidth))
+    open.value = false
+    animateWidth(width.value, 0, 160, () => {
+      width.value = saved
+    })
+  } else {
+    // 展开：从 0 过渡到保存宽度（settings 为准，不依赖可能被污染的 width.value）
+    open.value = true
+    animateWidth(0, Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
+  }
+}
+let dragStartX = 0
+let dragStartW = 0
+let isDragging = false
+function onToggleDown(e: PointerEvent) {
   e.preventDefault()
-  dragging = true
-  const startX = e.clientX
-  const startW = width.value
-  const onMove = (ev: MouseEvent) => {
-    if (!dragging) return
-    const w = startW + (startX - ev.clientX)
-    width.value = Math.max(50, Math.min(480, Math.round(w)))
+  if (widthTimer) {
+    clearTimeout(widthTimer)
+    widthTimer = null
   }
-  const onUp = () => {
-    dragging = false
+  dragStartX = e.clientX
+  dragStartW = width.value
+  isDragging = false
+  const move = (ev: PointerEvent) => {
+    const dx = dragStartX - ev.clientX
+    if (!isDragging && Math.abs(dx) < 5) return
+    isDragging = true
+    // 向左拖 = 变宽（左缘随鼠标移动，与大纲的拖拽直觉一致）
+    width.value = Math.max(50, Math.min(480, Math.round(dragStartW + dx)))
     settings.annotationDrawerWidth = width.value
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
   }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
+  const up = (ev: PointerEvent) => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    if (!isDragging && Math.abs(ev.clientX - dragStartX) < 5) {
+      // 未拖动 = 点击 → 切换收纳/展开
+      toggleOpen()
+    } else {
+      settings.annotationDrawerWidth = width.value
+    }
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
 }
 
 // 悬停突出
@@ -602,15 +661,35 @@ function onAnchorHover(strong: boolean) {
 
 <template>
   <div v-if="state.activeTabId" class="annotation-drawer" :class="{ open }" :style="{ width: open ? width + 'px' : '0px' }">
-    <!-- 折叠态：右下角小胶囊按钮（不占布局空间，不再是一整条竖栏） -->
-    <button v-if="!open" class="annotation-open-btn" title="展开批注抽屉" @click="open = true">
-      <span class="dot" :class="{ has: commentCount + errorCount + warningCount + infoCount > 0 }"></span>
-      <span>批注</span>
-      <span v-if="commentCount + errorCount + warningCount + infoCount > 0" class="badge">{{ commentCount + errorCount + warningCount + infoCount }}</span>
+    <!-- 收展把手（与大纲同款）：展开态在抽屉左缘（点击收纳/拖拽调宽），折叠态在右缘（点击展开）；
+         数字 = 未解决批注卡数量；切换交给抽屉宽度过渡 + 把手自身淡入滑入动画（不用 Transition 组件） -->
+    <button
+      v-if="open"
+      class="ad-toggle collapse"
+      :class="{ 'has-count': unresolved > 0 }"
+      :title="unresolved > 0 ? `点击收纳（${unresolved} 条未解决）；拖拽调整宽度` : '点击收纳；拖拽调整宽度'"
+      @pointerdown="onToggleDown"
+    >
+      <span class="ad-toggle-num">{{ unresolved }}</span>
+      <span class="ad-toggle-chev">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"></polyline></svg>
+      </span>
+    </button>
+    <button
+      v-else
+      class="ad-toggle expand"
+      :class="{ 'has-count': unresolved > 0 }"
+      :title="unresolved > 0 ? `展开批注抽屉（${unresolved} 条未解决）` : '展开批注抽屉'"
+      @click="toggleOpen"
+    >
+      <span class="ad-toggle-num">{{ unresolved }}</span>
+      <span class="ad-toggle-chev">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"></polyline></svg>
+      </span>
     </button>
 
-    <div v-else class="annotation-drawer-body" ref="drawerEl">
-      <!-- 头部：计数 + 折叠 + 拖拽把手 -->
+    <div v-if="open" class="annotation-drawer-body" ref="drawerEl">
+      <!-- 头部：计数 + 刷新 -->
       <div class="annotation-drawer-head">
         <span class="ad-title">批注</span>
         <span class="ad-counts">
@@ -628,12 +707,8 @@ function onAnchorHover(strong: boolean) {
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
           </button>
-          <button class="ad-icon-btn" title="折叠抽屉" @click="open = false">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
-          </button>
         </div>
       </div>
-      <div class="annotation-drawer-resizer" title="拖拽调整宽度" @mousedown="onDragStart"></div>
 
       <!-- 列表 -->
       <div class="annotation-drawer-list">
@@ -730,6 +805,16 @@ function onAnchorHover(strong: boolean) {
   display: flex;
   height: 100%;
   min-width: 0;
+  /* 收展把手绝对定位于本容器；宽度变化由 JS 动画驱动（见 animateWidth），不用 CSS transition */
+  position: relative;
+}
+.annotation-drawer-body {
+  /* 展开时内容淡入 */
+  animation: ad-body-in 0.18s ease;
+}
+@keyframes ad-body-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .annotation-drawer.open {
   border-left: 1px solid var(--chrome-border);
@@ -744,50 +829,96 @@ function onAnchorHover(strong: boolean) {
   flex-direction: column;
   height: 100%;
   font-size: 12px;
+  /* 宽度动画期间（0→300px）防止内容溢出到右侧不可见区（列表内部自行滚动不受影响） */
+  overflow: hidden;
 }
-.annotation-open-btn {
-  /* 折叠态展开按钮：右下角悬浮小胶囊，不占布局空间，也不遮挡编辑区主体 */
-  position: fixed;
-  right: 16px;
-  bottom: 42px;
+/* 收展把手（与大纲抽屉同款）：悬停浮现的窄胶囊；展开态在抽屉左缘（点=收纳/拖=调宽），
+   折叠态在右缘（点=展开）；数字 = 未解决批注卡数量 */
+.ad-toggle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border: 1px solid var(--chrome-border);
-  border-radius: 999px;
-  background: var(--chrome-surface);
-  color: var(--chrome-on-surface);
-  font-size: 12px;
+  justify-content: center;
+  gap: 3px;
+  width: 24px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--chrome-border-light);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--chrome-surface) 78%, transparent);
+  color: var(--chrome-on-surface-variant);
   cursor: pointer;
-  box-shadow: var(--chrome-shadow-1);
-  z-index: 80;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.22s ease,
+    background 0.15s ease, color 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  z-index: 60;
   user-select: none;
 }
-.annotation-open-btn:hover {
+.ad-toggle:hover {
   background: var(--chrome-hover);
+  color: var(--chrome-primary);
   border-color: var(--chrome-primary);
 }
-.annotation-open-btn .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--chrome-outline);
-  flex: none;
+/* 展开态把手：抽屉左缘（与编辑区分界）——悬停浮现 */
+.ad-toggle.collapse {
+  left: -1px;
 }
-.annotation-open-btn .dot.has {
-  background: var(--chrome-primary);
+/* 折叠态把手：右缘（视图最右缘）——平时半透明可见，悬停全亮；挂载时淡入滑入（收纳态出现不闪烁） */
+.ad-toggle.expand {
+  right: 0;
+  opacity: 0.55;
+  border-color: var(--chrome-border);
+  animation: ad-handle-in 0.18s ease;
 }
-.annotation-open-btn .badge {
-  background: var(--chrome-primary);
-  color: var(--chrome-on-secondary, #fff);
-  border-radius: 999px;
-  font-size: 10px;
-  line-height: 16px;
-  min-width: 16px;
-  padding: 0 5px;
-  text-align: center;
-  font-weight: 600;
+@keyframes ad-handle-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(14px); }
+  to { opacity: 0.55; transform: translateY(-50%) translateX(0); }
+}
+.annotation-drawer:hover .ad-toggle,
+.ad-toggle:focus-visible {
+  opacity: 1;
+}
+.ad-toggle-num {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+/* 有未解决批注：把手放大、描边/光晕提示；数字放大 + 主色亮字（发光），不用深色底盖住数字 */
+.ad-toggle.has-count {
+  width: 28px;
+  height: 54px;
+  color: var(--chrome-primary);
+  border-color: color-mix(in srgb, var(--chrome-primary) 55%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--chrome-primary) 22%, transparent);
+}
+.ad-toggle.has-count .ad-toggle-num {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--chrome-primary);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--chrome-primary) 60%, transparent);
+}
+/* 折叠态有未解决时基础透明度提高（平时直接可见，无需悬停） */
+.ad-toggle.expand.has-count {
+  opacity: 0.9;
+}
+.ad-toggle-chev {
+  display: inline-flex;
+  transition: transform 0.22s ease;
+}
+.ad-toggle-chev svg {
+  width: 12px;
+  height: 12px;
+}
+/* 箭头语义：展开态（左缘，收纳后去右缘）→ 向右；折叠态（右缘，展开后去左缘）→ 向左 */
+.ad-toggle.collapse .ad-toggle-chev {
+  transform: rotate(0deg);
+}
+.ad-toggle.expand .ad-toggle-chev {
+  transform: rotate(180deg);
 }
 .annotation-drawer-head {
   display: flex;
@@ -848,15 +979,6 @@ function onAnchorHover(strong: boolean) {
   transform: rotate(180deg);
   transition: transform 0.4s ease;
 }
-.annotation-drawer-resizer {
-  position: absolute;
-  left: -3px;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  cursor: col-resize;
-  z-index: 5;
-}
 .annotation-drawer-list {
   flex: 1;
   overflow-y: auto;
@@ -876,6 +998,8 @@ function onAnchorHover(strong: boolean) {
   border-radius: 8px;
   background: var(--chrome-background);
   overflow: hidden;
+  /* 卡片多了不压缩，由列表 overflow-y 滚动（flex column 下默认 flex-shrink 会把卡片压扁） */
+  flex: none;
 }
 .ad-card.active {
   border-color: var(--chrome-primary);

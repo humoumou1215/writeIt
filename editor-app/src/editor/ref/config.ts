@@ -43,6 +43,12 @@ export interface RefConfig {
    *  diff 视图注入被 diff 的文件路径。未保存新文件时为 null：自嵌/宿主在链中的环
    *  无法检测（降级为仅深度折叠），保存后重新判定即可检测。 */
   hostPath?: string | null
+  /** P2：本编辑器所属标签 id（registry 视图注册/广播定位用；diff 渲染视图无标签 → 不注册） */
+  tabId?: string
+  /** 源文件是否在标签中打开且有「真实未保存编辑」（userEditedAt > lastExternalSyncAt，
+   *  区别于联动/写回触发的预览刷新）。宿主保存写回前询问——避免宿主块内容覆盖源标签的
+   *  未保存编辑（最后保存者胜 + 提示）。由装配层实现；未提供时不启用该守卫。 */
+  isTabUserEdited?: (realPath: string) => boolean
   templateService: RefTemplateService
   /** 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
    *  工作区内返回相对路径；无根路径/工作区外返回文件名（Obsidian 式全库匹配）；

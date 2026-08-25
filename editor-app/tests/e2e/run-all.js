@@ -52,6 +52,14 @@ const SUITES = [
   'refs-footer-e2e', // 引用/被引用 底部展示区：点击 chip 打开目标文件（回归 b3be328 后打开失败）
   'paste-ref-e2e',   // 复制文件粘贴为引用（Ctrl+V 链接）+ 编辑器右键菜单（三种粘贴/类型切换）
   'table-enhance-e2e', // 表格增强：单元格换行 round-trip / Shift+Enter 新增行 / 动态列宽
+  'embed-sync-p1-e2e',      // 嵌入同步回归①：last-wins 止血 / 双块对称 / 写回守卫（真实输入补强）
+  'embed-sync-p2-e2e',      // 嵌入同步回归②：registry 单一事实来源 / blockId / 跨标签
+  'embed-sync-caret-regress-e2e', // 嵌入同步：NodeView 不重建（光标/输入落点回归）
+  'embed-sync-realinput-e2e',     // 用户 4 问题全链路（真实键盘输入：重复/光标/保存消失/回流）
+  'embed-sync-composite-e2e',     // registry 复合 + 边界（多宿主/链式/环/只读/并发/写回）
+  'embed-indep-verify-e2e', // 嵌入同步独立重验证：registry 严格断言（磁盘/块全等、并发分叉、只读、跨宿主）
+  'embed-indep-verify2-e2e', // 嵌入同步独立重验证②：关闭重开/reload 持久化/无源标签写回/真实输入
+  'annotations-overlap-e2e',// 批注 v8：重叠/嵌套/同文多条/跨行 + 旧文件兼容
   'diagnostics-e2e', // 问题诊断包：logger/双入口/生成 zip/异常提示红点（D1-D3，2026-08-22）
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
