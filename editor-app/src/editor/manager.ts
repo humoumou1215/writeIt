@@ -9,7 +9,7 @@ import { replaceAll } from '@milkdown/kit/utils'
 // M7：inline-code 的 Mod-e 与源码模式 Ctrl+E 冲突 → 改绑 Ctrl+Shift+E
 import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 
-import { TextSelection } from '@milkdown/kit/prose/state'
+import { TextSelection, AllSelection, Plugin } from '@milkdown/kit/prose/state'
 
 import { fs, useRealDirFs } from '../fs'
 import { contentHash } from '../git/hash'
@@ -707,6 +707,25 @@ export async function refreshValidation(): Promise<void> {
   if (n === 0) toast('校验通过：未发现违规', 'success')
   else toast(`校验完成：${n} 项违规（${res.violations.filter((v) => v.level === 'error').length} 错误）`, 'error')
 }
+
+/** M8.1：全选（Mod-a）产生 AllSelection——crepe 工具栏只认 TextSelection（全选时工具栏隐藏，
+ * 添加批注/加粗等点击失效）。把 AllSelection 规范化为等价的 TextSelection(0, size)：
+ * 复制/加粗/批注行为一致，工具栏可正常显示（Ctrl+R 等键盘入口本就可用）。 */
+const selectionNormalizePlugin = new Plugin({
+  view: (view) => ({
+    update: (view) => {
+      const sel = view.state.selection
+      if (sel instanceof AllSelection && view.editable) {
+        const size = view.state.doc.content.size
+        if (size > 0) {
+          view.dispatch(
+            view.state.tr.setSelection(TextSelection.create(view.state.doc, 0, size))
+          )
+        }
+      }
+    },
+  }),
+})
 
 /** 当前活动标签的编辑器实例（抽屉/批注卡读取 doc 用） */
 export function getActiveInstance(): Instance | null {
@@ -1916,6 +1935,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   )
   // 搜索结果高亮（跳转定位后高亮命中词；编辑自动清除）
   crepe.editor.use(searchHighlightPlugin())
+  // M8.1：全选（Mod-a）产生 AllSelection——crepe 工具栏只认 TextSelection，
+  // 全选时工具栏不显示 → 添加批注/加粗等点击失效。规范化为等价 TextSelection(0, size)
+  // （复制/加粗/批注行为一致，且工具栏可显示）。
+  crepe.editor.use(selectionNormalizePlugin)
   crepe.editor.config((ctx) => {
     registerRefStringify(ctx)
     // M7：Ctrl+E 让位给源码模式切换——inline-code 快捷键改绑 Ctrl+Shift+E

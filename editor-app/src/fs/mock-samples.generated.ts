@@ -877,7 +877,7 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 
 ![[数据库字段引用]]
 
-<br />
+24
 
 ![[数据库字段引用]]
 
@@ -2147,13 +2147,46 @@ doctype:demo
 
 # <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>数据库字段引用演示4444</mark>55223322aaabbb
 
-<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。</mark>
+<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。</mark>12
 
-<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>放款金额取自</mark> [[数据库/loan/loan_apply#amount]]<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>。</mark>
+<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>放款金额取自</mark> [[数据库/loan/loan_apply#amount]]<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>。</mark>33
 
 <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>申请号取自</mark> [[数据库/loan/loan_apply#apply_no]]<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>。</mark>
 
-<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>客户ID</mark>取自 [[数据库/customer/customer_info#id]]。
+<mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>客户ID</mark>取自 [[数据库/customer/customer_info#id]]。444222555666777
+
+【WriteIt 问题反馈】
+版本 0.1.0 · 宿主 dev · 平台 Win32
+用户描述：我在 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_ 时遇到 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_，预期 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_，实际 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
+
+当前文档：
+结构：引用 0 · 对象引用 3 · 嵌入块 0 · 表格 0 · 批注 0
+摘录： doctype:demo # <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>数据库字段引用演示4444</mark>55223322aaabbb <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。</mark>12 \\<mark data-note='\\[{…
+大小：0.9KB
+当前文件：数据库字段引用.md
+
+最近异常记录：
+\\[2026-08-25T09:10:45.515Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ app:boot → tab:open probe.md
+\\[2026-08-25T09:11:14.561Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ save probe.md → tab:open 数据库字段引用.md
+\\[2026-08-25T09:11:22.179Z] console: \\[writeback] 跳过写回（源标签有未保存编辑）: 数据库字段引用.md ↳ tab:activate probe.md → editor:edit 数据库字段引用.md
+\\[2026-08-25T09:12:05.179Z] console: \\[writeback] 同源嵌入内容不一致，跳过写回: 数据库字段引用 \\[""\\n\\ndoctype:demo\\n\\n# \\<mark data-note="",""\\n\\ndoctype:demo\\n\\n# \\<mark data-note=""] ↳ editor:edit probe.md → save probe.md
+\\[2026-08-25T09:12:12.079Z] console: \\[registry] 块编辑传播失败: RangeError: Position 366 outside of fragment (<paragraph>)
+at \\_Fragment.findIndex (<http://10.144.144.1:5173/node_modules/.vite/deps/chunk-OZJGUUXV.js?v=53f39c0b:403:13>)
+at ↳ save probe.md → editor:edit probe.md
+\\[2026-08-25T09:12:21.461Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ tab:close probe.md → tab:open probe.md
+[2026-08-25T09:12:54.109Z] window: ResizeObserver loop completed with undelivered notifications. @ <http://10.144.144.1:5173/:0:0> ↳ editor:edit probe.md → tab:activate 数据库字段引用.md
+
+最近操作：
+\\[2026-08-25T09:12:32.676Z] tab:activate 数据库字段引用.md
+\\[2026-08-25T09:12:36.490Z] tab:activate probe.md
+\\[2026-08-25T09:12:37.575Z] editor:edit 数据库字段引用.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
+\\[2026-08-25T09:12:43.353Z] editor:edit probe.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
+\\[2026-08-25T09:12:44.126Z] tab:activate 数据库字段引用.md
+\\[2026-08-25T09:12:48.341Z] tab:activate probe.md
+\\[2026-08-25T09:12:53.673Z] editor:edit probe.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
+\\[2026-08-25T09:12:54.093Z] tab:activate 数据库字段引用.md
+
+（完整诊断包：应用内 🩺 按钮生成 zip 后发送）
 `,
   '流程图/助贷/助贷放款流程.md': `# 助贷放款流程
 
@@ -3838,4 +3871,4 @@ export const DEMO_DIRS: string[] = [
 ]
 
 /** 全部 demo 文件内容的聚合 hash（校验同步状态用） */
-export const DEMO_HASH = '1n1cw6'
+export const DEMO_HASH = '1y1qz57'
