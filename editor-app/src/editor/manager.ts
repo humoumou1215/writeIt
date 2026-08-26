@@ -5,7 +5,7 @@
 import { reactive, watch } from 'vue'
 import { Crepe, CrepeFeature } from '@milkdown/crepe'
 import { editorViewCtx } from '@milkdown/kit/core'
-import { replaceAll } from '@milkdown/kit/utils'
+import { replaceAll, $prose } from '@milkdown/kit/utils'
 // M7：inline-code 的 Mod-e 与源码模式 Ctrl+E 冲突 → 改绑 Ctrl+Shift+E
 import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 
@@ -710,22 +710,27 @@ export async function refreshValidation(): Promise<void> {
 
 /** M8.1：全选（Mod-a）产生 AllSelection——crepe 工具栏只认 TextSelection（全选时工具栏隐藏，
  * 添加批注/加粗等点击失效）。把 AllSelection 规范化为等价的 TextSelection(0, size)：
- * 复制/加粗/批注行为一致，工具栏可正常显示（Ctrl+R 等键盘入口本就可用）。 */
-const selectionNormalizePlugin = new Plugin({
-  view: (view) => ({
-    update: (view) => {
-      const sel = view.state.selection
-      if (sel instanceof AllSelection && view.editable) {
-        const size = view.state.doc.content.size
-        if (size > 0) {
-          view.dispatch(
-            view.state.tr.setSelection(TextSelection.create(view.state.doc, 0, size))
-          )
+ * 修复全选后 crepe 工具栏隐藏(shouldShow 只认 TextSelection)
+ * 导致添加批注/加粗等点击全部失效的问题（M8.1）。
+ * 注意：必须用 $prose 包装成 Milkdown 插件——直接 new Plugin() 传给
+ * crepe.editor.use() 会在 create 时 #prepare 报 “plugin is not a function”。 */
+const selectionNormalizePlugin = $prose(() =>
+  new Plugin({
+    view: (view) => ({
+      update: (view) => {
+        const sel = view.state.selection
+        if (sel instanceof AllSelection && view.editable) {
+          const size = view.state.doc.content.size
+          if (size > 0) {
+            view.dispatch(
+              view.state.tr.setSelection(TextSelection.create(view.state.doc, 0, size))
+            )
+          }
         }
-      }
-    },
-  }),
-})
+      },
+    }),
+  })
+)
 
 /** 当前活动标签的编辑器实例（抽屉/批注卡读取 doc 用） */
 export function getActiveInstance(): Instance | null {
