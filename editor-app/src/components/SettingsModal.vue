@@ -55,6 +55,22 @@ async function openLocalDir() {
   await openDirectory()
 }
 
+/** WebView2 启动参数：按设置拼参 → 存到 Rust 侧文件 → 重启应用（整进程重启才生效） */
+async function applyWebviewArgsAndRestart() {
+  const parts: string[] = []
+  if (settings.gpuUnblock) parts.push('--ignore-gpu-blocklist')
+  if (settings.webviewOcclusionOff) parts.push('--disable-features=CalculateNativeWinOcclusion')
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('save_webview_args', { args: parts.join(' ') })
+    toast('WebView2 参数已保存，正在重启应用…', 'info')
+    await new Promise((r) => setTimeout(r, 400))
+    await invoke('restart_app')
+  } catch (e) {
+    toast('仅桌面版（Tauri）支持重启；当前环境不可用，参数变更需使用打包参数矩阵重组', 'error')
+  }
+}
+
 /** mock 模式：从最新示例数据强制刷新本地缓存（恢复被删示例、更新内容） */
 async function onRefreshMock() {
   const { refreshMockSamples } = await import('../fs/mock')
@@ -193,6 +209,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span>文件系统</span>
             <span class="badge">{{ fs.kind }}</span>
           </div>
+
+          <!-- 性能（低功耗）：VM / 软件渲染环境降低合成开销 -->
+          <h4 class="group-title">⚡ 性能</h4>
+          <label class="row">
+            <span>低功耗模式</span>
+            <input type="checkbox" v-model="settings.liteMode" @change="saveSettings" />
+            <em class="hint-inline">虚拟机/无 GPU 环境：关闭动画与阴影、打开文件不自动聚焦，降低合成开销</em>
+          </label>
+          <label class="row">
+            <span>忽略 GPU 黑名单</span>
+            <input type="checkbox" v-model="settings.gpuUnblock" @change="saveSettings" />
+            <em class="hint-inline">WebView2 参数 --ignore-gpu-blocklist（尝试解锁虚拟 GPU，重启后生效）</em>
+          </label>
+          <label class="row">
+            <span>关闭窗口遮挡检测</span>
+            <input type="checkbox" v-model="settings.webviewOcclusionOff" @change="saveSettings" />
+            <em class="hint-inline">WebView2 参数 --disable-features=CalculateNativeWinOcclusion（省空闲 CPU，重启后生效）</em>
+          </label>
+          <label class="row">
+            <span>应用 WebView2 参数</span>
+            <button class="primary" style="width:auto;padding:2px 12px" @click="applyWebviewArgsAndRestart">保存并重启</button>
+            <em class="hint-inline">WebView2 参数需整进程重启才生效（仅桌面版可用）</em>
+          </label>
 
           <!-- 诊断（D2）：问题诊断取证开关 -->
           <h4 class="group-title">🩺 诊断</h4>

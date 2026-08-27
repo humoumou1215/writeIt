@@ -10,17 +10,6 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "WriteIt",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600,
-        "resizable": true,
-        "decorations": false
-      }
-    ],
     "security": {
       "csp": null
     }

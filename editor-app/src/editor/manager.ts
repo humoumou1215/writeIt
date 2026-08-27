@@ -232,10 +232,10 @@ async function setViewMode(tabId: string, mode: ViewMode): Promise<void> {
     if (milkdownEl) milkdownEl.style.display = 'block'
     inst.el.classList.remove('source-mode', 'diff-mode')
     tab.viewMode = 'wysiwyg'
-    // 焦点还给编辑器
+    // 焦点还给编辑器（低功耗模式不自动聚焦）
     requestAnimationFrame(() => {
       const viewEl = inst.el.querySelector('.ProseMirror') as HTMLElement | null
-      viewEl?.focus()
+      if (!settings.liteMode) viewEl?.focus()
     })
   }
   syncActiveTopbar()
@@ -1569,16 +1569,17 @@ export function activateTab(id: string) {
   // 引用底部展示区：切到该标签时重扫反向引用（其它标签可能新增了对它的引用）
   scheduleRefsFooterRefresh(id)
   // 等 DOM 切换完成后把焦点还给编辑器（M7：源码模式 → 焦点给 textarea）；并恢复本标签滚动
+  // （低功耗模式跳过自动聚焦）
   requestAnimationFrame(() => {
     const inst = instances.get(id)
     if (inst) restoreTabScroll(id)
     const tab = state.tabs.find((t) => t.id === id)
     if (inst && tab?.viewMode === 'source') {
-      inst.srcTa?.focus()
+      if (!settings.liteMode) inst.srcTa?.focus()
       return
     }
     const viewEl = inst?.el.querySelector('.ProseMirror') as HTMLElement | null
-    viewEl?.focus()
+    if (!settings.liteMode) viewEl?.focus()
   })
 }
 
@@ -2061,10 +2062,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // 避免原始 Markdown 与编辑器 round-trip 差异导致打开即“脏”
   tab.savedContent = crepe.getMarkdown()
 
-  // 打开后把焦点还给编辑器，便于直接输入
+  // 打开后把焦点还给编辑器，便于直接输入（低功耗模式不自动聚焦，避免 caret 闪烁持续合成）
   requestAnimationFrame(() => {
     const viewEl = container.querySelector('.ProseMirror') as HTMLElement | null
-    viewEl?.focus()
+    if (!settings.liteMode) viewEl?.focus()
   })
 }
 

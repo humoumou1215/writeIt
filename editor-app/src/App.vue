@@ -53,9 +53,27 @@ import ReportModal from './diagnostics/ReportModal.vue'
 
 const wsTopbarEl = ref<HTMLElement | null>(null)
 
+// 低功耗模式（VM/软件渲染环境）：切 html.lite class → style.css 关动画/降阴影/去毛玻璃
+function applyLiteMode() {
+  document.documentElement.classList.toggle('lite', settings.liteMode)
+}
+watch(() => settings.liteMode, applyLiteMode)
+
 // 状态栏 🩺 异常红点（logger 的置位非响应式 → 轻量轮询刷新）
+// 低功耗模式下停掉轮询（减少空闲唤醒；红点在 lite 下只随诊断弹窗更新）
 const diagBadge = ref(false)
-setInterval(() => (diagBadge.value = hasUnviewedError()), 500)
+let diagPoll: ReturnType<typeof setInterval> | null = null
+function syncDiagPoll() {
+  if (diagPoll) {
+    clearInterval(diagPoll)
+    diagPoll = null
+  }
+  if (!settings.liteMode) {
+    diagPoll = setInterval(() => (diagBadge.value = hasUnviewedError()), 500)
+  }
+}
+syncDiagPoll()
+watch(() => settings.liteMode, syncDiagPoll)
 
 // 无系统标题栏（decorations:false）→ 自绘窗口控制并入标签栏（TabBar）
 
@@ -79,6 +97,7 @@ async function restoreRoot() {
 // ---------- 生命周期 ----------
 onMounted(async () => {
   applyTheme(settings.theme)
+  applyLiteMode()
   state.fsName = fs.kind
   // 桌面应用：启动即恢复上次打开目录（无则用 app 所在目录）
   if (fs.kind === 'tauri') await restoreRoot()

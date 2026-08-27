@@ -77,3 +77,23 @@ body {
 .source-ta::placeholder {
   color: var(--chrome-on-surface-variant, #8a8f99);
 }
+
+/* ---------- 低功耗模式（虚拟机/软件渲染环境）：关动画/过渡、降阴影、去毛玻璃 ---------- */
+/* 开关：设置面板 → ⚡ 性能 → 低功耗模式（settings.liteMode，App.vue 切 html.lite） */
+html.lite *,
+html.lite *::before,
+html.lite *::after {
+  animation-duration: 0.001s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0.001s !important;
+  transition-delay: 0s !important;
+}
+html.lite {
+  /* 阴影变量由主题注入到根元素；此处以 !important 覆盖为小半径（软渲染下大 blur 阴影很贵） */
+  --chrome-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.12) !important;
+  --chrome-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}
+/* 搜索面板文件名行毛玻璃 → 实色 */
+html.lite .sp-file {
+  backdrop-filter: none;
+}

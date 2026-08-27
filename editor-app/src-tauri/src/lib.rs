@@ -5,7 +5,7 @@ use std::{
   sync::Mutex,
 };
 
-use tauri::State;
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // ---------- 类型 ----------
 
@@ -184,10 +184,46 @@ fn app_dir() -> String {
     .unwrap_or_default()
 }
 
+// ---------- WebView2 启动参数（设置项 → Rust 文件 → 重启生效）----------
+// 背景：additionalBrowserArgs 只能在 WebView2 进程创建时注入（见 run() 的 setup），
+// 运行时改不了 → 前端设置保存到这里，重启后由 setup 读取并注入。
+
+fn webview_args_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+  fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+  Ok(dir.join("webview-args.txt"))
+}
+
+/// 读取已保存的 WebView2 启动参数（空 = 用默认组合）
+#[tauri::command]
+fn get_webview_args(app: tauri::AppHandle) -> String {
+  webview_args_path(&app)
+    .ok()
+    .and_then(|p| fs::read_to_string(p).ok())
+    .unwrap_or_default()
+}
+
+/// 持久化 WebView2 启动参数（等用户点「重启」后生效）
+#[tauri::command]
+fn save_webview_args(app: tauri::AppHandle, args: String) -> Result<(), String> {
+  let p = webview_args_path(&app)?;
+  fs::write(p, args.trim()).map_err(|e| e.to_string())
+}
+
+/// 重启应用（WebView2 启动参数需整进程重启才生效）
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+  let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+  std::process::Command::new(&exe)
+    .spawn()
+    .map_err(|e| e.to_string())?;
+  app.exit(0);
+  Ok(())
+}
+
 /// 在系统文件管理器中显示路径：文件 → 打开所在目录并选中；目录 → 在父级中选中
 #[tauri::command]
 fn reveal_in_explorer(state: State<AppState>, path: String) -> Result<(), String> {
-
   let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
   let full = resolve(&root, &path)?;
   if !full.exists() {
@@ -1833,6 +1869,37 @@ pub fn run() {
   tauri::Builder::default()
     .manage(AppState::default())
     .plugin(tauri_plugin_dialog::init())
+    // 窗口改为启动时动态创建：读取用户保存的 WebView2 启动参数（webview-args.txt）
+    // 注入 —— 该参数只能在 WebView2 进程创建时生效，故「设置项 + 保存并重启」
+    .setup(|app| {
+      let saved = app
+        .path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("webview-args.txt"))
+        .and_then(|p| fs::read_to_string(p).ok())
+        .unwrap_or_default();
+      let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("WriteIt")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(900.0, 600.0)
+        .resizable(true)
+        .decorations(false);
+      #[cfg(target_os = "windows")]
+      {
+        let saved = saved.trim();
+        let args = if saved.is_empty() {
+          // 默认（同历史打包）：软渲染环境省 CPU 组合
+          "--disable-features=CalculateNativeWinOcclusion --ignore-gpu-blocklist"
+        } else {
+          saved
+        };
+        b = b.additional_browser_args(args);
+      }
+      b.build()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("窗口创建失败: {e}")))?;
+      Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
       set_root,
       app_dir,
@@ -1846,6 +1913,9 @@ pub fn run() {
       reveal_in_explorer,
       save_binary,
       diagnostics_info,
+      get_webview_args,
+      save_webview_args,
+      restart_app,
       git_user_name,
       git_repo_info,
       git_branches,

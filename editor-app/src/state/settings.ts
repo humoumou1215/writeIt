@@ -133,6 +133,12 @@ export interface AppSettings {
   outlineOpen: boolean
   /** 大纲自适应宽度（按文字内容，上限 = 编辑器 1/3；手动拖拽时自动关闭） */
   outlineAutoFit: boolean
+  /** 低功耗模式（虚拟机/软件渲染环境）：关动画/降阴影/打开文件不自动聚焦 */
+  liteMode: boolean
+  /** WebView2 参数：忽略 GPU 黑名单（尝试解锁虚拟 GPU，整进程重启后生效） */
+  gpuUnblock: boolean
+  /** WebView2 参数：关闭窗口遮挡检测（省空闲 CPU，整进程重启后生效） */
+  webviewOcclusionOff: boolean
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
 
@@ -164,6 +170,11 @@ const defaultSettings: AppSettings = {
   outlineWidth: 180,
   outlineOpen: true,
   outlineAutoFit: true,
+  // 低功耗模式（虚拟机/软件渲染环境）：关动画、降阴影、打开文件不自动聚焦
+  liteMode: false,
+  // WebView2 启动参数（默认同历史 combo2：省 CPU + 尝试解锁虚拟 GPU，重启生效）
+  gpuUnblock: true,
+  webviewOcclusionOff: true,
   shortcuts: { ...defaultShortcuts },
   // 诊断
   diagEnabled: true,
