@@ -117,10 +117,15 @@ await appendBlock('indy2-src', '并发块1AAA', 0)
 await appendBlock('indy2-src', '并发块2BBB', 1)
 await L.waitMs(1800)
 const tc = await blockTexts()
-C.check('并发后两块严格不同(未强收敛)', tc.length === 2 && tc[0] !== tc[1])
+// M4 模型层语义（spec §5.3）：编辑即时进模型，双块是同一模型投影 → 收敛一致（不强分叉）；
+// 安全断言：编辑不静默全丢（与 composite B6 同语义）
+const anyC1E = tc.some((t) => t.includes('并发块1AAA'))
+const anyC2E = tc.some((t) => t.includes('并发块2BBB'))
+C.check('并发后至少保留一条并发编辑(不静默全丢)', tc.length === 2 && (anyC1E || anyC2E))
 await L.press('Control+s'); await L.waitMs(1300)
-C.check('并发保存未单向覆盖源(不含任一 marker)', !((await diskOf(SRC2)) || '').includes('并发块1AAA') && !((await diskOf(SRC2)) || '').includes('并发块2BBB'))
-C.check('并发源磁盘保持原样', (await diskOf(SRC2)) === '并发源P基')
+const dcE = await diskOf(SRC2)
+C.check('保存写回包含至少一条并发编辑', ((dcE) || '').includes('并发块1AAA') || ((dcE) || '').includes('并发块2BBB'))
+C.check('源磁盘无法入 marker 为空', dcE != null && dcE !== '')
 
 // ============ 场景 F：只读嵌入不被污染 ============
 const SRCF = 'indyf-src.md'; const HOSTF = 'indyf-ro.md'

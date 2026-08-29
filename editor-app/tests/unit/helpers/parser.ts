@@ -10,7 +10,9 @@ import { gfm } from '@milkdown/kit/preset/gfm'
 import { $remark } from '@milkdown/kit/utils'
 import { doctypeSchema, fileRefSchema, objectRefSchema, fileBlockSchema } from '../../../src/editor/ref/nodes'
 import { remarkRef } from '../../../src/editor/ref/remark-ref'
+import { registerRefStringify } from '../../../src/editor/ref/stringify'
 import type { Node } from '@milkdown/kit/prose/model'
+import { parserCtx, serializerCtx } from '@milkdown/kit/core'
 
 const remarkRefPlugin = $remark('remarkRef', () => remarkRef as never)
 const refNodesOnly = [
@@ -55,15 +57,22 @@ export function installJsdom(html = '<!doctype html><html><body><div id="root"><
 }
 
 let parserInstance: ((md: string) => Node | null) | null = null
+let serializerInstance: ((doc: Node) => string) | null = null
 let destroyed = false
 
 /** 创建（一次性的）纯解析编辑器并返回 parser；editorInstance 供卸载 */
-export async function createTestParser(): Promise<{ parser: (md: string) => Node | null; destroy: () => Promise<void>; editor: unknown }> {
+export async function createTestParser(): Promise<{
+  parser: (md: string) => Node | null
+  serialize: (doc: Node) => string
+  destroy: () => Promise<void>
+  editor: unknown
+}> {
   installJsdom()
   const root = document.getElementById('root') as HTMLElement
   const ed = Editor.make()
     .config((ctx: Ctx) => {
       ctx.set(rootCtx, root)
+      registerRefStringify(ctx) // 与 app 装配层一致：file_block 序列化 handler
     })
     .use(commonmark)
     .use(gfm)
@@ -73,8 +82,13 @@ export async function createTestParser(): Promise<{ parser: (md: string) => Node
     const p = ctx.get(parserCtx) as (md: string) => Node | null
     return p
   })
+  const serialize = await ed.action((ctx: Ctx) => {
+    const s = ctx.get(serializerCtx) as (doc: Node) => string
+    return s
+  })
   parserInstance = parser
-  return { parser, destroy: () => ed.destroy(), editor: ed }
+  serializerInstance = serialize
+  return { parser, serialize, destroy: () => ed.destroy(), editor: ed }
 }
 
 /** 惰性单例 parser（供 profile/深链测试复用；直接抛错不给静默） */
@@ -84,6 +98,15 @@ export async function getTestParser() {
     parserInstance = parser
   }
   return parserInstance
+}
+
+/** 惰性单例 serializer（docstore canonical 测试用） */
+export async function getTestSerializer() {
+  if (!serializerInstance) {
+    const r = await createTestParser()
+    serializerInstance = r.serialize
+  }
+  return serializerInstance
 }
 
 /** 展示 doc 结构（测试断言辅助） */

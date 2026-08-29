@@ -32,6 +32,7 @@ import {
   type FenceRegistry,
 } from './diff/model'
 import { prefetchEmbedSources, collapsedInfoOf, type PrefetchResult } from './diff/prefetch'
+import { docStore } from './docstore/store'
 import { createDiffMermaidNodeView, SettleCollector } from './diff/nodeview'
 import { fenceIdOf } from './diff/fence-pair'
 import { diagRenderUnit, degradedState } from './diff/status'
@@ -293,6 +294,18 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
         fetchEntries: async (paths) => {
           const { git } = await import('../git')
           const res = await git.showFiles(paths, base)
+          // M4 §6.2：worktree/unstaged 基准下，new 侧内容查 DocStore（未保存编辑进 diff；
+          // 已加载模型直接覆盖 e.next；未加载由后端 worktree 批量读补齐，语义等价）。
+          // staged/range 的 new 侧是 index/commit 内容（与工作区模型无关）→ 不做覆盖。
+          if (base.kind === 'worktree' || base.kind === 'unstaged') {
+            for (const e of res.entries) {
+              const snap = docStore.snapshot(e.realPath)
+              if (snap && snap.canonical != null) {
+                if (snap.canonical !== e.next) e.next = snap.canonical
+                if (e.old != null) e.changed = e.old !== snap.canonical
+              }
+            }
+          }
           return res.entries
         },
         readFile: async (p) => {

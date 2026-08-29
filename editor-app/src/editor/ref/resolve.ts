@@ -21,11 +21,7 @@ import {
   type CollapsedInfo,
 } from './embed-chain'
 import { diagEvent } from '../../diagnostics/logger'
-import {
-  getTruth as registryGetTruth,
-  registerView as registryRegisterView,
-  updateViewContent as registryUpdateViewContent,
-} from './registry'
+import { docStore } from '../docstore/store'
 
 // ---------- 源内容缓存（同前：限制条数，避免内存膨胀） ----------
 
@@ -289,16 +285,18 @@ export async function materializeBlock(
     return 'fold'
   }
 
-  // 正常物化（ok）：内容 = registry 应然（未初始化才落盘惰性读）→ 解析 → 填入容器；
-  // 清除可能残留的折叠态（环/超深解除后重新物化的块，collapsed 必须清空，否则折叠卡叠加
-  // 在物化内容上——治理定稿 A1）。P2：物化即注册视图，lastContent 与应然对齐。
+  // 正常物化（ok）：内容 = DocStore 模型（M4 §6.1：运行态内容统一从文档层取，取代 registry 字符串真源）。
+  // 模型未加载/未解析 → 读盘 + 惰性建模型（行为等价；模型随后成为该文件后续物化的取值点）。
   let source: string
-  const truth = registryGetTruth(selfReal)
-  if (truth != null) {
-    source = truth
+  const modelSnap = docStore.snapshot(selfReal)
+  if (modelSnap && modelSnap.canonical != null) {
+    source = modelSnap.canonical
   } else {
     try {
       source = await readRefFile(cfg, selfReal)
+      if (!docStore.has(selfReal)) {
+        await docStore.load(selfReal) // 建模型（磁盘 → 解析）；后续物化/广播读模型
+      }
     } catch {
       cfg.toast(`引用失败：找不到文件「${path}」`, 'error')
       return 'broken'
@@ -306,18 +304,8 @@ export async function materializeBlock(
   }
 
   const blockId = fillBlockContent(editor, pos, path, readonly, source)
-  if (blockId && cfg.tabId) {
-    // 只读变体是固定快照：不注册视图 → 永不成为广播目标（内容保持物化时源快照）
-    if (!readonly) {
-      registryRegisterView(selfReal, {
-        tabId: cfg.tabId,
-        kind: 'block',
-        blockId,
-        readonly,
-      }, source)
-      registryUpdateViewContent(selfReal, `${cfg.tabId}#${blockId}`, source)
-    }
-  }
+  // M4：块订阅由 syncTabViewsToRegistry（物化完成后）统一登记到 docStore——
+  // 此处不再注册 registry 视图（registry 已下线；只读变体本身不订阅，保持固定快照）。
   return 'ok'
 }
 

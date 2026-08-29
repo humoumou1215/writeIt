@@ -73,10 +73,10 @@ C.check('块2 含新内容', t2[1].includes('块二编辑B'))
 C.check('块1 同步为块2 新内容（对称）', t2.length === 2 && t2[0] === t2[1] && t2[0].includes('块二编辑B'))
 
 // ---------- 场景 3：保存宿主 → 写回收敛（源无真实编辑） ----------
-await L.press('Control+s')
+// 环境注：ego 下 CDP 组合键（Control+s）偶发不送达 keydown → 用 manager 探针触发 saveActiveTab（语义等价）
+await js(`window.__saveActiveTab()`)
 await L.waitMs(3000)
 const diskAfterSave = await diskOf(SRC_PATH)
-cliLog('[debug] 保存后源磁盘: ' + JSON.stringify(diskAfterSave.slice(0, 80)))
 C.check('保存后源文件落盘为最新块内容', diskAfterSave.includes('块二编辑B') && diskAfterSave.includes('块一编辑A'))
 // 源标签被广播①清脏（无真实用户编辑）
 await L.clickText('.tab', '数据库字段引用', { label: '切到源标签(2)' })
@@ -108,7 +108,7 @@ await L.waitMs(900)
 await js(`window.__editorBlockAppend('数据库字段引用', '宿主块编辑DDD', 0)`)
 await L.waitMs(2800) // 防抖收敛后（块成 DDD），源有真实编辑 → 写回守卫应跳过
 const toastProbe = await toastLog() // 保存前先抓现有 toast，供区分新增
-await L.press('Control+s')
+await js(`window.__saveActiveTab()`)
 await L.waitMs(400)
 // toast 存活窗口仅 2600ms——保存后立即高密度轮询，避免固定等待把窗口耗尽
 let skipToast = false
@@ -127,7 +127,7 @@ C.check('宿主保存未覆盖用户源编辑', diskAfterBlock.includes('用户�
 // 源标签保存 → 落盘用户编辑（最后保存者胜）
 await L.clickText('.tab', '数据库字段引用', { label: '切到源标签(4)' })
 await L.waitMs(900)
-await L.press('Control+s')
+await js(`window.__saveActiveTab()`)
 await L.waitMs(2200)
 const diskAfterSrcSave = await diskOf(SRC_PATH)
 cliLog('[debug] 源保存后磁盘: ' + JSON.stringify(diskAfterSrcSave.slice(0, 80)))

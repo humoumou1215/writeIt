@@ -1,14 +1,13 @@
-// file_block 写回事务（设计文档 §6.7）：
-//   保存 = 提交宿主文档 + 全部被引用文件变更（原子）
-//   1. 收集可编辑 file_block（非只读）的当前内容（序列化）
-//   2. 与源文件对比（读缓存），仅写差异（按路径去重，同源多处引用合并）
-//   3. 写回后更新内容缓存 + 广播其他打开该源的标签刷新物化
-// 只读变体不参与；失败降级 toast，不中断保存主流程（§7.1）。
+// file_block 内容工具（M4b：写回事务 writeBackBlocks 已删——嵌入块编辑在拦截器内即时进模型，
+// 保存 = flush 脏模型；本文件保留块序列化/收集/脏检测/源路径收集，供 dispatcher/保存/诊断用）。
+//   · serializeBlockContent / collectPerBlockSync / collectBlockContentsSync —— 块内容序列化基线
+//   · hasBlockChanges —— 脏检测第二条件（可编辑嵌入内容 ≠ 保存时快照）
+//   · collectSourcePaths —— 保存时本标签全部可编辑块的源真实路径（flush 目标）
+// 只读变体不参与（固定快照）。
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx, parserCtx, schemaCtx, serializerCtx } from '@milkdown/kit/core'
-import { readRefFile, cacheContent } from './resolve'
+import { probeRealPath } from './resolve'
 import { getRefConfig } from './config'
-import { commit as registryCommit } from './registry'
 
 export interface BlockEntry {
   pos: number
@@ -102,76 +101,6 @@ export function collectBlockContentsSync(editor: Editor): Map<string, string> {
  *    （最后保存者胜：宿主保存不覆盖源标签的未保存编辑，等源标签保存再收敛）。
  * 返回写回的 { 真实路径 → 内容 }（供源标签刷新/广播）。
  */
-/** 解析真实文件路径（Obsidian 风格补扩展名；不存在返回 null） */
-export async function resolveRealPath(cfg: import('./config').RefConfig, path: string): Promise<string | null> {
-  const candidates = [path, `${path}.md`, `${path}.markdown`, `${path}.txt`]
-  for (const c of candidates) {
-    try {
-      await cfg.fs.readFile(c)
-      return c
-    } catch {
-      /* try next */
-    }
-  }
-  return null
-}
-
-export async function writeBackBlocks(editor: Editor): Promise<Map<string, string>> {
-  const cfg = getRefConfig(editor)
-  if (!cfg) return new Map()
-  const written = new Map<string, string>()
-  try {
-    // 逐块收集（倒序无必要：分组后按路径独立写，同源只写一次）
-    const perBlock = collectPerBlockSync(editor).filter((b) => b.materialized && !b.readonly && b.content !== '')
-    // 按请求路径分组，收集各处内容
-    const byPath = new Map<string, { contents: Set<string>; real: string | null }>()
-    for (const b of perBlock) {
-      const g = byPath.get(b.path) ?? { contents: new Set<string>(), real: null }
-      g.contents.add(b.content)
-      byPath.set(b.path, g)
-    }
-    for (const [path, group] of byPath) {
-      // 同源多处嵌入内容不一致 → 数据有歧义：跳过 + 提示，避免静默 last-wins 写坏源文件
-      if (group.contents.size > 1) {
-        console.warn('[writeback] 同源嵌入内容不一致，跳过写回:', path, [...group.contents].map((u) => JSON.stringify(u.slice(0, 40))))
-        cfg.toast(`嵌入内容不一致：${path} 有 ${group.contents.size} 处不同内容，已跳过写回（请先在宿主内同步）`, 'error')
-        continue
-      }
-      const content = [...group.contents][0]
-      let current: string
-      try {
-        current = await readRefFile(cfg, path)
-      } catch {
-        continue // 断链：源文件不存在，跳过写回
-      }
-      if (current === content) continue
-      // 写回用真实路径（块 attrs.path 常缺扩展名，直接写会创建无扩展名新文件）
-      const real = await resolveRealPath(cfg, path)
-      if (!real) continue
-      // 源标签有真实未保存编辑 → 宿主保存不覆盖它（最后保存者胜），提示用户先保存源文件
-      if (cfg.isTabUserEdited?.(real)) {
-        cfg.toast(`嵌入写回已跳过：源文件「${path}」有未保存编辑（请先保存源文件）`, 'info')
-        console.warn('[writeback] 跳过写回（源标签有未保存编辑）:', real)
-        continue
-      }
-      try {
-        await cfg.fs.writeFile(real, content)
-        group.real = real
-        cacheContent(real, content) // 更新缓存，避免广播刷新读到旧内容
-        registryCommit(real, content) // P2：真相追平磁盘（后续物化/广播读真相，不读旧盘）
-        written.set(real, content)
-        console.log('[writeback] 写回:', real)
-      } catch (e) {
-        cfg.toast(`嵌入内容写回失败：${path}`, 'error')
-      }
-    }
-  } catch (e) {
-    console.error('[writeback] 写回事务异常:', e)
-    cfg.toast('嵌入内容写回异常（已降级）', 'error')
-  }
-  return written
-}
-
 /** 本标签所有可编辑块的源真实路径（写回/联动目标） */
 export async function collectSourcePaths(editor: Editor): Promise<Set<string>> {
   const cfg = getRefConfig(editor)
@@ -179,7 +108,7 @@ export async function collectSourcePaths(editor: Editor): Promise<Set<string>> {
   const entries = collectBlockEntries(editor).filter((b) => !b.readonly)
   const paths = new Set<string>()
   for (const b of entries) {
-    const real = await resolveRealPath(cfg, b.path)
+    const real = await probeRealPath(cfg, b.path, cfg.hostPath)
     if (real) paths.add(real)
   }
   return paths

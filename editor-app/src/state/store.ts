@@ -39,8 +39,12 @@ export interface Tab {
     mode: 'render' | 'text'
     /** M11c：渲染模式数据（懒加载：首次切渲染模式才拉取） */
     renderData: null | { oldMd: string; newMd: string }
-    /** M18 §4.6：内容指纹（磁盘外部变化自动刷新依据）；null = 未加载/已失效 */
-    freshToken: null | { oldHash: string; nextHash: string }
+    /** M18 §4.6：内容指纹（磁盘外部变化自动刷新依据）；null = 未加载/已失效。
+     *  M4（spec §6.2）：worktree/unstaged 基准改用模型 rev/diskHash 对账（未保存编辑进 diff）；
+     *  staged/range 基准的 new 侧是 index/commit 内容（与 DocStore 无关）→ 保留 git hash 指纹。 */
+    freshToken: null |
+      | { kind: 'model'; rev: number; diskHash: string | null }
+      | { kind: 'git'; oldHash: string; nextHash: string }
     renderLoading: boolean
     renderError: string | null
     /** M16：diff 滚动位置记忆（切标签保持，像 editor 标签一样） */

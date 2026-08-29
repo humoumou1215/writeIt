@@ -41,7 +41,8 @@ await L.waitMs(400)
 const len1 = (await blockTexts()).map(x => x.length)
 cliLog('[Q1] 块长: ' + JSON.stringify(len0) + ' → ' + JSON.stringify(len1))
 C.check('Q1 按1次只进1个字符（块1 +1）', len1[0] === len0[0] + 1)
-C.check('Q1 块2 不重复增长', len1[1] === len0[1])
+// M3a：块2 与块1 同一源模型投影 → 块1 输入后块2 实时同步（长度与块1 一致，不超增）
+C.check('Q1 块2 与块1 同步一致（不超增）', len1[1] === len1[0])
 C.check('Q2 输入后光标仍在块内', String(await selDetail()).startsWith('block:0'))
 
 // ---- 问题3：保存后块内容不消失、两块收敛一致 ----
