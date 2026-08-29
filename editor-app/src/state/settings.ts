@@ -154,6 +154,12 @@ export interface AppSettings {
   diagIncludeDom: boolean // DOM 快照
   diagIncludeDoc: boolean // 文档内容
   diagIncludePaths: boolean // 完整路径（false → basename 脱敏）
+
+  // ---------- 调试通道（Agent）----------
+  /** 调试通道模式：off=关闭 / local=仅本机 TCP / lan=内网 TCP（Tauri 桌面版） */
+  debugServer: 'off' | 'local' | 'lan'
+  /** lan 模式强制禁用 exec（任意 JS 逃生舱） */
+  debugLanExecDisabled: boolean
 }
 
 const defaultSettings: AppSettings = {
@@ -184,6 +190,9 @@ const defaultSettings: AppSettings = {
   diagIncludeDom: true,
   diagIncludeDoc: true,
   diagIncludePaths: true,
+  // 调试通道
+  debugServer: 'off',
+  debugLanExecDisabled: true,
 }
 
 export const settings = reactive<AppSettings>(loadSettings())

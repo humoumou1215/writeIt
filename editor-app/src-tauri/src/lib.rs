@@ -7,6 +7,8 @@ use std::{
 
 use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+mod debug_server;
+
 // ---------- 类型 ----------
 
 #[derive(Serialize, Clone)]
@@ -21,7 +23,7 @@ pub struct FsEntry {
 
 #[derive(Default)]
 pub struct AppState {
-  root: Mutex<Option<PathBuf>>,
+  pub root: Mutex<Option<PathBuf>>,
 }
 
 // ---------- 工具 ----------
@@ -1868,6 +1870,7 @@ pub fn run() {
   install_panic_hook();
   tauri::Builder::default()
     .manage(AppState::default())
+    .manage(debug_server::DebugServerState::default())
     .plugin(tauri_plugin_dialog::init())
     // 窗口改为启动时动态创建：读取用户保存的 WebView2 启动参数（webview-args.txt）
     // 注入 —— 该参数只能在 WebView2 进程创建时生效，故「设置项 + 保存并重启」
@@ -1898,6 +1901,13 @@ pub fn run() {
       }
       b.build()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("窗口创建失败: {e}")))?;
+      // 调试通道：环境变量 WRITEIT_DEBUG=local/lan 时启动即开（配合设置页开关）
+      if let Ok(v) = std::env::var("WRITEIT_DEBUG") {
+        if v == "local" || v == "lan" {
+          let state = app.state::<debug_server::DebugServerState>();
+          let _ = debug_server::start_server(app, &state, &v);
+        }
+      }
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -1940,6 +1950,10 @@ pub fn run() {
       git_rename_branch,
       git_delete_branch,
       git_ignore,
+      debug_server::debug_reply,
+      debug_server::debug_emit,
+      debug_server::debug_server_control,
+      debug_server::debug_server_status,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

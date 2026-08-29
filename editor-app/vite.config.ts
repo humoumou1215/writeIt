@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import devRepo from './vite-plugins/dev-repo'
+import debugRelay from './vite-plugins/debug-relay'
 // 诊断包：注入应用版本与构建时间（__APP_VERSION__ / __BUILD_TIME__，编译期内联）
 import { readFileSync } from 'node:fs'
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
@@ -9,7 +10,7 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 const PORT = 5173
 
 export default defineConfig({
-  plugins: [vue(), devRepo()],
+  plugins: [vue(), devRepo(), debugRelay()],
   clearScreen: false,
   // 诊断包：应用版本 + 构建时间（编译期内联）
   define: {

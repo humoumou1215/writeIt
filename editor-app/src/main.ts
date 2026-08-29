@@ -10,4 +10,7 @@ import '@milkdown/crepe/theme/common/style.css'
 // 应用外壳基础样式
 import './style.css'
 
+// 调试通道（Agent 调试）：Tauri 桌面版 / dev 浏览器中继；无副作用之外不阻塞启动
+import './debug'
+
 createApp(App).mount('#app')

@@ -125,6 +125,59 @@ function resetAll() {
   saveSettings()
 }
 
+// ---------- 调试通道（Agent）---------
+const debugInfo = ref<{ mode: string; token: string; sessions: number; instanceId?: string; pid?: number; root?: string }>({ mode: 'off', token: '', sessions: 0 })
+
+/** Tauri 环境下查询当前调试通道状态 */
+async function queryDebugStatus() {
+  if (fs.kind !== 'tauri') return
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    debugInfo.value = await invoke('debug_server_status')
+  } catch {
+    /* 桌面未就绪时不处理 */
+  }
+}
+
+/** 切换调试通道模式（Tauri：控制 Rust TCP server；dev：vite 中继常开，仅提示） */
+async function onDebugServerChange() {
+  saveSettings()
+  if (fs.kind === 'tauri') {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const r = await invoke('debug_server_control', { mode: settings.debugServer })
+      debugInfo.value = r as { mode: string; token: string; sessions: number }
+      if (settings.debugServer === 'local') {
+        toast('调试通道已开启（仅本机）。Agent 可用 writeit-cli 连接：见调试信息', 'success')
+      } else if (settings.debugServer === 'lan') {
+        toast('调试通道已开启（内网）。请复制 token 给 Agent，且 exec 逃生舱已被禁用', 'warning')
+      } else {
+        toast('调试通道已关闭', 'info')
+      }
+    } catch (e) {
+      toast('切换失败：' + (e instanceof Error ? e.message : String(e)), 'error')
+      settings.debugServer = 'off'
+      saveSettings()
+    }
+  } else if (settings.debugServer !== 'off') {
+    toast('vite dev 模式下调试中继常开（仅 dev server 存在期），无需此开关', 'info')
+  }
+}
+
+onMounted(queryDebugStatus)
+
+/** 复制调试字段到剪贴板（instanceId / token） */
+async function copyDebugField(field: 'instanceId' | 'token') {
+  const v = debugInfo.value[field]
+  if (!v) return
+  try {
+    await navigator.clipboard.writeText(String(v))
+    toast(field === 'instanceId' ? '实例标识已复制，请发给 Agent' : 'token 已复制，请发给 Agent', 'success')
+  } catch {
+    toast('复制失败：剪贴板不可用（请手动复制）', 'error')
+  }
+}
+
 // ---------- 关闭（Esc）----------
 function onModalKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && !recording.value) emit('close')
@@ -231,6 +284,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span>应用 WebView2 参数</span>
             <button class="primary" style="width:auto;padding:2px 12px" @click="applyWebviewArgsAndRestart">保存并重启</button>
             <em class="hint-inline">WebView2 参数需整进程重启才生效（仅桌面版可用）</em>
+          </label>
+
+          <!-- 调试通道（Agent 现场勘查） -->
+          <h4 class="group-title">🔌 调试通道</h4>
+          <!-- 实例标识：用户照此告诉 Agent 看哪个实例 -->
+          <template v-if="fs.kind === 'tauri'">
+            <div class="row">
+              <span>实例标识</span>
+              <code class="token-code">{{ debugInfo.instanceId || '(获取中…)' }}</code>
+              <button class="btn" style="width:auto;padding:2px 10px" @click="copyDebugField('instanceId')">复制</button>
+            </div>
+            <p class="hint">多实例并存时，把此标识发给 Agent，它会只连接这个窗口对应的实例（如：看 instance {{ debugInfo.instanceId || 'w123-abc…' }} 的状态）。pid={{ debugInfo.pid || '-' }}</p>
+          </template>
+          <div class="row">
+            <span>模式</span>
+            <span class="ds-radios">
+              <label title="关闭调试通道"><input type="radio" name="debugServer" value="off" v-model="settings.debugServer" @change="onDebugServerChange" /> 关闭</label>
+              <label title="仅本机 127.0.0.1，Agent 可 SSH 进本机后用 writeit-cli 连接"><input type="radio" name="debugServer" value="local" v-model="settings.debugServer" @change="onDebugServerChange" /> 仅本机</label>
+              <label title="绑定 0.0.0.0，内网可达；强制 token 校验，且默认禁用 exec 任意 JS"><input type="radio" name="debugServer" value="lan" v-model="settings.debugServer" @change="onDebugServerChange" /> 内网</label>
+            </span>
+          </div>
+          <p class="hint">Tauri 桌面版：本机 = 127.0.0.1 随机端口；内网 = 0.0.0.0 随机端口（需 token）。
+            vite dev 模式下中继常开（Agent 与 vite 同机时直接可用），该开关仅桌面版生效。</p>
+          <template v-if="fs.kind === 'tauri' && settings.debugServer !== 'off'">
+            <div class="row">
+              <span>Token</span>
+              <code class="token-code">{{ debugInfo.token || '(获取中…)' }}</code>
+              <button class="btn" style="width:auto;padding:2px 10px" @click="copyDebugField('token')">复制</button>
+            </div>
+            <p class="hint danger-hint">token 存于 {{ debugInfo.mode === 'lan' ? '内网' : '本机' }} TCP server，CLI 从发现文件自动读取。
+              内网模式务必只发给自己信任的 Agent；复制前确认连接方可信。</p>
+          </template>
+          <label class="row" v-if="settings.debugServer === 'lan'">
+            <span>禁用 exec 逃生舱</span>
+            <input type="checkbox" v-model="settings.debugLanExecDisabled" @change="saveSettings" />
+            <em class="hint-inline">内网模式下禁止 exec（页面上下文任意 JS）——安全默认开启</em>
           </label>
 
           <!-- 诊断（D2）：问题诊断取证开关 -->

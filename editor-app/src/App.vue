@@ -101,6 +101,12 @@ onMounted(async () => {
   state.fsName = fs.kind
   // 桌面应用：启动即恢复上次打开目录（无则用 app 所在目录）
   if (fs.kind === 'tauri') await restoreRoot()
+  // 调试通道：恢复上次开启的桌面 TCP server（local/lan）
+  if (fs.kind === 'tauri' && settings.debugServer !== 'off') {
+    void import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke('debug_server_control', { mode: settings.debugServer }).catch(() => {})
+    )
+  }
   await refreshTree()
   // 顶部栏槽位：Crepe topbar 由 manager 移入此槽（横贯整行）
   void import('./editor/manager').then((m) => { if (wsTopbarEl.value) m.bindTopbarSlot(wsTopbarEl.value) })
