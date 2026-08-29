@@ -71,7 +71,7 @@ C.check('深色主题外壳同步', chromeBg.length > 0 && chromeBg !== '#ffffff
 // 8. 快捷键页
 await L.clickText('.tab-btn', '快捷键')
 await L.waitMs(300)
-C.check('快捷键列表 12 项', (await L.q('.shortcut-row')) === 12)
+C.check('快捷键列表 14 项', (await L.q('.shortcut-row')) === 14)
 const saveKey = await L.txt('.shortcut-row') ? await js(`(() => { const row=[...document.querySelectorAll('.shortcut-row')].find(r=>(r.textContent||'').includes('保存当前文件')); return row?row.querySelector('.keybtn').textContent.trim():'' })()`) : ''
 C.check('默认 Ctrl+S 存在', saveKey === 'Ctrl+S')
 // 录制新快捷键

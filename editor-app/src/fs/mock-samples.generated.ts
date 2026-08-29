@@ -814,19 +814,13 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 `,
   '.validate/report.md': `# 校验报告
 
-- 文件：.template/接口文档/接口文档.md
-- 模板：接口文档
+- 文件：数据库/customer/customer_info.md
+- 模板：数据库
 - 模式：hint
-- 时间：2026/8/21 22:31:54
-- 违规：5（error 0 / warning 5）
+- 时间：2026/8/29 21:12:31
+- 违规：0（error 0 / warning 0）
 
-## 违规列表
-
-- [warning] 方法「{{GET/POST/PUT/DELETE/PATCH}}」不在合法集合 {GET,POST,PUT,DELETE,PATCH}（规则：方法合法）
-- [warning] 路径「{{/api/xxx}}」应以 / 开头（规则：路径格式）
-- [warning] 版本号「{{v1.0.0}}」应为 vX.Y.Z（规则：版本号格式）
-- [warning] 「是否关键接口」应为 是/否（规则：是否关键接口枚举）
-- [warning] 字段「{{field}}」在请求/响应示例中出现，但字段说明中未登记（规则：请求/响应示例字段与字段说明一致）`,
+✅ 未发现违规`,
   'README.md': `# 消金业务合作平台111
 
 一套业务管理系统：接收上游发送的意向贷款客户，经**路由**输出到不同下游机构，完成**助贷、增信**等业务，合作完成贷款发放。核心业务模块：路由、进件、助贷、增信。
@@ -877,7 +871,7 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 
 ![[数据库字段引用]]
 
-24
+<br />
 
 ![[数据库字段引用]]
 
@@ -2155,38 +2149,7 @@ doctype:demo
 
 <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>客户ID</mark>取自 [[数据库/customer/customer_info#id]]。444222555666777
 
-【WriteIt 问题反馈】
-版本 0.1.0 · 宿主 dev · 平台 Win32
-用户描述：我在 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_ 时遇到 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_，预期 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_，实际 \\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_\\_
-
-当前文档：
-结构：引用 0 · 对象引用 3 · 嵌入块 0 · 表格 0 · 批注 0
-摘录： doctype:demo # <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>数据库字段引用演示4444</mark>55223322aaabbb <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>本页演示对数据库表结构字段的动态对象引用（M8 objectsFor）。</mark>12 \\<mark data-note='\\[{…
-大小：0.9KB
-当前文件：数据库字段引用.md
-
-最近异常记录：
-\\[2026-08-25T09:10:45.515Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ app:boot → tab:open probe.md
-\\[2026-08-25T09:11:14.561Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ save probe.md → tab:open 数据库字段引用.md
-\\[2026-08-25T09:11:22.179Z] console: \\[writeback] 跳过写回（源标签有未保存编辑）: 数据库字段引用.md ↳ tab:activate probe.md → editor:edit 数据库字段引用.md
-\\[2026-08-25T09:12:05.179Z] console: \\[writeback] 同源嵌入内容不一致，跳过写回: 数据库字段引用 \\[""\\n\\ndoctype:demo\\n\\n# \\<mark data-note="",""\\n\\ndoctype:demo\\n\\n# \\<mark data-note=""] ↳ editor:edit probe.md → save probe.md
-\\[2026-08-25T09:12:12.079Z] console: \\[registry] 块编辑传播失败: RangeError: Position 366 outside of fragment (<paragraph>)
-at \\_Fragment.findIndex (<http://10.144.144.1:5173/node_modules/.vite/deps/chunk-OZJGUUXV.js?v=53f39c0b:403:13>)
-at ↳ save probe.md → editor:edit probe.md
-\\[2026-08-25T09:12:21.461Z] console: \\[prosemirror-virtual-cursor] Virtual cursor does not work well with marks that have inclusive set to false. Please consider removing the inclusive option from the "annotation" mark or adding it to the ↳ tab:close probe.md → tab:open probe.md
-[2026-08-25T09:12:54.109Z] window: ResizeObserver loop completed with undelivered notifications. @ <http://10.144.144.1:5173/:0:0> ↳ editor:edit probe.md → tab:activate 数据库字段引用.md
-
-最近操作：
-\\[2026-08-25T09:12:32.676Z] tab:activate 数据库字段引用.md
-\\[2026-08-25T09:12:36.490Z] tab:activate probe.md
-\\[2026-08-25T09:12:37.575Z] editor:edit 数据库字段引用.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
-\\[2026-08-25T09:12:43.353Z] editor:edit probe.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
-\\[2026-08-25T09:12:44.126Z] tab:activate 数据库字段引用.md
-\\[2026-08-25T09:12:48.341Z] tab:activate probe.md
-\\[2026-08-25T09:12:53.673Z] editor:edit probe.md（编辑 6 次 / 改动 6 字符 / 持续 3s）
-\\[2026-08-25T09:12:54.093Z] tab:activate 数据库字段引用.md
-
-（完整诊断包：应用内 🩺 按钮生成 zip 后发送）
+调试233334444555
 `,
   '流程图/助贷/助贷放款流程.md': `# 助贷放款流程
 
@@ -3871,4 +3834,4 @@ export const DEMO_DIRS: string[] = [
 ]
 
 /** 全部 demo 文件内容的聚合 hash（校验同步状态用） */
-export const DEMO_HASH = '1y1qz57'
+export const DEMO_HASH = 'ep3jjz'

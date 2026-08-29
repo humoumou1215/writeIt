@@ -117,7 +117,7 @@ C.check('Git 图标可用（无灰置 inline style）', inlineOp === '' || inlin
 await gitBtn()
 await L.waitMs(800)
 C.check('Git 面板激活（Git 按钮高亮）', (await L.q('.icon-col .icon-btn:nth-child(2).active')) === 1)
-C.check('状态条显示分支 main', ((await L.txt('.repo-badge')) || '').includes('main'))
+C.check('状态条显示分支 main', ((await L.txt('.branch-badge')) || '').includes('main'))
 C.check('分支区 3 项', (await L.q('.branch')) === 3)
 C.check('工作区 2 文件', (await L.q('.section .ws-file')) === 2)
 C.check('历史 2 提交', (await L.q('.commit')) === 2)

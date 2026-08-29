@@ -28,7 +28,7 @@ C.check('Git 图标可用（mock 演示模式）', inlineOp === '' || inlineOp =
 await gitBtn()
 await L.waitMs(900)
 C.check('Git 面板激活（Git 按钮高亮）', (await L.q('.icon-col .icon-btn:nth-child(2).active')) === 1)
-C.check('示例仓库分支 main', ((await L.txt('.repo-badge')) || '').includes('main'))
+C.check('示例仓库分支 main', ((await L.txt('.branch-badge')) || '').includes('main'))
 C.check('分支区含 feature/图表优化', (await L.qText('.branch', 'feature/图表优化')) === 1)
 C.check('工作区 3 文件（README/需求表/会议纪要）', (await L.qText('.section .ws-file', 'README')) + (await L.qText('.section .ws-file', '会议纪要')) + (await L.qText('.section .ws-file', '需求表')) >= 3)
 C.check('历史 4 提交（含分叉/合并演示）', (await L.q('.commit')) === 4)
