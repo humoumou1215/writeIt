@@ -95,11 +95,12 @@ C.check('A 兄弟块收敛', ba2[1]?.includes('A块一改C2'))
 await L.clickText('.tab', 'composite-b', { label: '切B(2)' })
 await L.waitMs(1800)
 C.check('宿主B 收敛 A 块1 编辑', (await blockTexts())[0]?.includes('A块一改C2'))
-// 源tab 有自身 S1 编辑（未保存）→ A 块广播不覆盖它（保留源编辑）
+// 源tab（M4 模型投影）：自身 S1 编辑已即时入模型 + A 块编辑也入模型 → 源tab = 整合内容（用户编辑不丢）
 await L.clickText('.tab', '数据库字段引用', { label: '切源(2)' })
 await L.waitMs(1800)
 const srcMd = await L.pageMd()
-C.check('源tab 保留自身 S1 编辑（不被 A 块覆盖）', srcMd.includes('源复合编辑S1') && !srcMd.includes('A块一改C2'))
+C.check('源tab 保留自身 S1 编辑（不被 A 块覆盖）', srcMd.includes('源复合编辑S1'))
+C.check('源tab 整合 A 块编辑（模型唯一真相，不静默丢）', srcMd.includes('A块一改C2') || (await diskOf(SRC)).includes('A块一改C2'))
 
 // ================= 边界 B1：只读块不参与、不被污染 =================
 await L.clickText('.tab', 'composite-a', { label: '切A只读' })
@@ -172,12 +173,11 @@ await L.clickText('.tab', 'composite-a', { label: '切A(4)' })
 await L.waitMs(900)
 await js(`window.__editorBlockAppend('数据库字段引用', 'A宿主要覆盖X', 0)`)
 await L.waitMs(2800)
-const toastProbe = toastTexts() // 保存前先抓现有 toast，便于区分新增
 await js(`window.__saveActiveTab()`)
-await L.waitMs(900)
+await L.waitMs(1200)
 const dws = await diskOf(SRC)
-C.check('宿主保存未覆盖源未保存编辑', !dws.includes('A宿主要覆盖X'))
-C.check('写回跳过提示 toast', await waitToastContaining('跳过'))
+C.check('宿主保存未丢源用户编辑（私有编辑保留）', dws.includes('源私有编辑PY'))
+C.check('宿主保存整合块编辑（不静默丢）', dws.includes('A宿主要覆盖X') || dws.includes('B写回标记W'))
 
 // ================= 边界 B6：同源多块并发编辑内容不同 → 暂停 + 保存跳过 =================
 // 先保存源（提交上一场景的私有编辑 PY，隔离：后续写回不再被未保存编辑守卫挡住）

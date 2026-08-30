@@ -17,8 +17,6 @@ import { refPlugin, resolveRefs, refConfigCtx, getRefConfig } from './ref'
 import type { RefConfig } from './ref/config'
 import { registerRefStringify } from './ref/stringify'
 import {
-  hasBlockChanges,
-  collectBlockContentsSync,
   serializeBlockContent,
   collectSourcePaths,
 } from './ref/writeback'
@@ -26,6 +24,8 @@ import { fillBlockContent, genBlockId, resolveBlockRefs, probeRealPath } from '.
 import { inspectDocStore } from './docstore/bridge'
 import {
   refreshBrokenState,
+  refreshStaleDeco,
+  setStaleAlignHandler,
   resolveRefPath,
 } from './ref/app-plugin'
 // M1：docstore 影子桥（spec §9.1）——registry 真相变更点记录 + 元数据登记
@@ -39,6 +39,7 @@ import {
   registerDocShadow,
 } from './docstore/bridge'
 import { docStore, setDocStoreDispatcher } from './docstore/store'
+import { canonicalOf } from './docstore/serialize'
 
 import {
   collectBlockSizes,
@@ -86,8 +87,6 @@ import {
 interface Instance {
   crepe: Crepe
   el: HTMLDivElement
-  /** 打开/保存等内部操作期间抑制脏标记误报 */
-  suppressing: boolean
   /** M3a：物化期抑制（resolveRefs 期间 fill 事务不是用户编辑，不得触发 M3a 提交） */
   m3aSuppressed: boolean
   /** M7：源码模式 textarea（懒创建；源码编辑不经过 ProseMirror doc） */
@@ -345,13 +344,14 @@ async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<str
   } catch {
     /* 取不到 cfg → 仅 flush 本标签 */
   }
-  const tryFlush = async (real: string, guardUserEdit: boolean): Promise<void> => {
+  const tryFlush = async (real: string): Promise<void> => {
     if (flushed.has(real)) return
-    // 最后保存者胜守卫：源标签有真实未保存编辑 → 不 flush（磁盘保持源标签视角），提示先保存源文件。
-    // M4：writeBackBlocks 已删除，守卫语义收口于此（原守卫在写回事务内 toast）
-    if (guardUserEdit && cfg?.isTabUserEdited?.(real)) {
-      cfg?.toast?.(`嵌入写回已跳过：源文件「${real}」有未保存编辑（请先保存源文件）`, 'info')
-      return
+    // M4：源文件若在打开的源码模式标签中（textarea 未同步 doc）→ 先解析回模型
+    //   （源码编辑不经拦截器，flush 前必须把用户输入拿到模型，否则落盘丢内容）
+    const openTab = state.tabs.find((t) => t.kind === 'editor' && t.path === real)
+    if (openTab && openTab.viewMode === 'source') {
+      const openInst = instances.get(openTab.id)
+      if (openInst) await ensureDocSynced(openTab.id)
     }
     if (!docStore.has(real) || !docStore.isDirty(real)) return
     const snap = docStore.snapshot(real)
@@ -364,12 +364,11 @@ async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<str
       console.warn('[docstore] flush 失败:', real, e)
     }
   }
-  await tryFlush(tab.path, false)
+  await tryFlush(tab.path)
   if (cfg) {
     try {
       const srcs = await collectSourcePaths(inst.crepe.editor)
-      console.log('[docstore] flush 源路径:', tab.path, [...srcs])
-      for (const p of srcs) await tryFlush(p, true)
+      for (const p of srcs) await tryFlush(p)
     } catch (e) {
       console.warn('[docstore] collectSourcePaths 失败:', e)
     }
@@ -388,8 +387,8 @@ export function setDocstorePipelineCache(p: import('./docstore/serialize').DocPi
 
 /**
  * M3b：整块内容对齐兜底（跨 schema / steps 应用失败时）。
- * 用模型 canonical 全量填充宿主块（fillBlockContent），suppressing 内完成（防 markdownUpdated 误判）。
- * 语义等于旧装广播（已删 applyBlockBroadcast）的内容刷新，但来源是模型（跳过 registry 字符串层）。
+ * 用模型 canonical 全量填充宿主块（fillBlockContent；fill 事务带 docstoreExternal meta，
+ * 不被拦截器回流模型——防回环）。来源是模型（跳过 registry 字符串层）。
  */
 function alignHostBlockFromModel(
   subInst: Instance,
@@ -399,8 +398,8 @@ function alignHostBlockFromModel(
   subKey: string,
   toRev: number,
   subTabId?: string
-): void {
-  subInst.suppressing = true
+): boolean {
+  let ok = true
   try {
     subInst.crepe.editor.action((ctx) => {
       const v = ctx.get(editorViewCtx)
@@ -416,18 +415,58 @@ function alignHostBlockFromModel(
         }
         return true
       })
-      if (bpos < 0) return
-      fillBlockContent(subInst.crepe.editor, bpos, path, readonly, canonical)
+      if (bpos < 0) {
+        ok = false
+        return
+      }
+      // 幂等闸门：当前块内容已等于 canonical → 不 fill（fill 即使内容相同也会 dispatch
+      // setNodeMarkup 物化标记 → 触发 markdownUpdated → publish → 回环）
+      const cur = serializeBlockContent(subInst.crepe.editor, bpos)
+      if (cur === canonical) return
+      const filled = fillBlockContent(subInst.crepe.editor, bpos, path, readonly, canonical)
+      // 填充失败（只读/解析失败/块消失）且内容确实未同步 → 失步
+      if (filled == null) {
+        if (serializeBlockContent(subInst.crepe.editor, bpos) !== canonical) ok = false
+      }
     })
-    // 对齐分发宿主块快照（保存时基线）
-    if (subTabId) {
+    if (ok && subTabId) {
       const tab = state.tabs.find((x) => x.id === subTabId)
-      if (tab) tab.blockSnapshot = collectBlockContentsSync(subInst.crepe.editor)
+      if (tab) syncTabDirty(tab, subInst)
     }
   } catch (e) {
     console.warn('[docstore] alignHostBlockFromModel 失败:', blockId, e)
-  } finally {
-    setTimeout(() => (subInst.suppressing = false), 0)
+    ok = false
+  }
+  return ok
+}
+
+/** M5（spec §6.1）：失步块「对齐到最新」——用户显式操作：模型当前内容整块填充回
+ *  宿主块 + 清除失步标记（对齐成功徽标消失；失败保持可见可重试）。
+ *  refCfg.alignStaleBlock 与全局 staleAlignHandler 共用。 */
+function alignStaleBlockFor(tabId: string, blockId: string, realPath: string): void {
+  const inst = instances.get(tabId)
+  if (!inst) {
+    toast('对齐失败：标签已关闭', 'error')
+    return
+  }
+  const model = docStore.getModel(realPath)
+  if (!model?.doc) {
+    toast(`对齐失败：${realPath} 模型未加载`, 'error')
+    return
+  }
+  const canonical = pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
+  if (canonical == null) {
+    toast('对齐失败：无法序列化模型', 'error')
+    return
+  }
+  const key = `${tabId}#${blockId}`
+  const ok = alignHostBlockFromModel(inst, blockId, canonical, realPath, key, model.rev, tabId)
+  if (ok) {
+    docStore.markSubSynced(realPath, key, model.rev)
+    refreshStaleDeco(inst.crepe.editor)
+    toast(`已将对齐到最新：${realPath}`, 'success')
+  } else {
+    toast(`对齐失败：${realPath} 当前不可用（可稍后点击重试）`, 'error')
   }
 }
 /** 诊断探针：当前已挂载的编辑器实例数（多标签健康） */
@@ -492,9 +531,9 @@ function ensureSourceTa(inst: Instance, tabId: string): HTMLTextAreaElement {
   ta.addEventListener('input', () => {
     const t = state.tabs.find((x) => x.id === tabId)
     if (!t) return
-    // 源码编辑 = 真实用户输入（§6.7 时间戳机制复用，容器 onInput 也会置 userEditedAt）
-    t.userEditedAt = Date.now()
-    const nowDirty = ta.value !== t.savedContent
+    // M4：源码编辑 = 用户输入（textarea 不经拦截器/模型）；脏 = textarea ≠ 模型当前 canonical
+    const canon = docStore.snapshot(tabId === t.id ? t.path : '')?.canonical
+    const nowDirty = canon == null ? true : ta.value !== canon
     if (t.dirty !== nowDirty) t.dirty = nowDirty
     t.lastModified = Date.now()
   })
@@ -515,7 +554,7 @@ function ensureSourceTa(inst: Instance, tabId: string): HTMLTextAreaElement {
 
 /** 源码模式 → 把 textarea 最新内容解析回 ProseMirror doc（不切换模式）。
  *  保存/校验/定位等读 doc 的操作前调用；非源码模式或内容未变时无操作。
- *  不 suppressing：replaceAll 触发 markdownUpdated → 脏检测/防抖校验正常走。 */
+ *  程序化替换触发 markdownUpdated 只做渲染计数/脏对齐（拦截器对同内容 apply 幂等）。 */
 async function ensureDocSynced(tabId: string): Promise<void> {
   const tab = state.tabs.find((t) => t.id === tabId)
   const inst = instances.get(tabId)
@@ -868,9 +907,9 @@ export function refreshGitPanel() {
 }
 
 /** M15：全局替换落盘后同步已打开的标签。
- * 仅刷新「无自身编辑」的标签（savedContent 与磁盘一致时）；
- * 有未保存编辑的标签跳过（保留用户内容，磁盘已被替换），返回跳过的路径。
- * diff 视图标签也跳过（内容由 git 数据渲染，避免状态错乱）。 */
+ * 仅刷新「无自身编辑」的标签（模型未脏时）；有未保存编辑的标签跳过
+ * （保留用户内容，磁盘已被替换），返回跳过的路径。diff 视图标签也跳过
+ * （内容由 git 数据渲染，避免状态错乱）。 */
 export async function syncTabsAfterReplace(updated: Map<string, string>): Promise<string[]> {
   const skipped: string[] = []
   for (const [path, content] of updated) {
@@ -879,24 +918,16 @@ export async function syncTabsAfterReplace(updated: Map<string, string>): Promis
     const inst = instances.get(tab.id)
     if (!inst) continue
     // 有自身编辑 → 不覆盖
-    if (tab.dirty) {
+    if (docStore.isDirty(path) || tab.dirty) {
       skipped.push(path)
       continue
     }
     // 源码模式先退出（否则 textarea 残留旧内容）
     if (tab.viewMode === 'source') await setViewMode(tab.id, 'wysiwyg')
-    inst.suppressing = true
-    try {
-      inst.crepe.editor.action(replaceAll(content))
-      await resolveRefs(inst.crepe.editor)
-      tab.savedContent = inst.crepe.getMarkdown()
-      tab.dirty = false
-      tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
-      tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
-      tab.lastModified = Date.now()
-    } finally {
-      setTimeout(() => (inst.suppressing = false), 0)
-    }
+    replaceTabDocExternal(inst, content)
+    await resolveRefs(inst.crepe.editor)
+    syncTabDirty(tab, inst)
+    tab.lastModified = Date.now()
   }
   return skipped
 }
@@ -913,26 +944,20 @@ async function reloadTabFromDisk(tabId: string): Promise<void> {
     const content = await readWorktreeFile(tab.path)
     // 源码模式先退出（否则 textarea 残留旧内容）
     if (tab.viewMode === 'source') await setViewMode(tabId, 'wysiwyg')
-    // M4b：模型统一事务流（canonical 替换 + dispatcher 分发 + 磁盘对齐；registry 双写已随下线移除）
+    // M4b：模型统一事务流（canonical 替换 + dispatcher 分发 + 磁盘对齐）
     try {
       docStore.replaceFromCanonical(tab.path, content, `discard:${tabId}`)
       docStore.markDiskSynced(tab.path, content)
     } catch (e) {
       console.warn('[docstore] reloadTabFromDisk 模型推进失败（降级为标签刷新）:', tab.path, e)
     }
-    inst.suppressing = true
-    inst.crepe.editor.action(replaceAll(content))
+    replaceTabDocExternal(inst, content)
     await resolveRefs(inst.crepe.editor)
-    tab.savedContent = inst.crepe.getMarkdown()
-    tab.dirty = false
-    tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
-    tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
+    syncTabDirty(tab, inst)
     tab.lastModified = Date.now()
     // diff 数据过期：清空重新加载（base 不变时 openGitDiff 会复用 → 强制失效）
     if (tab.diff) tab.diff = null
-    inst.suppressing = false
   } catch (e) {
-    inst.suppressing = false
     toast(`刷新文件内容失败: ${(e as Error).message}`, 'error')
   }
 }
@@ -1223,6 +1248,9 @@ export function getTabMarkdownByPath(path: string): string | null {
     const para = view.state.schema.nodes.paragraph.create(null, view.state.schema.text(text))
     const tr = view.state.tr.insert(end, para)
     view.dispatch(tr)
+    // 调试钩子模拟用户编辑（不产生 DOM input 事件）→ 显式标记模型脏
+    const _tb = state.activeTabId ? state.tabs.find((x) => x.id === state.activeTabId) : null
+    if (_tb && _tb.kind === 'editor') docStore.markUserDirty(_tb.path)
     res = 'inserted@' + matches.length
   })
   return res
@@ -1322,47 +1350,33 @@ export function getTabMarkdownByPath(path: string): string | null {
 ;(window as unknown as { __editorReplaceAll?: unknown }).__editorReplaceAll = (md: string) => {
   const inst = state.activeTabId ? instances.get(state.activeTabId) : null
   if (!inst) return 'no-inst'
-  inst.suppressing = true
-  try {
-    inst.crepe.editor.action(replaceAll(md))
-    void resolveRefs(inst.crepe.editor)
-  } finally {
-    setTimeout(() => (inst.suppressing = false), 0)
-  }
+  inst.crepe.editor.action(replaceAll(md))
+  void resolveRefs(inst.crepe.editor)
+  const t = state.tabs.find((x) => x.id === state.activeTabId)
+  if (t) syncTabDirty(t, inst)
   return 'done'
 }
 ;(window as unknown as { __writebackDiag?: unknown }).__writebackDiag = async () => {
-  // 诊断：输出所有标签的完整状态机 + 每个块「当前内容 vs 快照」对比（决定性证据）
+  // 诊断：所有标签的脏态 + 模型/订阅状态（M4：基线字段已删——脏 = 模型 rev > diskRev）
   const out: unknown[] = []
   for (const t of state.tabs) {
     const inst = instances.get(t.id)
     let mdLen = -1
     let cur = ''
-    let currentBlocks: Record<string, { len: number; head: string; eqSnapshot: boolean }> = {}
     if (inst) {
       cur = inst.crepe.getMarkdown()
       mdLen = cur.length
-      try {
-        const now = collectBlockContentsSync(inst.crepe.editor)
-        for (const [p, v] of now) {
-          const snap = t.blockSnapshot?.get(p)
-          currentBlocks[p] = { len: v.length, head: v.slice(0, 50), eqSnapshot: v === snap }
-        }
-      } catch (e) {
-        currentBlocks = { err: { len: -1, head: String(e), eqSnapshot: false } }
-      }
+    }
+    let model = null
+    if (docStore.has(t.path)) {
+      const snap = docStore.snapshot(t.path)
+      model = snap ? { rev: snap.rev, dirty: snap.dirty, canonLen: snap.canonical?.length ?? -1 } : null
     }
     out.push({
       tab: t.path,
       dirty: t.dirty,
       mdLen,
-      savedContentLen: t.savedContent.length,
-      curEqSaved: cur === t.savedContent,
-      userEditedAt: t.userEditedAt,
-      lastExternalSyncAt: t.lastExternalSyncAt,
-      noUserEditsSinceSync: t.userEditedAt <= t.lastExternalSyncAt,
-      snapshotLen: t.blockSnapshot ? Object.fromEntries([...(t.blockSnapshot.entries())].map(([k, v]) => [k, v.length])) : {},
-      currentBlocks,
+      model,
       lastModified: t.lastModified,
     })
   }
@@ -2025,13 +2039,8 @@ export async function openTab(path: string, contentOverride?: string, kind: 'edi
     path,
     name: baseName(path),
     kind,
-    savedContent: content,
     dirty: false,
     lastModified: Date.now(),
-    blockSnapshot: null,
-    lastSyncBlocks: null,
-    userEditedAt: 0,
-    lastExternalSyncAt: 0,
     viewMode: 'wysiwyg',
     diff: null,
   }
@@ -2053,6 +2062,9 @@ export function activateTab(id: string) {
   // M6：批注卡上下文跟随活动标签（切标签后 Ctrl+R/批注卡作用于当前编辑器）
   const inst0 = instances.get(id)
   if (inst0) setAnnotationCardContext(id, inst0.crepe.editor)
+  // M5 §7.3：激活时磁盘对账（外部修改 → external-change 重投影 / conflict → 三方决策 UI）
+  const accTab = state.tabs.find((x) => x.id === id)
+  if (accTab && prevId && prevId !== id) void reconcileTabOnActivate(accTab).catch(() => undefined)
   syncActiveTopbar()
   // 引用底部展示区：切到该标签时重扫反向引用（其它标签可能新增了对它的引用）
   scheduleRefsFooterRefresh(id)
@@ -2354,12 +2366,9 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     hostPath: tab.path,
     // P2：registry 视图注册/广播定位
     tabId,
-    // P1：写回守卫——源文件在标签中打开且有「真实未保存编辑」时，宿主保存不覆盖它
-    isTabUserEdited: (realPath) => {
-      const srcTab = state.tabs.find((t) => t.path === realPath && t.kind === 'editor')
-      if (!srcTab) return false
-      return srcTab.userEditedAt > srcTab.lastExternalSyncAt
-    },
+    // M5（spec §6.1）：失步块「对齐到最新」——用户点击失步徽标 → 把源模型当前内容
+    // 整体填充回宿主块 + 清除失步标记（对齐成功徽标消失；失败保持可见可重试）
+    alignStaleBlock: (blockId, realPath) => alignStaleBlockFor(tabId, blockId, realPath),
     // 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
     // 在工作区内 → 相对路径；无根路径/工作区外 → 文件名（Obsidian 式全库匹配）
     resolveExternalPath: (absPath) => {
@@ -2387,9 +2396,17 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     void handleOpenRef(path, fragment)
   })
 
+  // M4：初始内容 = 模型 canonical（外部对齐过的打开）否则读盘（openTab 的 content 不再入 Tab）
+  let initial = ''
+  try {
+    const snap0 = docStore.snapshot(tab.path)
+    initial = snap0 && snap0.canonical != null ? snap0.canonical : await fs.readFile(tab.path)
+  } catch {
+    /* 读盘失败保持空（断链/新建场景） */
+  }
   const crepe = new Crepe({
     root: container,
-    defaultValue: tab.savedContent,
+    defaultValue: initial,
     features: {
       [CrepeFeature.TopBar]: true,
     },
@@ -2404,11 +2421,11 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       tabId,
       getRuntimeAnnotations,
     })
-    // P1：校验配置注入（执行器 = validateEditor；shouldSkip = suppressing 期不触发）
+    // P1：校验配置注入（执行器 = validateEditor；shouldSkip 恒 false——外部事务同可校验）
     ctx.set(validateConfigCtx.key, {
       tabId,
       run: (tid, opts) => validateEditor(crepe.editor, tid, opts),
-      shouldSkip: () => instances.get(tabId)?.suppressing ?? true,
+      shouldSkip: () => false,
     })
     // 表格增强：注入配置（新增下方行快捷键读 app 设置；默认 Shift+Enter）
     ctx.set(tableConfigCtx.key, buildTableConfig(settings.shortcuts['tableAddRowBelow']))
@@ -2467,11 +2484,11 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)
 
-  const inst: Instance = { crepe, el: container, suppressing: false, m3aSuppressed: false, srcTa: null, topbar: null, refsFooter: null, scrollTop: 0 }
+  const inst: Instance = { crepe, el: container, m3aSuppressed: false, srcTa: null, topbar: null, refsFooter: null, scrollTop: 0 }
   instances.set(tabId, inst)
 
   // M2：doc 视图事务拦截器——块外正文编辑即时提交模型（spec §5.3/§9.4 M2）。
-  // 规则：non-suppressing（程序化广播/物化/保存期不提交，防回环）且 docChanged，
+  // 规则：外部事务（docstoreExternal meta）不提交（防回环）；用户编辑（无 meta）且 docChanged 才提交，
   //       抽取 steps → 过滤 file_block 区域 → docStore.apply（模型推进 rev）。
   //   · 块内编辑：由 M3a 精映射 / M4b canonical 替换即时提交（模型 doc file_block 未物化，不同构）
   //   · 模型 doc 与视图 doc 同一 schema：steps 直接可用（file_block 区域已被剔除）
@@ -2492,7 +2509,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const hostDetails = collectHostBlockDetails(oldDoc)
       const blockEdits = groupBlockSteps(tr.steps, hostDetails)
       origDispatch(tr)
-      if (inst.suppressing || !tr.docChanged || tr.getMeta('docstoreExternal')) return
+      // M4：外部事务（dispatcher 分发 / 物化 / 程序化对齐）以 docstoreExternal meta 标记，
+      // 拦截器跳过——不回流模型（防回环）。用户编辑（无 meta）照常提交。
+      if (!tr.docChanged || tr.getMeta('docstoreExternal')) return
+      if (inst.m3aSuppressed) return
       try {
         // —— M2 路径：块外正文编辑 → 宿主模型 ——
         const model = docStore.getModel(tab.path)
@@ -2500,8 +2520,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
         const modelDocSize = model?.doc ? model.doc.content.size : undefined
         const { steps: mapped } = mapDocStepsToModel(tr.steps, hostBlocks, modelBlocks, modelDocSize)
         if (mapped.length > 0) {
-          docStore.apply(tab.path, mapped, { originKey: `doc:${tabId}`, reason: 'user' })
-          w.__docstoreInterceptorCount = ((w.__docstoreInterceptorCount as number) ?? 0) + 1
+          try {
+            docStore.apply(tab.path, mapped, { originKey: `doc:${tabId}`, reason: 'user' })
+            w.__docstoreInterceptorCount = ((w.__docstoreInterceptorCount as number) ?? 0) + 1
+          } catch (appErr) {
+            // 跨 schema/结构边界步骤应用失败：不阻断编辑（publish 兜底通道负责模型提交）
+            docstoreRejectCount++
+            if (docstoreRejectCount === 1) console.warn('[docstore] M2 apply 失败（publish 兜底）:', tab.path, String(appErr).slice(0, 80))
+          }
         }
       } catch (e) {
         // M2 跨块步骤对宿主模型可能结构性无效（跨 file_block 标记边界）：只记一次，
@@ -2549,6 +2575,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   //   · doc 视图与只读/折叠块不在此分发（快照对齐 / 固定快照）
   if (!docstoreDispatcherInstalled) {
     docstoreDispatcherInstalled = true
+    // M5：失步徽标点击 → 全局对齐执行器（badge 自身携带 tabId/blockId/realPath）
+    setStaleAlignHandler((tabId, blockId, realPath) => alignStaleBlockFor(tabId, blockId, realPath))
     setDocStoreDispatcher((realPath, model, steps, fromRev, toRev, originKey) => {
       const w2 = window as unknown as Record<string, unknown>
       const isCanonicalReplace = !steps || steps.length === 0 // M4：canonical 整块替换（跨 schema 块编辑）
@@ -2571,15 +2599,22 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
           }
           const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
           if (!model.doc || hostSchema !== model.doc.type.schema) {
-            if (canonical != null) alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+            // 跨 schema：steps 不可直通 → 整块对齐兜底；对齐失败 → 显式失步（I2）
+            if (canonical != null) {
+              const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+              if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
+              else {
+                docStore.markSubStale(realPath, sub.key)
+                refreshStaleDeco(subInst.crepe.editor)
+              }
+            }
             continue
           }
           const hostStart = findHostBlockStart(subInst, blockId)
           if (hostStart == null) continue
           const { steps: mapped } = mapStepsToHost(steps, { target: { kind: 'whole' }, from: 0, to: modelSize }, hostStart + 1)
           if (mapped.length === 0) continue
-          // 抑制宿主 markdownUpdated 误判（分发是程序性变更；同步期 suppressing 挡住 listener）
-          subInst.suppressing = true
+          // M4：分发是程序性变更——transaction 带 docstoreExternal meta，拦截器据此跳过回流
           const dispatched = subInst.crepe.editor.action((ctx) => {
             const v = ctx.get(editorViewCtx)
             const tr = v.state.tr
@@ -2592,15 +2627,20 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
             return true
           })
           if (!dispatched) {
-            // steps 应用失败（结构边界等）→ 整块对齐兜底
-            if (canonical != null) alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
-            subInst.suppressing = false
+            // steps 应用失败（结构边界等）→ 整块对齐兜底；对齐仍失败 → 显式失步（I2）
+            if (canonical != null) {
+              const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+              if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
+              else {
+                docStore.markSubStale(realPath, sub.key)
+                refreshStaleDeco(subInst.crepe.editor)
+              }
+            }
             continue
           }
-          // 对齐分发宿主块快照（保存时脏判定基线；同 applyBlockBroadcast 既有模式）
+          docStore.markSubSynced(realPath, sub.key, toRev) // I2：steps 直通成功 → 订阅基线前进
           const t = state.tabs.find((x) => x.id === subTabId)
-          if (t) t.blockSnapshot = collectBlockContentsSync(subInst.crepe.editor)
-          setTimeout(() => (subInst.suppressing = false), 0)
+          if (t) syncTabDirty(t, subInst)
           w2.__docstoreDispatchCount = ((w2.__docstoreDispatchCount as number) ?? 0) + 1
         }
       } else {
@@ -2613,29 +2653,38 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
           const { tabId: subTabId, blockId } = sub.source
           const subInst = instances.get(subTabId)
           if (!subInst || !blockId || canonical == null) continue
-          alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+          const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+          if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
+          else {
+            docStore.markSubStale(realPath, sub.key)
+            refreshStaleDeco(subInst.crepe.editor)
+          }
         }
       }
 
-      // doc 视图订阅者（源标签）：快照对齐（M2 过渡桥语义——guard 后 refreshTabToContent）
+      // doc 视图订阅者（源标签）：快照对齐（M4：模型=唯一真相，编辑已即时入模型）。
+      // 编辑源自身（originKey=doc:该标签）不重复刷新——否则每次输入都会重置视图（打断菜单/光标）
       for (const sub of model.subscribers.values()) {
         if (sub.source.kind !== 'doc') continue
         if (sub.stale) continue
+        if (originKey != null && sub.key === originKey) { sub.rev = toRev; continue }
         const srcTab = state.tabs.find((t2) => t2.id === sub.source.tabId && t2.kind === 'editor')
         const srcInst = srcTab ? instances.get(srcTab.id) : null
         if (!srcInst || !srcTab) continue
-        // 源标签有真实用户编辑 → 不覆盖（最后保存者胜）
-        if (srcTab.userEditedAt > srcTab.lastExternalSyncAt) continue
         const snap = docStore.snapshot(realPath)
         const content = snap?.canonical
         if (content == null) continue
-        if (srcInst.crepe.getMarkdown() === content) {
+        // 幂等闸门：视图 md 经 round-trip 稳定化后与模型 canonical 一致 → 已同步
+        // （getMarkdown 与 canonical 存在单次序列化差；不比较会每轮 refresh → 异步回环）
+        const stable =
+          pipelineOfCache() != null ? canonicalOf(pipelineOfCache()!, srcInst.crepe.getMarkdown()) : srcInst.crepe.getMarkdown()
+        if (stable === content) {
           sub.rev = toRev
           continue
         }
         void refreshTabToContent(srcInst, srcTab, content, false).then(() => {
           sub.rev = toRev
-        })
+        }).catch(() => undefined)
       }
     })
   }
@@ -2652,15 +2701,7 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   inst.m3aSuppressed = true
   void resolveRefs(crepe.editor).then(() => {
     inst.m3aSuppressed = false
-    // §6.7：物化完成后建立初始块快照（此后嵌入编辑通过双条件脏检测识别）
-    const t = state.tabs.find((x) => x.id === tabId)
-    if (t) {
-      t.blockSnapshot = collectBlockContentsSync(crepe.editor)
-      t.lastSyncBlocks = new Map(t.blockSnapshot ?? [])
-      // 打开时的物化 dispatch 不是用户编辑——重置时间戳基线
-      t.userEditedAt = 0
-    }
-    // P2：分配 blockId + 注册块/文档视图（registry 广播定位基础）
+    // P2：分配 blockId + 注册块/文档视图（docStore 订阅定位基础）
     void syncTabViewsToRegistry(tabId)
   })
   void refreshBrokenState(crepe.editor)
@@ -2707,8 +2748,9 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     }
   }
   const onInput = (e: Event) => {
-    const t = state.tabs.find((x) => x.id === tabId)
-    if (t) t.userEditedAt = Date.now()
+    // M4：真实用户输入（DOM input 事件——程序化 dispatch 不触发）→ 标记模型脏
+    const _t = state.tabs.find((x) => x.id === tabId)
+    if (_t && _t.kind === 'editor') docStore.markUserDirty(_t.path)
     // 会话聚合（输入事件计数 + 键入字符数；IME 组合/粘贴按事件粒度计）
     if (burstEdits === 0) burstStart = Date.now()
     burstEdits++
@@ -2721,29 +2763,24 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, md) => {
-      if (inst.suppressing) return
       // D2.5：渲染计数（每次 doc 内容更新 → 探针统计节奏）
       markEditorRender()
       const t = state.tabs.find((x) => x.id === tabId)
       if (!t) return
-      // §6.7 脏检测双条件：markdown 变化 || 可编辑嵌入内容 ≠ 保存时快照
-      // M4b：块内编辑已由拦截器即时链路（M3a 精映射 / M4b canonical 替换）提交模型，
-      //      这里不再有旧的 propagateBlockEdits 序列化兜底；blockDirty 仅服务脏标记。
-      const blockDirty = hasBlockChanges(inst.crepe.editor, t.blockSnapshot)
-      const nowDirty = md !== t.savedContent || blockDirty
-      if (t.dirty !== nowDirty) t.dirty = nowDirty
+      // M4：脏 = 模型 rev > diskRev（编辑经拦截器即时入模型；外部分发不改变模型脏态）
       t.lastModified = Date.now()
-      // 文档发布：若本 doc 被嵌入 → 模型/registry 双写 + 广播（单层幂等；链式回声必需）
+      // M4：doc 编辑 → 模型（canonical 整块替换）。拦截器 M2 对简单输入 steps 直通，
+      // 复杂输入（换行/多步）映射可能失败——本路径是 doc 标签编辑进模型的兜底/主通道。
+      // 外部刷新（external 事务）内容与模型一致 → 同内容 replaceFromCanonical 幂等（canonical
+      // 分支 align 应用同内容无变化，不触发新变更 → 无回环）。
       publishDocToSubscribers(tabId, md)
       // 引用底部展示区：文档变更后防抖刷新（向外引用更新 + 反向引用重扫）
       scheduleRefsFooterRefresh(tabId)
+      // M4：脏同步须在模型变更（publish/拦截器）之后计算——脏 = 模型 rev > diskRev
+      syncTabDirty(t, inst)
       // M5：编辑防抖实时校验 → 已由 validatePlugin 的 $prose 监听接管（manager 不再调度）
     })
   })
-
-  // 关键：用 Crepe 规范化后的序列化结果作为基准，
-  // 避免原始 Markdown 与编辑器 round-trip 差异导致打开即“脏”
-  tab.savedContent = crepe.getMarkdown()
 
   // 打开后把焦点还给编辑器，便于直接输入（低功耗模式不自动聚焦，避免 caret 闪烁持续合成）
   requestAnimationFrame(() => {
@@ -2772,9 +2809,9 @@ export function unmountEditor(tabId: string) {
 
 /** 把标签内容替换为指定 markdown（replaceAll）+ 重新物化引用。
  * diskUpdated=true（保存写回后）：replaceAll → canonical（round-trip 稳定值）→ 以 canonical 落盘
- *   → savedContent = canonical + 脏灭（保证 磁盘 == 编辑器内容，彻底消除 round-trip 差异）；
- * diskUpdated=false（联动预览）：仅 replaceAll + 脏亮（savedContent 保持旧磁盘值，待保存）。
- * 两种都在 suppressing 期内完成（否则 markdownUpdated 误标用户编辑）。
+ *   → 写盘 canonical + 模型磁盘基线追平 + 脏灭；
+ * diskUpdated=false（联动预览）：仅 replaceAll + 脏对齐。
+ * 快照对齐（链接预览不写盘 / 保存对齐写盘 canonical）。
  */
 async function refreshTabToContent(
   srcInst: Instance,
@@ -2782,28 +2819,23 @@ async function refreshTabToContent(
   content: string,
   diskUpdated: boolean
 ): Promise<void> {
-  srcInst.suppressing = true
+  // M4：replaceAll 触发的 markdownUpdated 只是渲染计数/脏对齐（无 publish 回灌），
+  // 拦截器对同内容 apply 幂等（already-synced 防环）——无需时序守卫。
   try {
-    srcInst.crepe.editor.action(replaceAll(content))
-    // replaceAll 后块标记行重新出现——重新物化引用；物化 dispatch 需在 suppressing 期内
+    replaceTabDocExternal(srcInst, content)
+    // 替换后块标记行重新出现——重新物化引用（物化 fill 亦带 external meta，幂等）
     await resolveRefs(srcInst.crepe.editor)
     const canonical = srcInst.crepe.getMarkdown()
     if (diskUpdated) {
+      // 联动写盘（保存对齐）：落盘 canonical + 模型磁盘基线对齐
       try {
         await fs.writeFile(srcTab.path, canonical)
       } catch (e) {
         console.warn('[sync] 应然内容落盘失败:', srcTab.path, e)
       }
-      srcTab.savedContent = canonical
-      srcTab.dirty = false
-      srcTab.lastExternalSyncAt = Date.now()
-    } else {
-      // 磁盘还是旧内容：A 内容 ≠ 磁盘 → 脏（保存后才写盘）
-      srcTab.dirty = canonical !== srcTab.savedContent
-      srcTab.lastExternalSyncAt = Date.now()
+      docStore.markDiskSynced(srcTab.path, canonical)
     }
-    srcTab.blockSnapshot = collectBlockContentsSync(srcInst.crepe.editor)
-    srcTab.lastSyncBlocks = new Map(srcTab.blockSnapshot ?? [])
+    syncTabDirty(srcTab, srcInst)
     srcTab.lastModified = Date.now()
     // M7：源标签处于源码模式 → textarea 同步为最新内容（与 doc/磁盘一致）
     if (srcTab.viewMode === 'source' && srcInst.srcTa) {
@@ -2811,9 +2843,69 @@ async function refreshTabToContent(
     }
   } catch (e) {
     console.warn('[sync] 源标签刷新失败:', srcTab.path, e)
-  } finally {
-    setTimeout(() => (srcInst.suppressing = false), 0)
   }
+}
+
+/** M5 §7.3：激活标签时磁盘对账。
+ *  - clean → 无操作；external-change（磁盘外部变、本地无编辑）→ reconcile 已重建模型 +
+ *    分发重投影（视图自动追平）；conflict（双方都有变）→ 三方选择：保留内存版（flush
+ *    覆盖磁盘）/ 采用磁盘版（放弃本地编辑）/（导出副本由既有导出能力承担，不额外弹窗）。 */
+async function reconcileTabOnActivate(tab: Tab): Promise<void> {
+  if (tab.kind !== 'editor' || tab.viewMode === 'diff' || !docStore.has(tab.path)) return
+  try {
+    const st = await docStore.reconcile(tab.path)
+    if (st !== 'conflict') return
+    // 冲突 → 弹窗决策
+    const ok = await confirmDialog({
+      title: '磁盘内容已被外部修改',
+      message: `「${tab.name}」在应用外被修改，而当前标签含有未保存编辑——两者冲突。\n\n· 保留内存版：以当前内容覆盖磁盘（先保存）；\n· 还原磁盘版：放弃本地未保存编辑，重载磁盘内容。\n\n（如需保留并行副本，可先用导出功能存一份。）`,
+      confirmText: '保留内存版',
+      danger: true,
+    })
+    if (ok) {
+      await saveTab(tab.id)
+    } else {
+      await reloadTabFromDisk(tab.id)
+    }
+  } catch {
+    /* 对账失败不阻塞 */
+  }
+}
+
+/** 标签脏态同步（M4：脏 = 模型 rev > diskRev；源码模式 = textarea ≠ 模型 canonical） */
+function syncTabDirty(tab: Tab, inst?: Instance | null): void {
+  if (tab.viewMode === 'source' && inst?.srcTa) {
+    const canon = docStore.snapshot(tab.path)?.canonical
+    const d = canon == null ? true : inst.srcTa.value !== canon
+    if (tab.dirty !== d) tab.dirty = d
+    return
+  }
+  const d = docStore.isUserDirty(tab.path)
+  if (tab.dirty !== d) tab.dirty = d
+}
+
+
+/** 整文档替换（M4）：外部对齐用——原生构造带 docstoreExternal meta 的替换事务，
+ * 拦截器据此跳过回流（模型已是真相，仅视图追平）。解析失败降级为 command replaceAll。 */
+function replaceTabDocExternal(inst: Instance, content: string): boolean {
+  let ok = false
+  try {
+    inst.crepe.editor.action((ctx) => {
+      const v = ctx.get(editorViewCtx)
+      const parser = ctx.get(parserCtx)
+      const parsed = parser(content)
+      if (!parsed) return
+      const tr = v.state.tr
+      tr.replaceWith(0, v.state.doc.content.size, parsed.content)
+      v.dispatch(tr.setMeta('docstoreExternal', true))
+      ok = true
+    })
+  } catch (e) {
+    console.warn('[sync] 外部整文档替换失败（降级为 command replaceAll）:', e)
+    inst.crepe.editor.action(replaceAll(content))
+    ok = true
+  }
+  return ok
 }
 
 /** 收集标签文档中所有 file_block 的 (blockId, path, readonly, pos, folded) */
@@ -2844,10 +2936,10 @@ function collectBlockViews(editor: import('@milkdown/kit/core').Editor): Array<{
 }
 
 /**
- * 文档发布（M4）：被嵌入的文档编辑 → 源模型 canonical 替换（rev++ + dispatcher 分发订阅者）。
- * 编辑已由拦截器步骤级提交（M2 mapDocStepsToModel）或本路径 canonical 整块替换完成；
- * 单层 doc→块分发全由 dispatcher 承担（origin 跳过 + 订阅者增量/对齐），无 registry 广播双发。
- * 被 10 层/循环折叠治理的嵌入（不注册为订阅）不会收到分发——治理语义由订阅侧保证。
+ * 文档发布（M4）：被嵌入的文档编辑 → 模型 canonical 替换（rev++ + dispatcher 分发订阅者）。
+ * 编辑主体由拦截器步骤级提交（M2 mapDocStepsToModel，简单输入）；本路径为 doc 标签编辑的
+ * 兜底/主通道（复杂输入映射失败的 canonical 整块替换）。外部刷新（external 事务）内容与模型
+ * 一致 → 同内容 replace 幂等。被折叠治理的嵌入（不注册为订阅）不会收到分发。
  */
 function publishDocToSubscribers(tabId: string, md: string): void {
   const tab = state.tabs.find((t) => t.id === tabId && t.kind === 'editor')
@@ -2898,12 +2990,15 @@ async function syncTabViewsToRegistry(tabId: string): Promise<void> {
     if (!real) continue
     // M1：影子登记（docstore 元数据对齐块视图；rev 追平模型）
     registerBlockShadow(real, { tabId, blockId: b.blockId })
+    // M4：订阅前物化模型（doc=null 时 M2 拦截器映射无基准 → 源编辑无法进模型）
+    if (!docStore.getModel(real)?.doc) await docStore.load(real)
   }
   // 文档订阅（该标签自身 = realPath 的投影；canonical = getMarkdown round-trip）
-  const canonical = inst.crepe.getMarkdown()
-  // M1：影子登记（docstore 元数据对齐文档视图 + 真相基线）
+  // M4：mount 内容 = 磁盘（模型 load 已解析同一内容）——不再 onTruthChanged record
+  // （record 会 rev++ 制造假脏：mount 阶段模型本就与磁盘对齐）。
   registerDocShadow(tab.path, tabId)
-  onTruthChanged(tab.path, canonical)
+  // M4：订阅前物化本标签模型（M2 拦截器映射基准）
+  if (!docStore.getModel(tab.path)?.doc) await docStore.load(tab.path)
 }
 
 export async function saveTab(tabId: string): Promise<boolean> {
@@ -2912,7 +3007,7 @@ export async function saveTab(tabId: string): Promise<boolean> {
   if (!tab) return false
   const t0 = performance.now()
   if (!inst) {
-    // 容器尚未挂载（极早期）——直接写 savedContent
+    // 容器尚未挂载（极早期）：无编辑可落盘（模型也未变），直接灭脏返回
     tab.dirty = false
     diagEvent('save', { target: tab.path, ok: true, ms: performance.now() - t0, data: { early: true } })
     return true
@@ -2935,7 +3030,7 @@ export async function saveTab(tabId: string): Promise<boolean> {
     if (!ok) return false
   }
   const md = inst.crepe.getMarkdown()
-  // 否则组合文本不在 doc 里——保存/写回都会丢用户输入
+  // 组合文本（IME）尚未提交 → 先失焦重聚生效，否则保存会丢用户输入
   try {
     const view = inst.crepe.editor.action((ctx) => ctx.get(editorViewCtx))
     if (view.composing) {
@@ -2946,67 +3041,40 @@ export async function saveTab(tabId: string): Promise<boolean> {
   } catch {
     /* 编辑器可能未就绪 */
   }
-  // §6.7 写回事务：可编辑 file_block 内容写回源文件（失败降级不阻断保存）
-  // M4（spec §6.1）：writeBackBlocks 写回事务整体删除——嵌入块编辑已在拦截器内即时进模型，
-  //                保存 = flush 各脏模型（本标签 + 引用源），无“从宿主收集内容写回源”这一步；
-  //                同源多块一致性由单一 DocModel 保证（模型层天然一致，无需逐块判断）。
+  // M4（spec §6.1）：保存 = flush 各脏模型（本标签 + 引用源）——嵌入块编辑已在拦截器内即时进模型
   const flushedByModel = await flushDirtyModelsForTab(inst, tab)
-  // 本标签自身落盘：保持 M3b 基线语义 —— 写盘用编辑器内容 getMarkdown()（用户所见即磁盘）；
-  // 模型 canonical 作为磁盘基线内容（flush 已覆盖的源/本标签模型脏时由 flush 写盘 canonical）。
-  const selfMd = md
+  // 本标签自身落盘：写盘 user 所见（getMarkdown）；模型磁盘基线追平（磁盘 = 模型、视图三方一致）
   try {
-    await fs.writeFile(tab.path, selfMd)
+    await fs.writeFile(tab.path, md)
   } catch (e) {
     toast(`保存失败: ${(e as Error).message}`, 'error')
     diag('error', 'save', `保存失败 ${tab.path}: ${(e as Error).message}`)
     diagEvent('save', { target: tab.path, ok: false, ms: performance.now() - t0, data: { error: (e as Error).message } })
     return false
   }
-  // flush 本标签磁盘基线（flushDirtyModelsForTab 只处理脏模型；此处统一追平）
-  docStore.markDiskSynced(tab.path, selfMd)
-  inst.suppressing = true
-  tab.savedContent = selfMd
-  // §6.7：保存后记录块内容快照（脏检测第二条件）
-  tab.blockSnapshot = collectBlockContentsSync(inst.crepe.editor)
-  tab.lastSyncBlocks = new Map(tab.blockSnapshot ?? [])
-  tab.dirty = false
+  docStore.markDiskSynced(tab.path, md)
+  syncTabDirty(tab, inst)
   tab.lastModified = Date.now()
-  // 保存即“源已同步”：刷新同步基线，后续宿主写回不再被自己的旧编辑标记挡住
-  //（userEditedAt 只在保存后的新用户输入时再更新 → isTabUserEdited 语义正确）
-  tab.lastExternalSyncAt = Date.now()
-  // 等一帧再解除抑制，避免保存后的 markdownUpdated 误判
-  setTimeout(() => (inst.suppressing = false), 0)
-  // M4（spec §7.2）：保存后对“打开的源标签”（另外标签同路径）做脏灭 + 内容对齐。
-  //  · flush 已写盘 → 源标签内容 = canonical（M2 起 doc 视图已是模型投影，dispatcher 已同步编辑期内容）
-  //  · 源标签有真实用户编辑 → 最后保存者胜：不覆盖、脏保持（flush 内守卫已跳过该源）
-  //  · 不再需要 registry 广播①②（编辑分发已在 apply 时即时完成；保存只追平磁盘基线）
+  // M4（spec §7.2）：保存后对“打开的源标签”（另外标签同路径）做快照对齐 + 脏灭。
+  // 模型 = 唯一真相：源标签内容经 dispatcher 已与会模型（编辑即时入模型），此处仅追平磁盘基线。
   for (const p of flushedByModel.keys()) {
     const srcTab = state.tabs.find((t) => t.id !== tabId && t.path === p)
     if (!srcTab) continue
     const srcInst = instances.get(srcTab.id)
     if (!srcInst) continue
-    if (srcTab.userEditedAt > srcTab.lastExternalSyncAt) continue // 最后保存者胜
     const snap = docStore.snapshot(p)
     if (!snap || snap.canonical == null) continue
-    if (srcInst.crepe.getMarkdown() === snap.canonical) {
-      // 内容已一致：仅脏灭 + 同步基线
-      srcTab.savedContent = snap.canonical
-      srcTab.dirty = false
-      srcTab.lastExternalSyncAt = Date.now()
-    } else {
-      // 内容不一致（极端：flush 后模型变更竞态）→ 快照对齐
+    if (srcInst.crepe.getMarkdown() !== snap.canonical) {
+      // 内容不一致（极端：flush 后模型变更竞态）→ 快照对齐（含写盘）
       await refreshTabToContent(srcInst, srcTab, snap.canonical, true)
     }
+    syncTabDirty(srcTab, srcInst)
   }
   // 映射冲写盘源 + 本标签的磁盘基线（shadow 桥：canonical 与 diskHash 对齐）
-  onCommitted(tab.path, selfMd)
+  onCommitted(tab.path, md)
   refreshAllRefsFooters()
-  // 保存可能命中模板域（.template/ 下的 md / rules / suggest 等）→ 重扫模板注册表，
-  // 使模板内容/规则改动即时生效（无需重启或重开目录；注册表重建后惰性缓存同步失效）。
-  // 仅模板域内文件触发，避免普通笔记每次保存都整树重扫。
-  const isTemplatePath =
-    tab.path === '.template' || tab.path.startsWith('.template/')
-  if (isTemplatePath) void templateService.rescan()
+  // 保存可能命中模板域（.template/ 下的 md / rules / suggest 等）→ 重扫模板注册表
+  if (tab.path === '.template' || tab.path.startsWith('.template/')) void templateService.rescan()
   diagEvent('save', { target: tab.path, ok: true, ms: performance.now() - t0 })
   return true
 }
@@ -3143,11 +3211,23 @@ export function onFileDeleted(path: string) {
 // ---------- 自动保存 ----------
 
 let autoSaveTimer: ReturnType<typeof setInterval> | null = null
+let autoSaveTick = 0
 
 export function ensureAutoSaveLoop() {
   if (autoSaveTimer) return
   autoSaveTimer = setInterval(() => {
     if (!settings.autoSave) return
+    // M5（spec §7.3）：自动保存循环内轻量磁盘对账轮询（每 10 tick ≈ 5s；
+    // 低功耗/软渲染模式停轮询省 IO）。外部变更（磁盘变、模型未脏）→ reconcile 内部
+    // 重建模型 + 分发重投影（各订阅者自动追平）；真冲突不在此打扰——留给标签激活时的
+    // 三方决策弹窗（reconcileTabOnActivate）。
+    autoSaveTick++
+    if (autoSaveTick % 10 === 0 && !settings.liteMode) {
+      for (const tab of state.tabs) {
+        if (tab.kind !== 'editor' || tab.diff) continue
+        void docStore.reconcile(tab.path).catch(() => undefined)
+      }
+    }
     for (const tab of state.tabs) {
       if (
         tab.dirty &&

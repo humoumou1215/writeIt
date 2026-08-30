@@ -12,6 +12,7 @@ import {
   collapseSummary,
   type CollapsedInfo,
 } from '../ref/embed-chain'
+import { docStore } from '../docstore/store'
 import type { SourceMap, CollapsedScope, DocLocation } from './model'
 
 /** 发现层级中的一批：同一深度收集的 writePath（宿主正文或某源文件内容） */
@@ -98,7 +99,11 @@ export async function prefetchEmbedSources(deps: PrefetchDeps, newMd: string): P
       globalSeen.add(real)
 
       const oldMd = e.old
-      const newMd = e.next ?? ''
+      // M4 §6.2：new 版内容优先 DocStore 模型（含未保存编辑直接进 diff）；
+      // 模型未加载/未解析 → 回退批量端点磁盘内容（行为等价）
+      const modelSnap = docStore.snapshot(real)
+      const newMd =
+        modelSnap && modelSnap.canonical != null ? modelSnap.canonical : (e.next ?? '')
       const changed = e.changed ?? (oldMd != null ? oldMd !== newMd : newMd !== '')
       // 字节预算（§4.4.1-d）：超限 → 该 scope 降级浅层说明卡（不逐层 diff）
       const srcBytes = (oldMd?.length ?? 0) + newMd.length

@@ -55,6 +55,9 @@ export interface DocModel {
   diskHash: string | null
   /** 最近一次 record/apply 后的内容 hash（影子一致性断言基线） */
   lastHash: string
+  /** 用户编辑标志（M4：脏的准确语义——消歧/外部对齐不等同用户编辑，
+   *  后者使 rev>diskRev 但不应显示脏；apply(reason='user') 置位，保存/落盘/外部对齐清除） */
+  userDirty: boolean
   subscribers: Map<string, Subscription>
 }
 

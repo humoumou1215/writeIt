@@ -238,7 +238,7 @@ function foldBlock(editor: Editor, pos: number, collapsed: CollapsedInfo): void 
     // 创建即空的块（菜单插入/粘贴）不会——显式补，否则 setNodeMarkup 抛 RangeError）
     ensureBlockHasContent(tr, pos)
     tr.setNodeMarkup(pos, undefined, { ...atPos.attrs, materialized: false, collapsed })
-    view.dispatch(tr)
+    view.dispatch(tr.setMeta('docstoreExternal', true))
   })
   diagEvent('embed:collapse', { data: { reason: collapsed.reason, chain: collapsed.chain } })
 }
@@ -311,7 +311,7 @@ export async function materializeBlock(
 
 /**
  * 把给定内容解析并填入已存在的 file_block 容器（物化/兄弟块收敛/广播刷新共用）。
- * 调用方负责在 suppressing 期内调用（避免 markdownUpdated 误标用户编辑/引发同步回环）。
+ * 本函数的 dispatch 带 docstoreExternal meta——拦截器/同步链路识别为程序化变更（防回环）。
  * P2：缺 blockId 时分配运行时块身份（不序列化）——registry 精确定位的基础。
  * 返回块 id（成功）或 null（块不存在 / 只读属性不匹配 / 内容解析失败）。
  */
@@ -345,7 +345,8 @@ export function fillBlockContent(
     const id = existing ?? genBlockId()
     // 标记物化成功：未物化的块（内容为空）不参与写回，避免保存时覆盖源文件
     tr.setNodeMarkup(pos, undefined, { ...atPos.attrs, materialized: true, collapsed: null, blockId: id })
-    view.dispatch(tr)
+    // M4：物化 fill 是程序化变更——docstoreExternal meta 使拦截器跳过回流（防回环/防误判用户编辑）
+    view.dispatch(tr.setMeta('docstoreExternal', true))
     blockId = id
     // 物化后：FileBlockView.update() 返回 false → PM 重建该 NodeView（新 contentDOM → content
     // 渲染 + 建立 view desc）→ 块内光标/输入正常。不再用 updateState+forceFlush 粗暴重建
@@ -480,7 +481,7 @@ async function resolveObjectRef(
         schema.nodes.object_ref.create({ path: ref.path, object: objectId, resolvedText: text, fragment: anchor, label })
       )
     }
-    view.dispatch(tr)
+    view.dispatch(tr.setMeta('docstoreExternal', true))
   })
 }
 

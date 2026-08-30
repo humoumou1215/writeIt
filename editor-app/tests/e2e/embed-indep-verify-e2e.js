@@ -94,15 +94,15 @@ C.check('再次保存幂等(磁盘严格不变)', (await diskOf(SRC)) === diskC2
 await L.focusEditor(); await L.goEnd(); await L.waitMs(300)
 await L.type('\n源私有ZD'); await L.waitMs(1500)
 C.check('源脏(私有ZD未保存)', await tabDirty('indy-src'))
-const diskBeforeD = await diskOf(SRC)
+// M4 模型层：源私有编辑已即时入模型；宿主块编辑同样入模型 → 保存 flush 整合落盘（无“跳过”守卫）
 await tabClick('indy-host', 1200)
 await appendBlock('indy-src', '宿主HOSTX', 0)
-await L.waitMs(2600) // 防抖收敛后（源有真实编辑 → 写回守卫应跳过）
-await L.press('Control+s'); await L.waitMs(1300)
-C.check('宿主保存未覆盖源未保存编辑(磁盘严格不变)', (await diskOf(SRC)) === diskBeforeD)
-C.check('宿主 marker 未落盘', !((await diskOf(SRC)) || '').includes('宿主HOSTX'))
-C.check('源私有编辑未落盘(宿主保存时不写)', !((await diskOf(SRC)) || '').includes('源私有ZD'))
-// 源保存 → 私有编辑落盘（最后保存者胜）
+await L.waitMs(2600)
+await L.press('Control+s'); await L.waitMs(1500)
+const dws4 = await diskOf(SRC)
+C.check('宿主保存整合模型（含宿主块编辑）', dws4.includes('宿主HOSTX'))
+C.check('宿主保存未丢源私有编辑（ZD 在水端模型落盘）', dws4.includes('源私有ZD') || (await diskOf(SRC)).includes('源私有ZD'))
+// 源保存 → 私有编辑落盘（幂等追平）
 await tabClick('indy-src', 1100)
 await L.press('Control+s'); await L.waitMs(2500)
 C.check('源保存后私有编辑落盘', ((await diskOf(SRC)) || '').includes('源私有ZD'))

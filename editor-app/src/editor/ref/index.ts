@@ -12,6 +12,7 @@ import {
   createRefClickPlugin,
   readonlyGuardPlugin,
   brokenRefPlugin,
+  createStaleBlockPlugin,
 } from './app-plugin'
 import { placeholderDecorationPlugin } from './placeholder'
 import { editorMenuPlugin } from './editor-menu'
@@ -62,6 +63,8 @@ export const refPlugin: MilkdownPlugin[] = [
   }),
   $prose(() => readonlyGuardPlugin),
   $prose(() => brokenRefPlugin),
+  // M5：失步块徽标（per-tab 工厂：从 refConfigCtx 取 tabId；spec §6.1）
+  $prose((ctx) => createStaleBlockPlugin(ctx.get(refConfigCtx.key)?.tabId ?? null)),
   // M9：{{}} 占位符渲染（decoration，不改内容；代码块内保留字面）
   $prose(() => placeholderDecorationPlugin),
   // 文件引用粘贴（Ctrl+V）+ 编辑器自定义右键菜单（替代默认 contextmenu）

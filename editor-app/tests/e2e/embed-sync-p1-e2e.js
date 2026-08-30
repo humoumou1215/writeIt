@@ -102,29 +102,21 @@ await L.type('\n用户私有编辑CC')
 await L.waitMs(600)
 C.check('源标签脏（真实编辑）', (await L.q('.tab .dot.dirty')) > 0)
 
-// 宿主编辑块1 → 保存，源文件不得被覆盖
+// 宿主编辑块1 → 保存：M4 模型层语义——源标签用户编辑与宿主块编辑都已即时入模型（不丢任何编辑），
+// 保存 flush 模型整合落盘；无“跳过写回”提示（旧 last-wins 守卫已删）。
 await L.clickText('.tab', 'probe', { label: '切回 probe(3)' })
 await L.waitMs(900)
 await js(`window.__editorBlockAppend('数据库字段引用', '宿主块编辑DDD', 0)`)
-await L.waitMs(2800) // 防抖收敛后（块成 DDD），源有真实编辑 → 写回守卫应跳过
-const toastProbe = await toastLog() // 保存前先抓现有 toast，供区分新增
+await L.waitMs(2800)
 await js(`window.__saveActiveTab()`)
-await L.waitMs(400)
-// toast 存活窗口仅 2600ms——保存后立即高密度轮询，避免固定等待把窗口耗尽
-let skipToast = false
-for (let i = 0; i < 25 && !skipToast; i++) {
-  const t = await toastLog()
-  skipToast = t.some((x) => (x.includes('跳过') || x.includes('不一致')) && !toastProbe.includes(x))
-  if (!skipToast) await L.waitMs(100)
-}
-C.check('有跳过提示 toast', skipToast)
-await L.waitMs(2200) // 保存余隙（磁盘断言延后，让保存事务完成）
+await L.waitMs(3000)
 const diskAfterBlock = await diskOf(SRC_PATH)
 cliLog('[debug] 有源编辑时的宿主保存后磁盘: ' + JSON.stringify(diskAfterBlock.slice(0, 80)))
-C.check('宿主保存未覆盖源文件的未保存编辑', !diskAfterBlock.includes('宿主块编辑DDD'))
-C.check('宿主保存未覆盖用户源编辑', diskAfterBlock.includes('用户私有编辑CC') === false || diskAfterBlock.includes('块二编辑B'))
+C.check('宿主保存未丢块编辑（整合落盘含宿主块内容）', diskAfterBlock.includes('宿主块编辑DDD'))
+C.check('宿主保存未丢源用户编辑（用户私有编辑保留）', diskAfterBlock.includes('用户私有编辑CC'))
+C.check('宿主保存未丢此前内容（块二编辑B 保留）', diskAfterBlock.includes('块二编辑B'))
 
-// 源标签保存 → 落盘用户编辑（最后保存者胜）
+// 源标签保存 → 落盘用户编辑（已整合，幂等）
 await L.clickText('.tab', '数据库字段引用', { label: '切到源标签(4)' })
 await L.waitMs(900)
 await js(`window.__saveActiveTab()`)

@@ -125,6 +125,7 @@ class DocStore {
       diskRev: 1,
       diskHash: null,
       lastHash: contentHash(''),
+      userDirty: false,
       subscribers: new Map(),
     }
   }
@@ -199,6 +200,9 @@ class DocStore {
     if (!pipeline) throw new Error(`[docstore] replaceFromCanonical without pipeline: ${realPath}`)
     const parsed = pipeline.parse(canonical)
     if (!parsed) throw new Error(`[docstore] replaceFromCanonical parse failed: ${realPath}`)
+    // 内容幂等：同内容替换（外部刷新/同源 publish 双发）不推进 rev——
+    // 否则同内容 rev++ 会制造假脏（rev > diskRev）且触发无意义分发
+    if (m.doc && docHash(m.doc) === docHash(parsed)) return m.rev
     const fromRev = m.rev
     m.doc = parsed
     m.blocks = extractBlocks(parsed)
@@ -214,10 +218,17 @@ class DocStore {
     const st = EditorState.create({ doc: m.doc })
     const tr = st.tr
     for (const s of steps) tr.step(s)
+    const prevHash = docHash(m.doc)
+    const newHash = docHash(tr.doc)
+    // 幂等：steps 应用后内容未变（结构边界/同内容重放）→ 不推进 rev（防假脏）
+    if (prevHash === newHash) return m.rev
     const fromRev = m.rev
     m.doc = tr.doc
     m.blocks = extractBlocks(tr.doc)
-    m.lastHash = docHash(tr.doc)
+    m.lastHash = newHash
+    // userDirty 由 markUserDirty（DOM input 事件，见 manager onInput）置位——
+    // apply 不置位：程序化事务（mount 初始化等）不可被误判为用户编辑
+    void meta
     m.rev++
     if (dispatcher) dispatcher(realPath, m, steps, fromRev, m.rev, meta.originKey)
     return m.rev
@@ -245,6 +256,37 @@ class DocStore {
     const key = makeSubscriptionKey(source)
     m.subscribers.set(key, { key, source, rev: m.rev, stale: false })
     return key
+  }
+
+  /** 订阅同步确认：视图已追平 toRev（分发/对齐成功后调用，I2 前进侧）。
+   *  同时清除失步标记（I2 恢复侧）。 */
+  markSubSynced(realPath: string, key: string, toRev: number): void {
+    const m = this.models.get(realPath)
+    const s = m?.subscribers.get(key)
+    if (!s) return
+    s.stale = false
+    if (toRev > s.rev) s.rev = toRev
+  }
+
+  /** 失步：视图无法跟上分发（I2：显式 stale，绝不静默停在旧 rev）。
+   *  由分发失败 + 对齐兜底也失败的路径调用（spec §6.1）。 */
+  markSubStale(realPath: string, key: string): void {
+    const m = this.models.get(realPath)
+    const s = m?.subscribers.get(key)
+    if (s) s.stale = true
+  }
+
+  /** 查询某标签（作为宿主）内失步的块订阅——失步徽标渲染的数据源（spec §6.1）。 */
+  getStaleBlockSubs(tabId: string): Array<{ realPath: string; blockId: string; key: string }> {
+    const out: Array<{ realPath: string; blockId: string; key: string }> = []
+    for (const [realPath, m] of this.models) {
+      for (const [key, s] of m.subscribers) {
+        if (s.stale && s.source.kind === 'block' && s.source.tabId === tabId) {
+          out.push({ realPath, blockId: s.source.blockId, key })
+        }
+      }
+    }
+    return out
   }
 
   /** 标签关闭清理（对齐 registry.unregisterTab） */
@@ -296,7 +338,7 @@ class DocStore {
       rev: m.rev,
       canonical: pipeline && m.doc ? pipeline.serialize(m.doc) : null,
       blocks: m.blocks,
-      dirty: modelIsDirty(m),
+      dirty: m.userDirty,
       diskHash: m.diskHash,
     }
   }
@@ -307,6 +349,7 @@ class DocStore {
     if (!m) return
     m.diskRev = m.rev
     m.diskHash = this.canonicalHashOf(diskContent)
+    m.userDirty = false
   }
 
   /** 落盘：canonical → 写盘 → diskRev/diskHash 追平（I3）。返回写入的 canonical（失败 null）。 */
@@ -321,6 +364,7 @@ class DocStore {
     }
     m.diskRev = m.rev
     m.diskHash = contentHash(canonical)
+    m.userDirty = false
     return canonical
   }
 
@@ -341,24 +385,39 @@ class DocStore {
     const diskHash = contentHash(diskCanonical)
     if (diskHash === m.diskHash) return 'clean'
     if (!modelIsDirty(m)) {
-      // 本地无未保存编辑 → 采用磁盘版（重解析模型；订阅者由 M2 通知重投影）
+      // 本地无未保存编辑 → 采用磁盘版（重解析模型；订阅者重投影）
       if (pipeline) {
         m.doc = pipeline.parse(diskCanonical)
         m.blocks = extractBlocks(m.doc)
       }
       m.lastHash = docHash(m.doc)
       m.diskHash = diskHash
-      m.rev++
       m.diskRev = m.rev
+      m.userDirty = false
+      m.rev++
+      // M5 §7.3：notify subscribers（重投影——canonical 分发到各视图）
+      if (dispatcher) dispatcher(realPath, m, [], m.rev - 1, m.rev, null)
       return 'external-change'
     }
     return 'conflict' // 真冲突：双方都有变化（M5 三方选择 UI）
   }
 
-  /** 是否脏（模型级） */
+  /** 是否脏（模型级：rev > diskRev，含消歧/外部对齐等未落盘变更——flush 依据） */
   isDirty(realPath: string): boolean {
     const m = this.models.get(realPath)
     return m ? modelIsDirty(m) : false
+  }
+
+  /** 用户编辑标志（M4：UI 脏点——仅 DOM 用户输入置位；保存/落盘/外部对齐清除） */
+  isUserDirty(realPath: string): boolean {
+    const m = this.models.get(realPath)
+    return m ? m.userDirty : false
+  }
+
+  /** 用户真实输入标记（manager onInput 在 DOM input 事件中调用——程序化 dispatch 不触发） */
+  markUserDirty(realPath: string): void {
+    const m = this.ensure(realPath)
+    if (m.doc || m.rev > 0) m.userDirty = true
   }
 
   /** 对给定内容做一致性核对（影子断言）：模型 canonical 与磁盘基线是否对齐（I3） */
@@ -384,7 +443,8 @@ class DocStore {
         realPath: m.realPath,
         rev: m.rev,
         diskRev: m.diskRev,
-        dirty: modelIsDirty(m),
+        dirty: m.userDirty,
+        revDirty: modelIsDirty(m),
         loaded: m.doc != null,
         parseDegraded: m.doc == null && m.rev > 0,
         consistent: this.modelIsConsistent(m),

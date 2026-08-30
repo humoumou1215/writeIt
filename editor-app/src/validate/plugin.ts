@@ -15,7 +15,7 @@ export interface ValidateConfig {
   run: (tabId: string, opts?: { silent?: boolean }) => Promise<ValidationResult>
   /** 编辑防抖毫秒（默认 1500） */
   debounceMs?: number
-  /** 跳过调度（装配层注入 suppressing 判断：物化/保存等程序化事务不触发校验） */
+  /** 跳过调度（装配层注入；M4 后恒 false——外部事务同可校验，无程序化抑制） */
   shouldSkip?: () => boolean
 }
 
@@ -47,7 +47,7 @@ function schedule(cfg: ValidateConfig): void {
   )
 }
 
-/** $prose：任何 docChanged 事务 → 防抖调度校验（suppressing 期跳过） */
+/** $prose：任何 docChanged 事务 → 防抖调度校验（M4 起无程序化抑制） */
 const onChangePlugin = (getCfg: () => ValidateConfig | null) =>
   new Plugin({
     key: new PluginKey('VALIDATE_ON_CHANGE'),

@@ -17,7 +17,7 @@ const activeTab = computed(() => state.tabs.find((t) => t.id === state.activeTab
 const exportDoctype = computed(() => {
   const t = activeTab.value
   if (!t) return null
-  const md = getActiveTabMarkdown() ?? t.savedContent
+  const md = getActiveTabMarkdown() ?? ''
   return extractDoctype(md)
 })
 const exportHasTs = computed(() => {

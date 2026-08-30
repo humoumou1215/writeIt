@@ -89,7 +89,7 @@ setInterval(() => {
 // 导出 __writeitDebug 挂载信息（CLI/Agent 判断后端用）
 ;(window as unknown as Record<string, unknown>).__writeitDebug = {
   transport: transport?.kind ?? 'none',
-  commands: ['app.info', 'tabs.list', 'doc.markdown', 'doc.selection', 'refs.registry', 'refs.broken', 'dom.snapshot', 'editor.probe', 'perf.monitor', 'git.status', 'logs.tail', 'console.tail', 'events.since', 'screenshot', 'mockfs.state', 'action.run', 'docstore.inspect', 'exec'],
+  commands: ['app.info', 'tabs.list', 'doc.markdown', 'doc.selection', 'refs.registry', 'refs.broken', 'dom.snapshot', 'editor.probe', 'perf.monitor', 'git.status', 'logs.tail', 'console.tail', 'events.since', 'screenshot', 'mockfs.state', 'action.run', 'docstore.inspect', 'docstore.doc', 'exec'],
 }
 
 export { transport }

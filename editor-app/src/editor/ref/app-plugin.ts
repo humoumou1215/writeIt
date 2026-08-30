@@ -7,6 +7,7 @@ import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
 import type { Editor } from '@milkdown/kit/core'
 import { editorViewCtx } from '@milkdown/kit/core'
 import { getRefConfig, type RefConfig } from './config'
+import { docStore } from '../docstore/store'
 
 // ---------- 路径存在性检查（Obsidian 风格补扩展名）----------
 
@@ -181,12 +182,85 @@ export async function refreshBrokenState(editor: Editor): Promise<void> {
     for (const p of targets) {
       if (!(await refPathExists(cfg, p))) brokenPaths.add(p)
     }
-    // 派发空事务触发 decorations 重算
+    // 派发空事务触发 decorations 重算（无内容变更——不触发拦截器提交）
     editor.action((ctx) => {
       const view = ctx.get(editorViewCtx)
-      view.dispatch(view.state.tr)
+      view.dispatch(view.state.tr.setMeta('docstoreExternal', true))
     })
   } catch {
     /* 容错：断链检测失败不影响编辑 */
+  }
+}
+
+// ---------- 4. 失步块装饰（M5 spec §6.1）----------
+// 视图 applyExternal 失败且对齐兜底也失败时置 stale（I2：显式失步，不静默滞后），
+// 块上方渲染「⚠ 失步」徽标 + 点击对齐到最新；对齐成功后徽标消失。
+// per-tab 工厂：不同标签的同一 blockId 失步状态独立——decoration apply 时实时查
+// docStore（不依赖外部刷新；外部 dispatch 空事务触发重算）。
+
+let staleAlignHandler: ((tabId: string, blockId: string, realPath: string) => void) | null = null
+
+/** 装配层注入对齐执行器（manager 装配；对齐后派发空事务使徽标消失） */
+export function setStaleAlignHandler(fn: ((tabId: string, blockId: string, realPath: string) => void) | null): void {
+  staleAlignHandler = fn
+}
+
+function staleBadge(
+  tabId: string,
+  sub: { realPath: string; blockId: string }
+): HTMLElement {
+  const el = document.createElement('span')
+  el.className = 'ref-stale-badge'
+  el.textContent = '⚠ 失步'
+  el.title = `同步停滞：${sub.realPath} 的内容已更新，本块未能跟上。点击将对齐到最新。`
+  el.setAttribute('data-block-id', sub.blockId)
+  el.setAttribute('data-path', sub.realPath)
+  // 徽标交互不触碰 PM 选区/焦点（NodeView 外的手写 DOM）
+  el.addEventListener('mousedown', (e) => e.preventDefault())
+  el.addEventListener('click', (e) => {
+    e.preventDefault()
+    staleAlignHandler?.(tabId, sub.blockId, sub.realPath)
+  })
+  return el
+}
+
+/** 失步徽标插件工厂（refPlugin 装配：$prose(ctx => createStaleBlockPlugin(ctx 的 tabId))） */
+export function createStaleBlockPlugin(tabId: string | null): PluginType {
+  let plugin: PluginType
+  plugin = new Plugin({
+    key: new PluginKey('STALE_BLOCK'),
+    state: {
+      init: () => DecorationSet.empty,
+      apply: (tr, _oldSet) => {
+        const staleSubs = tabId ? docStore.getStaleBlockSubs(tabId) : []
+        if (!staleSubs.length) return DecorationSet.empty
+        const decos: Decoration[] = []
+        tr.doc.descendants((node, pos) => {
+          if (node.type.name === 'file_block') {
+            const blockId = node.attrs.blockId as string | null
+            const hit = blockId ? staleSubs.find((s) => s.blockId === blockId) : undefined
+            if (hit) decos.push(Decoration.widget(pos, staleBadge(tabId, hit), { side: -1 }))
+          }
+          return true
+        })
+        return DecorationSet.create(tr.doc, decos)
+      },
+    },
+    props: {
+      decorations: (state) => plugin.getState(state) ?? DecorationSet.empty,
+    },
+  })
+  return plugin
+}
+
+/** 对齐成功后派发空事务，立即刷新失步徽标（stale 装饰消失） */
+export function refreshStaleDeco(editor: Editor): void {
+  try {
+    editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      view.dispatch(view.state.tr.setMeta('docstoreExternal', true))
+    })
+  } catch {
+    /* 容错：编辑器可能已卸载 */
   }
 }

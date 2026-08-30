@@ -71,6 +71,29 @@ export function inspectDocStore(): ReturnType<typeof docStore.inspect> {
   return docStore.inspect()
 }
 
+/** CLI docstore.doc：canonical md 导出（spec §6.3）——未加载文件先 load（磁盘 → 模型），
+ *  保证与模型一致（快照来自唯一真相源，且含未保存编辑）。 */
+export async function docContent(realPath: string): Promise<{
+  realPath: string
+  loaded: boolean
+  canonical: string | null
+  rev: number
+  dirty: boolean
+} | null> {
+  let snap = docStore.snapshot(realPath)
+  if (!snap || snap.canonical == null) {
+    try {
+      await docStore.load(realPath)
+    } catch {
+      return null
+    }
+    snap = docStore.snapshot(realPath)
+  }
+  // 无内容（文件不存在 / 解析降级）→ null（CLI 语义：无该文档）
+  if (!snap || snap.canonical == null) return null
+  return { realPath, loaded: true, canonical: snap.canonical, rev: snap.rev, dirty: snap.dirty }
+}
+
 /** (内部/测试) 影子一致性：canonical(record 内容) 与模型 hash 对齐（串起 canonical 与模型） */
 export function shadowRoundTripStable(p: DocPipeline, md: string): boolean {
   return canonicalOf(p, md) === md
@@ -81,6 +104,12 @@ export function shadowRoundTripStable(p: DocPipeline, md: string): boolean {
 if (typeof window !== 'undefined') {
   const w = window as unknown as Record<string, unknown>
   w.__docstoreInspect = () => inspectDocStore()
+  w.__docstoreDoc = (p: string) => docContent(String(p))
+  // M5 验证钩子：人为置失步（真实失步极难触发——对齐驾底几乎总是成功；e2e 用它验证徽标链路）
+  w.__docstoreMarkStale = (realPath: string, tabId: string, blockId: string) => {
+    docStore.markSubStale(String(realPath), `${String(tabId)}#${String(blockId)}`)
+    return docStore.getStaleBlockSubs(String(tabId))
+  }
   w.__docstoreConsistency = (paths?: string[]) => {
     const list = paths && paths.length ? paths : inspectDocStore().models.map((m) => m.realPath)
     return list.map((p) => ({ path: p, ...(shadowConsistencyCheck(p) ?? { ok: null }) }))

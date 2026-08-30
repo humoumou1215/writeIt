@@ -14,7 +14,7 @@
     "predev": "npm run sync:demo",
     "prebuild": "npm run sync:demo",
     "test:e2e": "node tests/e2e/run-all.js",
-    "test:unit": "node tests/unit/run-unit.cjs"
+    "test:unit": "node tests/unit/run-unit.cjs && vitest run"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",

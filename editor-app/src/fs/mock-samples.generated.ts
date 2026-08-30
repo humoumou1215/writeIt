@@ -814,10 +814,10 @@ export function objectsFor(ctx: SuggestContext): SuggestObject[] {
 `,
   '.validate/report.md': `# 校验报告
 
-- 文件：数据库/customer/customer_info.md
+- 文件：数据库/loan/loan_apply.md
 - 模板：数据库
 - 模式：hint
-- 时间：2026/8/29 21:12:31
+- 时间：2026/8/30 11:01:27
 - 违规：0（error 0 / warning 0）
 
 ✅ 未发现违规`,
@@ -2150,6 +2150,8 @@ doctype:demo
 <mark data-note='[{"a":"我","c":"评论","t":1787627741553,"r":0}]' data-a='a-mt83eh69-1qnvq'>客户ID</mark>取自 [[数据库/customer/customer_info#id]]。444222555666777
 
 调试233334444555
+
+666777888
 `,
   '流程图/助贷/助贷放款流程.md': `# 助贷放款流程
 
@@ -3834,4 +3836,4 @@ export const DEMO_DIRS: string[] = [
 ]
 
 /** 全部 demo 文件内容的聚合 hash（校验同步状态用） */
-export const DEMO_HASH = 'ep3jjz'
+export const DEMO_HASH = '13oopsw'

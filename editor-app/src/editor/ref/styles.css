@@ -148,6 +148,28 @@ span.ref-object:hover {
   background: color-mix(in srgb, var(--chrome-error), transparent 90%) !important;
 }
 
+/* M5：失步块徽标（spec §6.1）——分发失败且对齐兑底也失败时的显式提示；点击对齐到最新 */
+.ref-stale-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 2px 28px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 500;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+.ref-stale-badge:hover {
+  background: #fde68a;
+}
+
 /* M3：只读 file_block 隐藏块拖拽手柄（hover 到只读卡片时不显示） */
 body:has(.milkdown .ref-file-block.readonly:hover) .block-handle,
 body:has(.milkdown .ref-file-block.readonly:active) .block-handle {

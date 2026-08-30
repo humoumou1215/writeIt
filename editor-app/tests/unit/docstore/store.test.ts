@@ -98,7 +98,9 @@ describe('docstore/store（M1 影子语义）', () => {
     const snap = docStore.snapshot('B.md')
     expect(snap).not.toBeNull()
     expect(snap!.realPath).toBe('B.md')
-    expect(snap!.dirty).toBe(true)
+    // M4：snapshot.dirty = userDirty（用户编辑标志）；record 是程序化 → false；rev 推进可见
+    expect(snap!.dirty).toBe(false)
+    expect(snap!.rev).toBeGreaterThan(0)
     expect(docStore.snapshot('B.md', 1)).toBeNull() // 历史未保留
   })
 
@@ -201,5 +203,39 @@ describe('docstore/store（M1 影子语义）', () => {
     const b = docStore.inspect().models.find((m) => m.realPath === 'B.md')!
     expect(b.dirty).toBe(false)
     expect(b.consistent).toBe(true)
+  })
+
+  // ---------- M5：失步语义（spec §6.1 / I2） ----------
+
+  it('markSubStale：分发失败显式置失步（I2 无静默滞后）', () => {
+    const s = docStore.subscribeShadow('B.md', { kind: 'block', tabId: 'tA', blockId: 'b1' })
+    const sub = docStore.inspect().models[0].subscribers.find((x) => x.key === s)!
+    expect(sub.stale).toBe(false)
+    docStore.markSubStale('B.md', s)
+    expect(docStore.inspect().models[0].subscribers.find((x) => x.key === s)!.stale).toBe(true)
+  })
+
+  it('markSubSynced：对齐成功后 rev 前进 + stale 清除（I2 恢复侧）', () => {
+    docStore.record('B.md', MD_B) // rev 1→2
+    const s = docStore.subscribeShadow('B.md', { kind: 'block', tabId: 'tA', blockId: 'b1' })
+    docStore.markSubStale('B.md', s)
+    docStore.markSubSynced('B.md', s, 3)
+    const sub = docStore.inspect().models[0].subscribers.find((x) => x.key === s)!
+    expect(sub.stale).toBe(false)
+    expect(sub.rev).toBe(3)
+  })
+
+  it('getStaleBlockSubs：按宿主标签聚合失步块（失步徽标数据源）', () => {
+    docStore.subscribeShadow('B.md', { kind: 'block', tabId: 'tA', blockId: 'b1' })
+    docStore.subscribeShadow('B.md', { kind: 'block', tabId: 'tA', blockId: 'b2' })
+    docStore.subscribeShadow('B.md', { kind: 'block', tabId: 'tB', blockId: 'b3' })
+    const keys = docStore.inspect().models[0].subscribers.map((x) => x.key)
+    docStore.markSubStale('B.md', keys[0])
+    docStore.markSubStale('B.md', keys[2])
+    const staleA = docStore.getStaleBlockSubs('tA')
+    expect(staleA.map((x) => x.blockId).sort()).toEqual(['b1'])
+    expect(staleA[0].realPath).toBe('B.md')
+    expect(docStore.getStaleBlockSubs('tB').map((x) => x.blockId)).toEqual(['b3'])
+    expect(docStore.getStaleBlockSubs('tC')).toEqual([])
   })
 })

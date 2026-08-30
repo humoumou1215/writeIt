@@ -45,10 +45,9 @@ export interface RefConfig {
   hostPath?: string | null
   /** P2：本编辑器所属标签 id（registry 视图注册/广播定位用；diff 渲染视图无标签 → 不注册） */
   tabId?: string
-  /** 源文件是否在标签中打开且有「真实未保存编辑」（userEditedAt > lastExternalSyncAt，
-   *  区别于联动/写回触发的预览刷新）。宿主保存写回前询问——避免宿主块内容覆盖源标签的
-   *  未保存编辑（最后保存者胜 + 提示）。由装配层实现；未提供时不启用该守卫。 */
-  isTabUserEdited?: (realPath: string) => boolean
+  /** 失步块对齐（M5 spec §6.1）：用户点击失步徽标 → 把对应源模型的当前内容整体
+   *  填充回宿主块并清除失步标记。由 app 装配层实现（对齐失败时保持徽标可见）。 */
+  alignStaleBlock?: (blockId: string, realPath: string) => void
   templateService: RefTemplateService
   /** 系统复制（OS 文件管理器）的绝对路径 → 工作区引用路径：
    *  工作区内返回相对路径；无根路径/工作区外返回文件名（Obsidian 式全库匹配）；

@@ -56,8 +56,9 @@ const mdS = await L.pageMd()
 C.check('Q3 保存后 md 保留宿主正文', mdS.includes('结尾段落末行') && mdS.includes('开场段落第一行'))
 
 // ---- 问题4：源tab 编辑并保存后 → 块编辑回流源 ----
-await L.clickText('.tree .name', '数据库字段引用.md', { label: '打开源' })
-await L.waitMs(2200)
+// 用 __editorOpenPath 打开源（tree 虚拟滚动下 clickText 对不可见文件不可靠，属 e2e 基建问题）
+await js(`window.__editorOpenPath ? window.__editorOpenPath('数据库字段引用.md') : null`)
+await L.waitMs(2400)
 await L.focusEditor(); await L.goEnd(); await L.waitMs(300)
 await L.type('源标Q7')
 await L.waitMs(1200)

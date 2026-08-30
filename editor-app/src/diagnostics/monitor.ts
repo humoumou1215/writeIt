@@ -83,7 +83,7 @@ export function startMonitor(): void {
 /** 渲染计数表：markdownUpdated 触发（编辑器内容变更节奏） */
 let _renderCount = 0
 let _lastRenderAt = 0
-/** manager.ts markdownUpdated 钩子调用（非 suppressing 时由 manager 调） */
+/** manager.ts markdownUpdated 钩子调用（渲染计数入口） */
 export function markEditorRender(): void {
   _renderCount++
   _lastRenderAt = Date.now()

@@ -23,7 +23,7 @@ import { gitBackendKind } from '../git'
 import { registerCommand } from './registry'
 import { eventsSince, lastSeq } from './events'
 import { consoleTail } from './console-ring'
-import { inspectDocStore, registryDiagCompat } from '../editor/docstore/bridge'
+import { inspectDocStore, registryDiagCompat, docContent } from '../editor/docstore/bridge'
 import { getBrokenPaths } from '../editor/ref/app-plugin'
 import { collectDomSnapshot } from '../diagnostics/probes'
 import { collectEditorProbe } from '../diagnostics/probes'
@@ -91,10 +91,24 @@ registerCommand('doc.selection', () => {
   return out ?? { kind: 'none' }
 })
 
-registerCommand('refs.registry', () => JSON.parse(JSON.stringify(registryDiagCompat())))
+// M4：registry 已下线——refs.registry 保留为兼容输出（deprecated，由 docstore.inspect 接管，spec §6.3）
+registerCommand('refs.registry', () => ({
+  deprecated: true,
+  replacement: 'docstore.inspect',
+  ...JSON.parse(JSON.stringify(registryDiagCompat())),
+}))
 
 // M1：运行态文档层快照（spec §9.2）——模型/rev/脏态/订阅者基线；影子一致性取证据
 registerCommand('docstore.inspect', () => inspectDocStore())
+
+// M4：canonical md 导出（spec §6.3）——未加载文件也可查询，且保证与模型一致（含未保存编辑）
+registerCommand('docstore.doc', async (args) => {
+  const path = typeof args.path === 'string' ? args.path : null
+  if (!path) throw new Error('docstore.doc requires args.path')
+  const out = await docContent(path)
+  if (!out) return { error: `no model/disk content for ${path}` }
+  return out
+})
 
 registerCommand('refs.broken', () => getBrokenPaths())
 
