@@ -308,6 +308,8 @@ export async function mockGlobalReadFile(path: string): Promise<string> {
 interface MockData {
   files: Record<string, string>
   dirs: string[]
+  /** 二进制文件（base64）：粘贴图片等。文件树的 file 枚举与 rename/remove 需同步维护 */
+  binaries?: Record<string, string>
   /** 是否已完成示例合并（防止删除的示例文件被重复恢复） */
   seeded?: boolean
   /** 示例合并版本：新版本会把新增示例文件补进旧快照 */
@@ -362,6 +364,24 @@ function hash(s: string): string {
   let x = 0
   for (let i = 0; i < s.length; i++) x = (Math.imul(x, 31) + s.charCodeAt(i)) | 0
   return (x >>> 0).toString(36)
+}
+
+/** Uint8Array → base64（二进制落盘 localStorage 用，体积 ~33% 膨胀可接受） */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+/** base64 → Uint8Array */
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
 function load(): MockData {
@@ -501,7 +521,8 @@ function buildTree(data: MockData, showAll: boolean): FsEntry[] {
     return node
   }
   for (const dir of data.dirs) ensureDir(dir)
-  for (const path of Object.keys(data.files)) {
+  const allFiles = new Set([...Object.keys(data.files), ...Object.keys(data.binaries ?? {})])
+  for (const path of allFiles) {
     if (!shouldShowInTree(path, baseName(path), showAll)) continue
     const parent = ensureDir(dirName(path))
     parent.children!.push({ name: baseName(path), path, kind: 'file' })
@@ -559,6 +580,33 @@ export const mockFs: FileSystem = {
     persist(data)
   },
 
+  /** 写二进制：base64 存入 MockData.binaries，父目录自动补 dirs */
+  async writeBinary(path, data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
+    const mock = load()
+    // 父目录自动登记（文件树要能展示 images/ 目录）
+    const parent = dirName(path)
+    const missing: string[] = []
+    let cur = ''
+    for (const seg of parent.split('/').filter(Boolean)) {
+      cur = cur ? `${cur}/${seg}` : seg
+      if (!mock.dirs.includes(cur)) missing.push(cur)
+    }
+    for (const d of missing) mock.dirs.push(d)
+    mock.binaries = mock.binaries ?? {}
+    mock.binaries[path] = bytesToBase64(bytes)
+    // 同名文本文件占位（如用户建过同名）不冲突：binary 优先
+    persist(mock)
+  },
+
+  /** 读二进制：base64 解码返回字节 */
+  async readBinary(path) {
+    const data = load()
+    const b64 = data.binaries?.[path]
+    if (b64 === undefined) throw new Error(`二进制文件不存在: ${path}`)
+    return base64ToBytes(b64)
+  },
+
   async rename(oldPath, newPath) {
     const data = load()
     if (oldPath === newPath) return
@@ -569,6 +617,10 @@ export const mockFs: FileSystem = {
       const content = data.files[oldPath]
       delete data.files[oldPath]
       data.files[newPath] = content
+    } else if (data.binaries && oldPath in data.binaries) {
+      const b = data.binaries[oldPath]
+      delete data.binaries[oldPath]
+      data.binaries[newPath] = b
     } else if (data.dirs.includes(oldPath)) {
       data.dirs = data.dirs.map((d) =>
         d === oldPath || d.startsWith(oldPath + '/')
@@ -583,6 +635,16 @@ export const mockFs: FileSystem = {
           data.files[newPath + rel] = c
         }
       }
+      // 目录内二进制文件一并迁移
+      if (data.binaries) {
+        for (const [p, b] of Object.entries(data.binaries)) {
+          if (p === oldPath || p.startsWith(oldPath + '/')) {
+            const rel = p.slice(oldPath.length)
+            delete data.binaries[p]
+            data.binaries[newPath + rel] = b
+          }
+        }
+      }
     } else {
       throw new Error(`不存在: ${oldPath}`)
     }
@@ -593,10 +655,17 @@ export const mockFs: FileSystem = {
     const data = load()
     if (path in data.files) {
       delete data.files[path]
+    } else if (data.binaries && path in data.binaries) {
+      delete data.binaries[path]
     } else if (data.dirs.includes(path)) {
       data.dirs = data.dirs.filter((d) => d !== path)
       for (const p of Object.keys(data.files)) {
         if (p === path || p.startsWith(path + '/')) delete data.files[p]
+      }
+      if (data.binaries) {
+        for (const p of Object.keys(data.binaries)) {
+          if (p === path || p.startsWith(path + '/')) delete data.binaries[p]
+        }
       }
     } else {
       throw new Error(`不存在: ${path}`)

@@ -33,6 +33,13 @@ export const devFs: FileSystem = {
   writeFile(path, content) {
     return call<void>('write', { path, content })
   },
+  writeBinary(path, data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
+    return call<void>('write-binary', { path, base64: bytesToBase64(bytes) })
+  },
+  readBinary(path) {
+    return call<string>('read-binary', { path }).then((b64) => base64ToBytes(b64))
+  },
   createFile(path) {
     return call<void>('create', { path })
   },
@@ -49,4 +56,20 @@ export const devFs: FileSystem = {
   revealInExplorer() {
     return Promise.reject(new Error('该功能仅在桌面应用中可用'))
   },
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }

@@ -8,6 +8,8 @@ import {
   ICON_SETS,
   SHORTCUT_DEFS,
   EDITOR_SHORTCUT_DEFS,
+  IMAGE_PASTE_MODES,
+  ANNOTATION_OPEN_MODES,
   formatCombo,
 } from '../state/settings'
 import { fs } from '../fs'
@@ -19,11 +21,11 @@ import MenuIcon from './MenuIcon.vue'
 // 图标列 6 个功能（与 App.vue 菜单栏顺序一致）
 const iconNames = ['files', 'git', 'settings', 'shortcuts', 'export', 'diagnostics'] as const
 
-const props = defineProps<{ initialTab?: 'general' | 'shortcuts' }>()
+const props = defineProps<{ initialTab?: 'general' | 'image' | 'shortcuts' | 'advanced' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 // 打开时的初始页签（图标列「快捷键」入口传入 'shortcuts'）
-const tab = ref<'general' | 'shortcuts'>(props.initialTab ?? 'general')
+const tab = ref<'general' | 'image' | 'shortcuts' | 'advanced'>(props.initialTab ?? 'general')
 const recording = ref<string | null>(null)
 const recordEl = ref<HTMLInputElement | null>(null)
 
@@ -50,6 +52,14 @@ function onTemplateDirChange() {
 function onSettingChange() {
   saveSettings()
   refreshTree()
+}
+/** 批注栏默认展开策略：仅持久化，无需刷新文件树 */
+function onAnnotationModeChange() {
+  saveSettings()
+}
+/** 图片页设置：无需刷新文件树，仅持久化 */
+function onImageSettingChange() {
+  saveSettings()
 }
 async function openLocalDir() {
   await openDirectory()
@@ -196,8 +206,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <button class="tab-btn" :class="{ active: tab === 'general' }" @click="tab = 'general'">
               常规
             </button>
+            <button class="tab-btn" :class="{ active: tab === 'image' }" @click="tab = 'image'">
+              图片
+            </button>
             <button class="tab-btn" :class="{ active: tab === 'shortcuts' }" @click="tab = 'shortcuts'">
               快捷键
+            </button>
+            <button class="tab-btn" :class="{ active: tab === 'advanced' }" @click="tab = 'advanced'">
+              高级
             </button>
           </div>
           <button class="close" @click="emit('close')" title="关闭 (Esc)">×</button>
@@ -263,6 +279,58 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onModalKey))
             <span class="badge">{{ fs.kind }}</span>
           </div>
 
+          <h4 class="group-title">💬 批注栏</h4>
+          <label class="row">
+            <span>默认展开（编辑器视图）</span>
+            <select v-model="settings.annotationOpenMode" @change="onAnnotationModeChange">
+              <option v-for="m in ANNOTATION_OPEN_MODES" :key="m.id" :value="m.id">{{ m.label }}</option>
+            </select>
+          </label>
+          <p class="hint">
+            {{ ANNOTATION_OPEN_MODES.find((m) => m.id === settings.annotationOpenMode)?.desc }}；新打开标签时生效
+          </p>
+          <label class="row">
+            <span>默认展开（Git 改动视图）</span>
+            <select v-model="settings.annotationOpenModeDiff" @change="onAnnotationModeChange">
+              <option v-for="m in ANNOTATION_OPEN_MODES" :key="m.id" :value="m.id">{{ m.label }}</option>
+            </select>
+          </label>
+          <p class="hint">
+            {{ ANNOTATION_OPEN_MODES.find((m) => m.id === settings.annotationOpenModeDiff)?.desc }}；打开 Git 改动标签时生效
+          </p>
+        </div>
+
+        <!-- ===== 图片 ===== -->
+        <div v-else-if="tab === 'image'" class="modal-body">
+          <h4 class="group-title" style="margin-top:0">🖼 粘贴图片保存位置</h4>
+          <p class="hint" style="margin-top:8px">
+            在编辑器中粘贴/截图插入图片时，图片默认<b>内嵌为 base64</b> 存进 md 文件（文件膨胀、无法复用）。
+            选择下面的策略可把图片保存为独立文件，文档只记录相对路径引用。
+          </p>
+          <div class="img-mode-list">
+            <label v-for="m in IMAGE_PASTE_MODES" :key="m.id" class="img-mode">
+              <input
+                type="radio"
+                name="imagePaste"
+                :value="m.id"
+                v-model="settings.imagePaste"
+                @change="onImageSettingChange"
+              />
+              <span class="img-mode-main">
+                <span class="img-mode-label">{{ m.label }}</span>
+                <span class="img-mode-desc">{{ m.desc }}</span>
+                <code class="img-mode-example">{{ m.example }}</code>
+              </span>
+            </label>
+          </div>
+          <p class="hint">
+            文件名形如 <code>Pasted-20260812-143502-8f2a.png</code>（创建时的时间戳 + 随机后缀，避免重名覆盖）。
+            保存到目录的策略下，粘贴即可立即落盘；改动会自动反映到文件树。
+          </p>
+        </div>
+
+        <!-- ===== 高级（性能 / 调试通道 / 诊断 / 数据源） ===== -->
+        <div v-else-if="tab === 'advanced'" class="modal-body">
           <!-- 性能（低功耗）：VM / 软件渲染环境降低合成开销 -->
           <h4 class="group-title">⚡ 性能</h4>
           <label class="row">
@@ -633,6 +701,53 @@ select {
   color: var(--chrome-primary);
   border-top: 1px solid var(--chrome-outline);
   padding-top: 10px;
+}
+/* 图片保存策略列表 */
+.img-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.img-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  background: var(--chrome-surface-low, var(--chrome-background));
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--chrome-on-surface);
+}
+.img-mode:hover {
+  border-color: var(--chrome-primary);
+}
+.img-mode input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--chrome-primary);
+}
+.img-mode-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.img-mode-label {
+  font-weight: 600;
+}
+.img-mode-desc {
+  font-size: 12px;
+  color: var(--chrome-on-surface-variant);
+  line-height: 1.5;
+}
+.img-mode-example {
+  font-size: 11px;
+  font-family: var(--chrome-font-code, monospace);
+  color: var(--chrome-primary);
+  background: var(--chrome-hover);
+  padding: 1px 6px;
+  border-radius: 4px;
+  align-self: flex-start;
 }
 .shortcut-list {
   display: flex;

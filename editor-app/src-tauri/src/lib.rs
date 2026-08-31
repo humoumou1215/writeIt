@@ -122,6 +122,35 @@ fn write_file(
   fs::write(&full, content).map_err(|e| e.to_string())
 }
 
+/// 写二进制文件（粘贴图片等）：前端传 base64，这里解码后落盘
+#[tauri::command]
+fn write_file_binary(
+  state: State<'_, AppState>,
+  path: String,
+  base64: String,
+) -> Result<(), String> {
+  use base64::Engine;
+  let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
+  let full = resolve(&root, &path)?;
+  if let Some(parent) = full.parent() {
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  }
+  let bytes = base64::engine::general_purpose::STANDARD
+    .decode(base64)
+    .map_err(|e| e.to_string())?;
+  fs::write(&full, bytes).map_err(|e| e.to_string())
+}
+
+/// 读二进制文件为 base64（图片以相对路径显示时取数据）
+#[tauri::command]
+fn read_file_binary(state: State<'_, AppState>, path: String) -> Result<String, String> {
+  use base64::Engine;
+  let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
+  let full = resolve(&root, &path)?;
+  let bytes = fs::read(&full).map_err(|e| e.to_string())?;
+  Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 #[tauri::command]
 fn create_file(state: State<'_, AppState>, path: String) -> Result<(), String> {
   let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
@@ -1916,6 +1945,8 @@ pub fn run() {
       read_tree,
       read_file,
       write_file,
+      write_file_binary,
+      read_file_binary,
       create_file,
       create_dir,
       rename,

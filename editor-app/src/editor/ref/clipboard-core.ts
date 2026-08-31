@@ -296,6 +296,13 @@ export interface EditorMenuTarget {
   pos: number
 }
 
+/** 图片右键命中：src=显示 URL（blob/data/http），path=仓库相对路径（可定位/explorer），name=文件名 */
+export interface EditorMenuImage {
+  src: string
+  path?: string
+  name: string
+}
+
 export interface EditorMenuState {
   visible: boolean
   x: number
@@ -306,6 +313,8 @@ export interface EditorMenuState {
   cfg: import('./config').RefConfig | null
   /** 右键命中的引用节点（普通位置为 null） */
   target: EditorMenuTarget | null
+  /** 右键命中的图片（编辑器内 image-block / image-inline）；非图片位置为 null */
+  image: EditorMenuImage | null
   /** 打开菜单时剪贴板里的文件引用快照 */
   clip: InsertItems | null
   /** 剪贴板是否有纯文本内容（「粘贴」是否可用） */
@@ -321,6 +330,7 @@ export const editorMenuState = shallowReactive<EditorMenuState>({
   view: null,
   cfg: null,
   target: null,
+  image: null,
   clip: null,
   hasText: false,
   hasSelection: false,
@@ -330,6 +340,7 @@ export const editorMenuState = shallowReactive<EditorMenuState>({
 export function closeEditorMenu(): void {
   editorMenuState.visible = false
   editorMenuState.target = null
+  editorMenuState.image = null
 }
 
 // ---------- 右键菜单动作（组件点击后执行） ----------
@@ -427,6 +438,43 @@ export function menuSetRefMode(mode: RefMode): void {
   if (convertRefMode(view, editor, target.pos, mode)) {
     closeEditorMenu()
     view.focus()
+  }
+}
+
+// ---------- 图片复制（右键图片菜单） ----------
+
+/** 把图片 DOM 的 src（blob: / data: / http(s):）还原为 Blob（保留原始编码） */
+async function srcToBlob(src: string): Promise<Blob> {
+  if (src.startsWith('data:')) {
+    const comma = src.indexOf(',')
+    const meta = src.slice(0, comma)
+    const mime = /data:([^;]+)/.exec(meta)?.[1] || 'image/png'
+    const bin = atob(src.slice(comma + 1))
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new Blob([bytes], { type: mime })
+  }
+  if (src.startsWith('blob:') || src.startsWith('http://') || src.startsWith('https://')) {
+    const res = await fetch(src)
+    const blob = await res.blob()
+    // 空 MIME 兜底为 png（blob URL 一般保留了创建时按路径推断的类型）
+    return blob.type ? blob : new Blob([blob], { type: 'image/png' })
+  }
+  throw new Error('不支持的图片来源')
+}
+
+/**
+ * 复制图片到系统剪贴板（供粘贴到资源管理器 / 编辑器其他位置）。
+ * 粘贴回本编辑器会走 image-paste 插件 → 重新落盘插入；成功返回 true。
+ */
+export async function copyImageToClipboard(image: EditorMenuImage): Promise<boolean> {
+  try {
+    const blob = await srcToBlob(image.src)
+    const type = blob.type || 'image/png'
+    await navigator.clipboard.write([new ClipboardItem({ [type]: blob })])
+    return true
+  } catch {
+    return false
   }
 }
 

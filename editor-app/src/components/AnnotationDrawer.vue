@@ -6,7 +6,8 @@
 //  - 内容纯文本（v3 决策：不做 markdown 渲染）
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { state } from '../state/store'
-import { settings } from '../state/settings'
+import { settings, saveSettings } from '../state/settings'
+import type { AnnotationOpenMode } from '../state/settings'
 import {
   subscribeAnnotations,
   getActiveAnnotationId,
@@ -21,7 +22,55 @@ import {
 import { LEVEL_COLOR } from '../annotations/card-color'
 
 // ---------- 状态 ----------
-const open = ref(false)
+// 批注栏默认展开策略（设置面板可配）：
+//  - flex（灵活）：跟随「最近一次手动操作」记忆变量——打开过 1 次 → 记开，关闭过 1 次 → 记关；
+//    后续打开新标签时按记忆决定是否默认展开
+//  - never / always：常关 / 常开，忽略记忆
+// 常规（编辑器）视图与 Git 改动（diff）视图各用一套策略 + 记忆（annotationOpenMode(+Diff)、annotationLastOpen(+Diff)）。
+function currentTab() {
+  return state.tabs.find((t) => t.id === state.activeTabId) ?? null
+}
+/** 当前标签属于「Git 改动（diff）」还是「常规（编辑器）」视图组：
+ *  git 标签（kind='git'）只以 diff 视图存在（打开瞬间 viewMode 尚为 wysiwyg，须按 kind 判断）；
+ *  editor 标签临时进入 diff 视图时按 viewMode 判断 */
+function isDiffView(): boolean {
+  const tab = currentTab()
+  return tab?.kind === 'git' || tab?.viewMode === 'diff'
+}
+function defaultOpenFor(mode: AnnotationOpenMode, last: boolean): boolean {
+  if (mode === 'never') return false
+  if (mode === 'always') return true
+  return last
+}
+/** 当前活动标签的批注栏默认展开状态（按视图类型选策略 + 记忆） */
+function defaultOpenForActive(): boolean {
+  const diff = isDiffView()
+  return defaultOpenFor(
+    diff ? settings.annotationOpenModeDiff : settings.annotationOpenMode,
+    diff ? settings.annotationLastOpenDiff : settings.annotationLastOpen
+  )
+}
+/** 用户手动打开/关闭批注栏 → 写对应视图的共享记忆变量（无论策略如何都记录） */
+function rememberManualOpen() {
+  const target = open.value
+  if (isDiffView()) {
+    if (settings.annotationLastOpenDiff !== target) {
+      settings.annotationLastOpenDiff = target
+      saveSettings()
+    }
+  } else if (settings.annotationLastOpen !== target) {
+    settings.annotationLastOpen = target
+    saveSettings()
+  }
+}
+const open = ref(defaultOpenForActive())
+// 打开新标签（tabs 增加）→ 按当前视图的策略 + 记忆重设批注栏默认展开；切换已有标签不重置
+watch(
+  () => state.tabs.length,
+  (n, prev) => {
+    if (n > (prev ?? 0)) open.value = defaultOpenForActive()
+  }
+)
 const width = ref(Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
 const anns = ref<Annotation[]>([])
 const activeId = ref<string | null>(null)
@@ -542,7 +591,10 @@ function drawConnectorPath(
 }
 
 watch(activeId, (id) => {
-  if (id) open.value = true // 点击锚点自动展开抽屉
+  if (id) {
+    open.value = true // 点击锚点自动展开抽屉
+    rememberManualOpen()
+  }
   requestAnimationFrame(drawConnector)
 })
 watch([() => anns.value.length, open], () => {
@@ -615,6 +667,7 @@ function toggleOpen() {
     open.value = true
     animateWidth(0, Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
   }
+  rememberManualOpen()
 }
 let dragStartX = 0
 let dragStartW = 0

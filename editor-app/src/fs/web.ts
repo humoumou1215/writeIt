@@ -111,6 +111,26 @@ export const webFs: FileSystem = {
     await w.close()
   },
 
+  async writeBinary(path, data) {
+    if (!rootHandle || !(await ensurePermission())) throw new Error('未授权访问目录')
+    // 父目录自动创建
+    const parts = path.split('/').filter(Boolean)
+    let cur = rootHandle
+    for (let i = 0; i < parts.length - 1; i++) cur = await cur.getDirectoryHandle(parts[i], { create: true })
+    const fh = await cur.getFileHandle(parts[parts.length - 1], { create: true })
+    const w = await fh.createWritable()
+    await w.write(data instanceof Uint8Array ? data : new Uint8Array(data))
+    await w.close()
+  },
+
+  async readBinary(path) {
+    if (!rootHandle || !(await ensurePermission())) throw new Error('未授权访问目录')
+    const handle = await pathToHandle(rootHandle, path)
+    if (handle.kind !== 'file') throw new Error(`不是文件: ${path}`)
+    const file = await (handle as FileSystemFileHandle).getFile()
+    return new Uint8Array(await file.arrayBuffer())
+  },
+
   async createFile(path) {
     if (!rootHandle || !(await ensurePermission())) throw new Error('未授权访问目录')
     const parts = path.split('/').filter(Boolean)

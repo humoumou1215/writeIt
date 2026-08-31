@@ -410,6 +410,21 @@ async function handleFs(req: IncomingMessage, res: ServerResponse, action: strin
         send(res, { ok: true })
         return
       }
+      case 'write-binary': {
+        // 粘贴图片等：base64 → Buffer 落盘
+        const full = resolveRel(String(body.path))
+        await fs.mkdir(path.dirname(full), { recursive: true })
+        await fs.writeFile(full, Buffer.from(String(body.base64 ?? ''), 'base64'))
+        send(res, { ok: true })
+        return
+      }
+      case 'read-binary': {
+        // 图片以相对路径显示时：读字节 → base64 返回
+        const full = resolveRel(String(body.path))
+        const buf = await fs.readFile(full)
+        send(res, { ok: true, data: buf.toString('base64') })
+        return
+      }
       case 'create': {
         const full = resolveRel(String(body.path))
         try { await fs.access(full); throw new Error('文件已存在') } catch (e) {

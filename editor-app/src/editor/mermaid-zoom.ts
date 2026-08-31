@@ -5,6 +5,7 @@
 //     - 点击 .mmd-zoom-btn → 克隆 SVG 打开 Lightbox
 //     - Lightbox：滚轮缩放（以光标为中心）/ 拖拽平移 / 双击复位 / ESC 或点遮罩或 ✕ 关闭
 import './mermaid-zoom.css'
+import { showClickSpot } from './click-spot'
 
 const zoomInIcon = `
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -200,7 +201,7 @@ function onPointerMove(e: PointerEvent) {
   }
 }
 
-function onPointerUp(_e: PointerEvent) {
+function onPointerUp(e: PointerEvent) {
   detachDragListeners()
   if (!state) {
     drag = null
@@ -212,7 +213,14 @@ function onPointerUp(_e: PointerEvent) {
   state.overlay.classList.remove('mmd-dragging')
   // 仅「pointerdown 就落在遮罩空白处」且未拖拽才关闭；
   // 落在图表/✕ 上的点击不关（用 downTarget 判定，避免重定向/冒泡误判）
-  if (!wasDrag && downTarget === state.overlay) closeLightbox(true)
+  if (!wasDrag && downTarget === state.overlay) {
+    closeLightbox(true)
+    return
+  }
+  // 点击 Mermaid 图表本体（画布/内部 svg）且未拖拽 → 光斑（不关闭）
+  if (!wasDrag && downTarget instanceof Element && downTarget.closest('.mmd-lightbox-canvas')) {
+    showClickSpot(e.clientX, e.clientY)
+  }
 }
 
 // ---------------- 委托：放大镜按钮点击 ----------------
@@ -230,5 +238,20 @@ function onDocClick(e: MouseEvent) {
   openLightbox(svg, btn instanceof HTMLElement ? btn : null)
 }
 
+// 直接点击 Mermaid 图表本体（编辑区 code-block 预览内）→ 光斑；放大镜按钮不夺走。
+// 用 mousedown capture 以免 PM 选中图表/代码块；内嵌 [[link]] 仍是可点链接，不冒光斑。
+function onDocMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return
+  const target = e.target
+  if (!(target instanceof Element)) return
+  if (target.closest('.mmd-zoomable a')) return
+  const svg = target.closest('.mmd-zoomable svg')
+  if (!svg) return
+  e.preventDefault()
+  e.stopPropagation()
+  showClickSpot(e.clientX, e.clientY)
+}
+
 // 模块级初始化一次（多标签实例共享）
 document.addEventListener('click', onDocClick, true)
+document.addEventListener('mousedown', onDocMouseDown, true)

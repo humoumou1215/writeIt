@@ -109,6 +109,52 @@ export function comboMatches(e: KeyboardEvent, combo: string): boolean {
 
 // ---------- 应用设置 ----------
 
+// ---------- 图片粘贴保存策略 ----------
+// 粘贴图片时把图片落盘为独立文件，文档只保存相对路径引用；inline 为历史行为（base64 内嵌）。
+export type ImagePasteMode = 'inline' | 'same-dir' | 'root-images' | 'file-images'
+
+// ---------- 批注栏默认展开策略 ----------
+// flex（灵活）= 跟随「最近一次手动打开/关闭」记忆；never = 常关；always = 常开。
+// 常规（编辑器）视图与 Git 改动（diff）视图各用一套策略 + 记忆变量。
+export type AnnotationOpenMode = 'flex' | 'never' | 'always'
+
+export const ANNOTATION_OPEN_MODES: { id: AnnotationOpenMode; label: string; desc: string }[] = [
+  {
+    id: 'flex',
+    label: '灵活',
+    desc: '跟随最近一次手动操作：上次打开过则新标签默认展开，上次关闭则默认收起',
+  },
+  { id: 'never', label: '常关', desc: '打开新标签时批注栏始终默认收起' },
+  { id: 'always', label: '常开', desc: '打开新标签时批注栏始终默认展开' },
+]
+
+export const IMAGE_PASTE_MODES: { id: ImagePasteMode; label: string; desc: string; example: string }[] = [
+  {
+    id: 'root-images',
+    label: '根目录 images 目录（默认）',
+    desc: '所有粘贴图片集中保存到工作区根目录的 images/ 下，文档引用为 images/xxx.png',
+    example: 'images/2026-08-12-143502.png',
+  },
+  {
+    id: 'same-dir',
+    label: '与当前文件同目录',
+    desc: '图片保存在当前 md 文件所在目录，文档引用为文件名（适用于单文件/单目录笔记）',
+    example: '笔记/2026-08-12-143502.png',
+  },
+  {
+    id: 'file-images',
+    label: '当前文件目录下 images 子目录',
+    desc: '图片保存在当前 md 文件所在目录的 images/ 子目录，文档引用为 images/xxx.png',
+    example: '笔记/images/2026-08-12-143502.png',
+  },
+  {
+    id: 'inline',
+    label: '内嵌保存（base64）',
+    desc: '图片以 data:image 内嵌进 md 文件（文件大、不可复用，历史默认行为）',
+    example: '![alt](data:image/png;base64,…)',
+  },
+]
+
 export interface AppSettings {
   theme: ThemeId
   /** 菜单栏图标风格 */
@@ -127,6 +173,14 @@ export interface AppSettings {
   annotationUsername: string
   /** 批注抽屉默认宽度（px） */
   annotationDrawerWidth: number
+  /** 批注栏默认展开策略：常规（编辑器）视图 */
+  annotationOpenMode: AnnotationOpenMode
+  /** 批注栏默认展开策略：Git 改动（diff）视图 */
+  annotationOpenModeDiff: AnnotationOpenMode
+  /** 常规视图「最近一次手动操作」记忆：true=上次打开过，false=上次关闭过 */
+  annotationLastOpen: boolean
+  /** Git 改动视图「最近一次手动操作」记忆 */
+  annotationLastOpenDiff: boolean
   /** 大纲面板默认宽度（px） */
   outlineWidth: number
   /** 大纲面板是否展开 */
@@ -141,6 +195,8 @@ export interface AppSettings {
   webviewOcclusionOff: boolean
   /** 快捷键映射：actionId → "Ctrl+Shift+X" */
   shortcuts: Record<string, string>
+  /** 图片粘贴保存策略 */
+  imagePaste: ImagePasteMode
 
   // ---------- 诊断（Diagnostics）----------
   /** 诊断功能总开关（关闭后入口隐藏） */
@@ -173,6 +229,11 @@ const defaultSettings: AppSettings = {
   lastDir: '',
   annotationUsername: '我',
   annotationDrawerWidth: 300,
+  // 批注栏默认展开：灵活（跟随记忆），默认记忆为关 → 首开新标签批注栏收起（历史行为）
+  annotationOpenMode: 'flex',
+  annotationOpenModeDiff: 'flex',
+  annotationLastOpen: false,
+  annotationLastOpenDiff: false,
   outlineWidth: 180,
   outlineOpen: true,
   outlineAutoFit: true,
@@ -182,6 +243,7 @@ const defaultSettings: AppSettings = {
   gpuUnblock: true,
   webviewOcclusionOff: true,
   shortcuts: { ...defaultShortcuts },
+  imagePaste: 'root-images',
   // 诊断
   diagEnabled: true,
   diagAutoPrompt: true,

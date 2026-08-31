@@ -11,8 +11,12 @@ import {
   menuOpenRef,
   menuCopyRefSyntax,
   menuSetRefMode,
+  copyImageToClipboard,
 } from '../editor/ref/clipboard-core'
 import type { RefMode } from '../editor/ref/core'
+import { openImagePreview } from '../editor/image-paste'
+import { fs } from '../fs'
+import { toast } from '../state/store'
 
 const st = editorMenuState
 
@@ -46,6 +50,45 @@ function pasteDirText() {
   closeEditorMenu()
   view.focus()
 }
+
+// ---------- 图片右键菜单（图片上的 预览/定位/资源管理器） ----------
+
+function previewImage() {
+  if (!st.image) return
+  openImagePreview(st.image)
+  closeEditorMenu()
+}
+
+/** 复制图片到系统剪贴板（可粘贴到资源管理器 / 编辑器其他位置） */
+async function copyImage() {
+  if (!st.image) return
+  closeEditorMenu()
+  const ok = await copyImageToClipboard(st.image)
+  toast(ok ? '图片已复制到剪贴板' : '复制图片失败', ok ? 'info' : 'error')
+}
+
+/** 在左侧文件树中定位该图片文件 */
+async function revealImageInTree() {
+  const p = st.image?.path
+  if (!p) return
+  closeEditorMenu()
+  const { revealInTree } = await import('../state/treeOps')
+  revealInTree(p)
+}
+
+/** 在系统文件浏览器中打开并选中（仅 Tauri 桌面版） */
+async function revealImageInExplorer() {
+  const p = st.image?.path
+  if (!p) return
+  closeEditorMenu()
+  if (fs.kind !== 'tauri') {
+    toast('该功能仅在桌面应用中可用', 'info')
+    return
+  }
+  fs.revealInExplorer(p).catch((e: unknown) => {
+    toast((e as Error)?.message || '打开文件管理器失败', 'error')
+  })
+}
 </script>
 
 <template>
@@ -57,6 +100,24 @@ function pasteDirText() {
         @click.stop
         @contextmenu.stop.prevent
       >
+        <!-- ⑨ 图片组：右键图片（image-block / image-inline）上的操作 -->
+        <template v-if="st.image">
+          <div class="rm-group-title">图片</div>
+          <button class="rm-item" title="全屏预览该图片" @click="previewImage">
+            <span class="rm-ico">🔍</span>预览图片
+          </button>
+          <button class="rm-item" title="复制图片到系统剪贴板（可粘贴到资源管理器/编辑器其他位置）" @click="copyImage">
+            <span class="rm-ico">🖼</span>复制图片
+          </button>
+          <button v-if="st.image.path" class="rm-item" title="在左侧文件树中定位该文件" @click="revealImageInTree">
+            <span class="rm-ico">📌</span>在文件树中定位
+          </button>
+          <button v-if="st.image.path" class="rm-item" title="在系统文件浏览器中打开并选中该文件（桌面版）" @click="revealImageInExplorer">
+            <span class="rm-ico">📂</span>在文件浏览器中打开
+          </button>
+          <div class="rm-sep"></div>
+        </template>
+
         <!-- ① 粘贴组：复制的文件 → 三种引用类型 -->
         <template v-if="showPasteGroup && st.clip && st.clip.files.length">
           <div class="rm-group-title">粘贴为引用</div>

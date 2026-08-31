@@ -45,6 +45,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import ClipboardAuthModal from './components/ClipboardAuthModal.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import RefEditorMenu from './components/RefEditorMenu.vue'
+import ImagePreviewModal from './components/ImagePreviewModal.vue'
 import TemplatePicker from './components/TemplatePicker.vue'
 // 诊断（D1/D2）：入口 + 弹窗 + 异常红点轮询
 import { openReportModal } from './diagnostics'
@@ -186,6 +187,11 @@ function onKeydown(e: KeyboardEvent) {
   for (const def of SHORTCUT_DEFS) {
     const combo = settings.shortcuts[def.id]
     if (combo && comboMatches(e, combo)) {
+      // diff 视图内 Ctrl+E 由 DiffView 接管（渲染/文本分栏/文本统一循环），不放行 toggleSource
+      if (def.id === 'toggleSource') {
+        const t = state.tabs.find((x) => x.id === state.activeTabId)
+        if (t?.viewMode === 'diff') continue
+      }
       e.preventDefault()
       shortcutActions[def.id]?.()
       return
@@ -626,6 +632,7 @@ function onTreeRootDrop(e: DragEvent) {
     <ClipboardAuthModal />
     <ContextMenu @action="onMenuAction" />
     <RefEditorMenu />
+    <ImagePreviewModal />
     <TabContextMenu @action="onTabMenuAction" />
     <TemplatePicker
       v-if="state.templatePick !== null"

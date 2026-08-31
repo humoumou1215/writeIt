@@ -30,6 +30,10 @@ export interface FileSystem {
   remove(path: string): Promise<void>
   /** 在系统文件管理器中显示该路径（文件 → 所在目录并选中；目录 → 父级中选中）。不受支持的宿主抛错 */
   revealInExplorer(path: string): Promise<void>
+  /** 写二进制文件（粘贴图片落盘等）。写入前自动创建父目录；不受支持的宿主抛错 */
+  writeBinary?(path: string, data: Uint8Array): Promise<void>
+  /** 读二进制文件为字节（图片以相对路径显示时取数据）。不受支持的宿主抛错 */
+  readBinary?(path: string): Promise<Uint8Array>
   /** Tauri：非交互式加载指定目录（恢复上次打开目录用）。返回是否成功 */
   setRootFromPath?(path: string): Promise<boolean>
   /** Tauri：应用可执行文件所在目录（兜底工作目录）；其他宿主返回 null */

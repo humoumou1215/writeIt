@@ -7,6 +7,8 @@ import { clearTextInCurrentBlockCommand } from '@milkdown/kit/preset/commonmark'
 import { insert } from '@milkdown/kit/utils'
 
 import { mermaidFeatureConfigs } from './mermaid'
+import { resolveImageSrc } from './image-paste'
+import { fs } from '../fs'
 import { templateService } from '../template/service'
 import type { Template } from '../template/types'
 import { resolveRefs } from './ref/resolve'
@@ -49,6 +51,10 @@ export function featureConfigs(): CrepeFeatureConfig {
   const blockEdit = base['block-edit']
   return {
     ...base,
+    // 图片：仓库相对路径 → blob URL（粘贴落盘后的图片经此显示；data:/http 原样透传）
+    'image-block': {
+      proxyDomURL: (src: string) => resolveImageSrc(fs as Parameters<typeof resolveImageSrc>[0], src),
+    },
     // M6：选中文本工具条加「添加批注」（与加粗/标黄等放一起）
     'toolbar': {
       ...(base['toolbar'] ?? {}),

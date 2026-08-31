@@ -60,6 +60,17 @@ export const tauriFs: FileSystem = {
     await (await core()).invoke('write_file', { path, content })
   },
 
+  /** 图片等二进制落盘：前端 Uint8Array → base64 → Rust 解码写盘 */
+  async writeBinary(path, data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
+    await (await core()).invoke('write_file_binary', { path, base64: bytesToBase64(bytes) })
+  },
+
+  async readBinary(path) {
+    const b64 = await (await core()).invoke<string>('read_file_binary', { path })
+    return base64ToBytes(b64)
+  },
+
   async createFile(path) {
     await (await core()).invoke('create_file', { path })
   },
@@ -83,3 +94,21 @@ export const tauriFs: FileSystem = {
 
 let lastRootName = '工作区'
 let currentRootPath: string | null = null
+
+// ---------- base64 编解码（前端侧，浏览器环境内置） ----------
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(bin)
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
