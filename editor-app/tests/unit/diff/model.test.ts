@@ -262,11 +262,11 @@ describe('patchMermaidFences（M18 配对变更）', () => {
     const d = diffMermaid(oldMd, newMd)
     expect(d.type).toBe('sequence')
     expect(d.merged).toContain('新消息')
-    // §4.8（契约规则 5 修订）：图渲染新版本原样——删除消息不进 merged（SVG 内不再表达）
-    expect(d.merged).not.toContain('旧消息')
+    // Issue：删除消息插回合并源码（图内以 diff-seq-del 红显）——与 flowchart 删除节点加回同口径
+    expect(d.merged).toContain('旧消息')
     expect(d.add.includes('新消息')).toBe(true)
     expect(d.del.includes('旧消息')).toBe(true)
-    // sequence 不注入 class（SVG 内不再标注）
+    // sequence 不注入 classDef/class（消息级标注走 DOM messageText，非类注入）
     expect(d.merged).not.toContain('classDef diff')
   })
 

@@ -13,6 +13,7 @@ import { CodeMirrorBlock, codeBlockConfig } from '@milkdown/kit/component/code-b
 import { $view } from '@milkdown/kit/utils'
 import { codeBlockSchema } from '@milkdown/preset-commonmark'
 import { renderMermaidSvg, MermaidRenderError } from '../mermaid'
+import { extractSequenceRows } from '../mermaid-diff'
 import { fenceIdOf, normalizeFenceBody } from './fence-pair'
 import type { FenceRegistry, FenceChange } from './model'
 import { diagRenderUnit, degradedState } from './status'
@@ -138,6 +139,9 @@ export class DiffMermaidNodeView implements NodeView {
       preview.className = 'preview'
       preview.innerHTML = svg
       panel.appendChild(preview)
+      // Issue：sequence 消息级红绿标注——合并源码已把删除消息插回原位，这里按 messageText
+      // 内容匹配 add/del，给消息文字 + 对应 messageLine 上 diff-seq-add/del（绿/红）。
+      this.applySequenceDiff(preview)
       // 移除占位
       const ph = this.dom.querySelector('.milkdown-code-block-placeholder')
       if (ph) ph.remove()
@@ -169,6 +173,28 @@ export class DiffMermaidNodeView implements NodeView {
 
   selectNode() {}
   deselectNode() {}
+
+  /** sequence 消息级 diff 标注：按 messageText 内容匹配 entry.add/del（消息标签），
+   *  绿（add）/红（del，含删除线）。line.messageLine{i} 与 text.messageText{i} 同序，尽力着色。 */
+  private applySequenceDiff(panel: HTMLElement): void {
+    const entry = this.entry
+    if (!entry || entry.type !== 'sequence') return
+    const addSet = new Set(entry.add)
+    const delSet = new Set(entry.del)
+    if (!addSet.size && !delSet.size) return
+    const svg = panel.querySelector('svg')
+    if (!svg) return
+    const addCls = 'diff-seq-add'
+    const delCls = 'diff-seq-del'
+    const texts = [...svg.querySelectorAll('text.messageText')]
+    texts.forEach((t, i) => {
+      const m = (t.textContent || '').trim()
+      const cls = addSet.has(m) ? addCls : delSet.has(m) ? delCls : null
+      if (!cls) return
+      t.classList.add(cls)
+      svg.querySelectorAll('line.messageLine' + i).forEach((l) => l.classList.add(cls))
+    })
+  }
 
   stopEvent(): boolean {
     return !this.view.editable // readonly：拦截一切事件

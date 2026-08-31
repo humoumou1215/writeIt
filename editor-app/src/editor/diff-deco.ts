@@ -19,7 +19,7 @@ import { computeDocDiff } from '@milkdown/plugin-diff'
 import type { Node } from '@milkdown/kit/prose/model'
 import { Decoration } from '@milkdown/kit/prose/view'
 import { diffMermaid, type MermaidNodeDiff } from './mermaid-diff'
-import { pairFences } from './diff/fence-pair'
+import { pairFences, fenceIdOf } from './diff/fence-pair'
 import { contentHash } from '../git/hash'
 
 export interface DiffNote {
@@ -196,6 +196,10 @@ export interface BuildDiffDecoResult {
 export interface BuildDiffDecoOptions {
   /** 位置偏移（嵌入块内容 diff：把源文档坐标映射到宿主文档该块的 content 区） */
   offset?: number
+  /** 跨调用共享的 note id 去重集（Issue 5：宿主与各嵌入块内容 diff 的「同文案同内容」改动
+   *  会算出相同内容派生 id → data-dnote 冲突 → 连线/定位指向错误改动。
+   *  传入共享集合，使整次渲染的 note id 全局唯一，装饰 data-dnote 与卡片 id 一一对应。） */
+  usedNoteIds?: Set<string>
 }
 
 interface DelInfo {
@@ -213,8 +217,10 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDif
   const off = opts?.offset ?? 0
 
   // 遮蔽去重：同 id（同值多处修改，如 10-多hunk折叠 的三处「将改→已经改过」）追加序号，
-  // 保证每个 note 的 data-dnote 唯一 → 连线/定位分别命中各自锚点（F22 同值锚点 used 去重分配）
-  const usedNoteIds = new Set<string>()
+  // 保证每个 note 的 data-dnote 唯一 → 连线/定位分别命中各自锚点（F22 同值锚点 used 去重分配）。
+  // Issue 5：若调用方传入共享 usedNoteIds，则跨调用全局去重（宿主 + 各嵌入块内容 diff 的
+  // 「同文案同内容」改动不再产生相同 id，避免 data-dnote 冲突导致连线串指）。
+  const usedNoteIds = opts?.usedNoteIds ?? new Set<string>()
   const makeNote = (
     kind: DiffNote['kind'],
     text: string,
@@ -318,6 +324,14 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDif
           notes.push(insNote)
         }
         decorations.push(Decoration.node(pos + off, end + off, { class: 'diff-ins diff-ins-block', ...dnote(insNote.id) }))
+        // Issue 4（标题绿底）：heading 的 NodeDecoration 在 diff 视图 mount 过程中被丢弃（para/table
+        // 正常）——补一条文本级 inline 绿底兜底：即使节点装饰未落 DOM，标题文字仍显绿（可见）。
+        // 节点装饰正常时两绿叠加无差异；表格行不适用（inline 会进单元格，破坏列宽）。
+        if (node.type.name === 'heading') {
+          const innerFrom = pos + off + 1
+          const innerTo = Math.max(end + off - 1, innerFrom + 1)
+          decorations.push(Decoration.inline(innerFrom, innerTo, { class: 'diff-ins diff-ins-heading', ...dnote(insNote.id) }))
+        }
         addedNode = true
         return false
       })
@@ -492,6 +506,9 @@ export interface PatchMermaidResult {
   notes: DiffNote[]
   /** 每一条新 md 栅栏的配对（newIdx → oldIdx/新增）；与 mermaid 列表一一对应 */
   pairs: Array<{ newIdx: number; oldIdx: number | null }>
+  /** 变更的新栅栏 fenceId（内容派生，按新文档顺序；Issue 2：嵌入块 mermaid 卡锚定用，
+   *  与 notes 前段（变更的新栅栏）一一对应——删旧的旧栅栏 note 无新位置，在其后不在本数组） */
+  changedFenceIds: string[]
 }
 
 /** 提取 md 中所有 mermaid 栅栏 body（按出现顺序） */
@@ -557,6 +574,7 @@ export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidRe
   const pairs = pairFences(oldBodies, newBodies)
   const mermaid: MermaidNodeDiff[] = []
   const notes: DiffNote[] = []
+  const changedFenceIds: string[] = []
 
   const pairsByNew = new Map<number, { oldIdx: number | null }>()
   for (const p of pairs) pairsByNew.set(p.newIdx, p)
@@ -571,6 +589,9 @@ export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidRe
     if (p?.oldIdx != null && meaningfulMermaid(d)) {
       mergedByIndex.set(j, d.merged)
       notes.push(mermaidNote(d))
+      // 锚定用 fenceId 取「合并后 body」（预填充/预览 doc 渲染的是合并源码，与 docMermaidFences 的
+      // f.body 同源）；用 newBodies 会因 classDef 注入而失配（Issue 2）
+      changedFenceIds.push(fenceIdOf(d.merged))
     }
   }
   // 整段删除的旧栅栏（未被任何新栅栏匹配）：删旧 → 产删除卡（渲染无对应图）
@@ -583,7 +604,7 @@ export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidRe
       notes.push(mermaidNote(d))
     }
   }
-  if (!mergedByIndex.size) return { md: newMd, mermaid, notes, pairs }
+  if (!mergedByIndex.size) return { md: newMd, mermaid, notes, pairs, changedFenceIds }
 
   // 重建 md：逐行扫描，把有合并源码的 mermaid 栅栏替换 body
   const lines = newMd.split('\n')
@@ -609,5 +630,5 @@ export function patchMermaidFences(oldMd: string, newMd: string): PatchMermaidRe
     out.push(lines[i])
     i++
   }
-  return { md: out.join('\n'), mermaid, notes, pairs }
+  return { md: out.join('\n'), mermaid, notes, pairs, changedFenceIds }
 }

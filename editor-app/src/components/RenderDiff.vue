@@ -308,12 +308,7 @@ onBeforeUnmount(() => {
   background: #fef7e0;
   border: 1px solid #f0c040;
 }
-/* 内容有改动（黄） */
-:deep(.ref-embed-badge.ref-embed-diff-badge) {
-  color: #7a4f00;
-  background: #fff3cd;
-  border: 1px solid #f0c040;
-}
+
 /* M16：卡片内嵌源文件改动摘要 */
 :deep(.ref-embed-diff-summary) {
   margin: 6px 8px 8px;

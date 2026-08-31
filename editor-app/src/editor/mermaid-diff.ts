@@ -179,7 +179,7 @@ export function extractSequenceMessages(src: string): string[] {
   return extractSequenceRows(src).map((r) => r.msg)
 }
 
-function extractSequenceRows(src: string): SeqMsgRow[] {
+export function extractSequenceRows(src: string): SeqMsgRow[] {
   const rows: SeqMsgRow[] = []
   for (const line of src.split('\n')) {
     const m = SEQ_MSG_RE.exec(line)
@@ -247,21 +247,55 @@ function diffSequence(oldSrc: string, newSrc: string): MermaidNodeDiff {
     oldRows.map((x) => x.msg),
     newRows.map((x) => x.msg)
   )
-  // M18 §4.8（契约规则 5 修订）：SVG 内不再标注——图渲染新版本原样；
-  // 删除消息/参与者由保证层源码逐行红绿卡承载（保序语义不变，表达位置改变）。
   const oldParts = extractPartRows(oldSrc)
   const newParts = extractPartRows(newSrc)
   const delParts = oldParts.filter((p) => !newParts.some((n) => n.id === p.id))
   const addParts = newParts.filter((p) => !oldParts.some((n) => n.id === p.id))
+  // 合并源码：参与者（新 + 旧独有）+ 消息行按 LCS 序——删除消息插回原位（图内可标红）、
+  // 新增消息在位（绿）。NodeView 渲染后按文本匹配 messageText 上 diff-seq-add/del。
+  const merged = mergeSequenceSource(newSrc, oldSrc, oldRows, newRows, r.steps)
   return {
     type: 'sequence',
     add: [...r.add, ...addParts.map((p) => p.label)],
     del: [...r.del, ...delParts.map((p) => p.label)],
     mod: [],
-    merged: newSrc,
+    merged,
     confidence: 1,
-    // 保证层：删除消息的旧值（卡片红行预览）
   }
+}
+
+/** 重建 sequence 合并源码：参与者（新 + 旧独有）+ 消息行按 LCS 步骤顺序（ctx 原位、del 插回、add 在位）。
+ *  删除的消息回插保证图内可见（配合 DOM 标注 diff-seq-del 红）；同一参与者/消息去重）。 */
+function mergeSequenceSource(
+  newSrc: string,
+  oldSrc: string,
+  oldRows: SeqMsgRow[],
+  newRows: SeqMsgRow[],
+  steps: SeqStep[]
+): string {
+  const lines: string[] = []
+  const seen = new Set<string>()
+  const push = (l: string) => {
+    const key = l.trim()
+    if (key && !seen.has(key)) {
+      lines.push(l)
+      seen.add(key)
+    }
+  }
+  // 保留头部（sequenceDiagram 声明 + 前置 %% 注释），否则 mermaid 报「No diagram type detected」
+  for (const line of newSrc.split('\n')) {
+    const t = line.trim()
+    if (t === 'sequenceDiagram' || t.startsWith('%%') || t === '') push(line)
+  }
+  const newParts = extractPartRows(newSrc)
+  const oldParts = extractPartRows(oldSrc)
+  for (const p of newParts) push(p.line)
+  for (const p of oldParts) push(p.line) // 旧独有参与者（其消息回插时需要存在）
+  for (const s of steps) {
+    if (s.kind === 'del' && oldRows[s.oldIdx]) push(oldRows[s.oldIdx].line)
+    else if ((s.kind === 'ctx' || s.kind === 'add') && newRows[s.newIdx]) push(newRows[s.newIdx].line)
+  }
+  return lines.join('\n')
 }
 
 // ---------- state ----------

@@ -29,6 +29,41 @@
   box-shadow: inset 3px 0 0 #2e7d32;
 }
 
+/* Issue 3：块级新增装饰落到表格行上时，`.diff-ins-block { display: block }` 会破坏表格布局
+   （该行脱离 table-layout: fixed 列宽计算，单元格按内容收缩，列宽与其他行不一致）。
+   对表格行恢复 table-row 布局，改用单元格/整行背景表达新增，去掉块级左描边。 */
+table tr.diff-ins-block {
+  display: table-row;
+  box-shadow: none;
+  padding: 0;
+  background: color-mix(in srgb, #2e7d32, transparent 78%);
+}
+table tr.diff-ins-block td,
+table tr.diff-ins-block th {
+  background: color-mix(in srgb, #2e7d32, transparent 82%);
+}
+table tr.diff-ins-block td p,
+table tr.diff-ins-block th p {
+  background: transparent;
+}
+
+/* Issue 4：标题块级新增——`.diff-ins` 绿底可能被主题标题背景/样式压制，显式提升层级。
+   若标题块级装饰未被应用（NodeDecoration 校验失败），此规则不生效；
+   若已应用仅被颜色压制，此规则确保标题整块绿底可见。 */
+h1.diff-ins, h2.diff-ins, h3.diff-ins, h4.diff-ins, h5.diff-ins, h6.diff-ins,
+h1.diff-ins-block, h2.diff-ins-block, h3.diff-ins-block, h4.diff-ins-block, h5.diff-ins-block, h6.diff-ins-block {
+  background: color-mix(in srgb, #2e7d32, transparent 78%) !important;
+  border-radius: 6px;
+}
+
+/* Issue 4：标题块级新增的 inline 兜底文本绿底——比普通 .diff-ins 更醒目（左描边 + 宽度撑满标题行） */
+.diff-ins-heading {
+  background: color-mix(in srgb, #2e7d32, transparent 78%) !important;
+  box-shadow: inset 3px 0 0 #2e7d32;
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
 /* 深色主题下标记更亮 */
 [data-theme-dark='true'] .diff-del,
 .theme-dark .diff-del {

@@ -24,6 +24,7 @@ import {
   mermaidDiffText,
   makeNote,
   patchMermaidFences,
+  extractMermaidBodies,
   type DiffNote,
 } from './diff-deco'
 import {
@@ -172,6 +173,9 @@ export function prefillDoc(hostDoc: Node, parser: (md: string) => Node | null, p
 function applyMermaidClassesFallback(host: HTMLElement, registry: FenceRegistry) {
   for (const f of registry.fences.values()) {
     if (!f.changed || f.skip) continue
+    // sequence：消息级红绿已由 NodeView 按 messageText 标注（diff-seq-add/del），
+    // 不适用 flowchart/state 的节点 class 手术（消息不是 g.node/g.state）
+    if (f.type === 'sequence') continue
     const view = host.querySelector(
       `.diff-mermaid-fence[data-fence-id="${CSS.escape(f.fenceId)}"]`
     ) as HTMLElement | null
@@ -191,7 +195,7 @@ function applyMermaidClassesFallback(host: HTMLElement, registry: FenceRegistry)
   }
 }
 
-// ---------- 嵌入卡片徽标（保留：新引用/内容有改动） ----------
+// ---------- 嵌入卡片徽标（保留：新引用） ----------
 
 const EMBED_LINE_RE = /^\s*!\[\[([^\]]+)\]\]\s*$/
 
@@ -228,7 +232,7 @@ function addCardBadge(card: Element, cls: string, text: string, title: string) {
   wrap.appendChild(b)
 }
 
-function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined, changedWritePaths: Set<string>) {
+function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefined) {
   const embeds = collectEmbedChanges(hunks ?? [])
   const cards = [...target.querySelectorAll('.ref-file-block')]
   for (const card of cards) {
@@ -237,9 +241,8 @@ function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefi
     if (embeds.some((c) => c.path === p) && !card.querySelector('.ref-embed-add')) {
       addCardBadge(card, 'ref-embed-add', '新增引用', '当前文件新增了此引用')
     }
-    if (changedWritePaths.has(p) && !card.querySelector('.ref-embed-diff-badge')) {
-      addCardBadge(card, 'ref-embed-diff-badge', '内容有改动', `被嵌入源文件「${p}」在本 diff 范围内有改动（块内已标红/绿）`)
-    }
+    // Issue 1：移除「内容有改动」徽标——嵌入块内的具体改动已由内容级批注卡标注，
+    // 概览徽标与「源文件有改动」说明卡冗余
   }
 }
 
@@ -279,7 +282,6 @@ interface MountedPipeline {
   registry: FenceRegistry
   collector: SettleCollector
   pf: PrefetchResult
-  changedWritePaths: Set<string>
 }
 
 async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): Promise<MountedPipeline | null> {
@@ -332,14 +334,23 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
     })
     const registry = modelDiff.fences
 
-    // 徽标匹配源：writePath → changed
-    const changedWritePaths = new Set<string>()
-    for (const [wp, real] of pf.writeToReal) {
-      if (pf.sourceMap.get(real)?.changed) changedWritePaths.add(wp)
-    }
-
     // 2) Crepe 挂载：editorStateOptionsCtx 注入预填充 doc（write-once）+ 预构建装饰
     const state: PipelineState = { initialDecorations: DecorationSet.empty, notes: [], diagramNotes: [], embedNotes: [] }
+    // Issue 5：跨调用共享的 note id 去重集——宿主与各嵌入块内容 diff 的「同文案同内容」改动会算出
+    // 相同内容派生 id（如宿主「二层说明」与嵌入块「明细说明」都含“新增\"（修订版）\"”），导致
+    // data-dnote 冲突、连线/定位指向错误改动。整次渲染共享同一集合，使 note id（含装饰 data-dnote）全局唯一。
+    const usedNoteIds = new Set<string>()
+    const uniqId = (id: string): string => {
+      if (!usedNoteIds.has(id)) {
+        usedNoteIds.add(id)
+        return id
+      }
+      let i = 2
+      while (usedNoteIds.has(id + '-' + i)) i++
+      const out = id + '-' + i
+      usedNoteIds.add(out)
+      return out
+    }
     const crepe = new Crepe({
       root: target,
       defaultValue: modelDiff.mergedMd,
@@ -359,14 +370,16 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
           if (!isNewFile) {
             const oldDoc = parser(oldMd)
             if (oldDoc) {
-              const r = buildDiffDecorations(oldDoc, prefilled)
+              const r = buildDiffDecorations(oldDoc, prefilled, { usedNoteIds })
               notes.push(...r.notes)
               decorations.push(...r.decorations)
             }
           }
+          // 预取到所有 mermaid 栅栏（正文级 + 嵌套级，host 坐标）——diagram / 嵌入图级卡锚定共用
+          const allFences = docMermaidFences(prefilled)
           // diagram 卡片锚定：变更 fence 位置 = 预填充 doc 中的 code_block（正文级 + 嵌套级）
           const diagramNotes: DiffNote[] = []
-          for (const f of docMermaidFences(prefilled)) {
+          for (const f of allFences) {
             const fid = fenceIdOf(f.body)
             const fe = registry.fences.get(fid)
             if (!fe?.changed || fe.skip) continue
@@ -377,30 +390,63 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
               mod: fe.mod,
               merged: fe.mergedBody ?? '',
             } as import('./mermaid-diff').MermaidNodeDiff
-            diagramNotes.push(
-              makeNote('mermaid', mermaidDiffText(dto), undefined, undefined, mermaidDiffText(dto), f.from, Math.min(f.from + 1, prefilled.content.size))
-            )
+            const n = makeNote('mermaid', mermaidDiffText(dto), undefined, undefined, mermaidDiffText(dto), f.from, Math.min(f.from + 1, prefilled.content.size))
+            diagramNotes.push({ ...n, id: uniqId(n.id) })
           }
-          // 嵌入卡片锚定 + 折叠保证层卡
+          // 嵌入卡片锚定（Issue 1：移除笼统「源文件有改动」卡——具体改动已由嵌入块内容 diff 卡表达）
           const embedNotes: DiffNote[] = []
           for (const blk of docFileBlocks(prefilled)) {
             const real = pf.writeToReal.get(blk.path) ?? blk.path
             const entry = pf.sourceMap.get(real)
             if (entry?.changed) {
               const baseName = real.split('/').pop() ?? real
-              embedNotes.push(
-                makeNote('block', `嵌入「${baseName}」源文件有改动（块内已标红/绿）`, undefined, undefined, `嵌入「${baseName}」`, blk.from, blk.from + blk.size)
-              )
-              // M18 §4.9：嵌套源的 mermaid 图级卡下沉到宿主（嵌入源的具体改动 → 具体批注卡 + 锚点，而非只有笼统「内容有改动」）
+              // Issue 2：嵌套源的 mermaid 图级卡锚定到具体 mermaid 栅栏（host 坐标），而非整块。
+              // 用 changedFenceIds（= fenceIdOf(合并后 body)，与预览 doc 栅栏同源）⊃ docMermaidFences 位置。
               try {
                 const patched = patchMermaidFences(entry.oldMd ?? '', entry.newMd ?? '')
-                for (const pn of patched.notes) {
+                // Issue：嵌入源变更的 mermaid 栅栏并入 registry——NodeView（含 sequence）借此
+                // 拿到 add/del 做图内红绿标注（宿主 registry 只有宿主自身 fence，嵌入 fence 无 entry）。
+                const regBodies = extractMermaidBodies(entry.mergedMd ?? '')
+                regBodies.forEach((body, j) => {
+                  const p = patched.pairs.find((pp) => pp.newIdx === j)
+                  const dmd = patched.mermaid[j] as import('./mermaid-diff').MermaidNodeDiff | undefined
+                  if (!p || p.oldIdx == null || !dmd) return
+                  if (!(dmd.add?.length || dmd.del?.length || dmd.mod?.length)) return
+                  const mergedBody = dmd.merged ?? body
+                  const fid = fenceIdOf(mergedBody)
+                  if (registry.fences.has(fid)) return
+                  registry.fences.set(fid, {
+                    fenceId: fid,
+                    changed: true,
+                    eager: true,
+                    skip: false,
+                    type: dmd.type,
+                    add: dmd.add,
+                    del: dmd.del,
+                    mod: dmd.mod,
+                    mergedBody,
+                  })
+                })
+                const embedFences = allFences.filter((f) => f.from >= blk.from && f.from < blk.from + blk.size)
+                for (let i = 0; i < patched.notes.length; i++) {
+                  const pn = patched.notes[i]
+                  let from = blk.from
+                  let to = blk.from + blk.size
+                  if (i < patched.changedFenceIds.length) {
+                    const fid = patched.changedFenceIds[i]
+                    const fence = embedFences.find((f) => fenceIdOf(f.body) === fid)
+                    if (fence) {
+                      from = fence.from
+                      to = Math.min(fence.from + 1, prefilled.content.size)
+                    }
+                  }
                   embedNotes.push({
                     ...pn,
+                    id: uniqId(pn.id),
                     text: `嵌入「${baseName}」：${pn.text}`,
                     anchor: `嵌入「${baseName}」：${pn.anchor}`,
-                    from: blk.from,
-                    to: blk.from + blk.size,
+                    from,
+                    to,
                   })
                 }
               } catch {
@@ -413,7 +459,7 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
                 const newSrcDoc = parser(entry.mergedMd)
                 if (oldSrcDoc && newSrcDoc) {
                   try {
-                    const r = buildDiffDecorations(oldSrcDoc, newSrcDoc, { offset: blk.from + 1 })
+                    const r = buildDiffDecorations(oldSrcDoc, newSrcDoc, { offset: blk.from + 1, usedNoteIds })
                     decorations.push(...r.decorations)
                     for (const n of r.notes) {
                       notes.push({ ...n, text: `嵌入「${baseName}」：${n.text}` })
@@ -424,9 +470,6 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
                 }
               }
             }
-          }
-          for (const c of pf.collapsedScopes) {
-            embedNotes.push(makeNote('block', c.summary, undefined, undefined, c.summary, -1, -1))
           }
           state.notes = notes
           state.diagramNotes = diagramNotes
@@ -459,7 +502,7 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
     crepe.setReadonly(true)
     // 残余：object_ref 消歧（等尺寸 attr 替换，不改 doc 尺寸；不参与 settle）
     void resolveRefs(crepe.editor)
-    return { crepe, state, isNewFile, registry, collector, pf, changedWritePaths }
+    return { crepe, state, isNewFile, registry, collector, pf }
   } catch (e) {
     console.warn('[render-diff] Crepe 挂载失败:', e, (e as Error).stack)
     return null
@@ -506,7 +549,7 @@ export async function renderDiffToContainer(
     const settled = await collector.settle(5000)
 
     // 4) overlay：徽标 + class 注入失效时的 scoped DOM fallback（一次性；连线由事件/ResizeObserver 重绘）
-    annotateEmbedDiffBadges(target, hunks, mounted.changedWritePaths)
+    annotateEmbedDiffBadges(target, hunks)
     applyMermaidClassesFallback(target, registry)
     diagEvent('diff:render', {
       target: path,
