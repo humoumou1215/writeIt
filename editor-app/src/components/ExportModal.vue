@@ -4,7 +4,7 @@
 // 每文件格式：有模板 export.ts → 默认「模板(export.ts)」；无 → 默认 PDF
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { state } from '../state/store'
-import { getActiveTabMarkdown, getTabMarkdownByPath } from '../editor/manager'
+import { getActiveTabMarkdown, getModelMarkdownByPath, getTabMarkdownByPath } from '../editor/manager'
 import { extractDoctype, templateService } from '../template/service'
 import { exportFiles } from '../export/service'
 import type { ExportChoice, ExportFormat } from '../export/types'
@@ -53,7 +53,7 @@ onMounted(() => {
 /** 文件是否有模板 export.ts（读内容 → doctype → 模板注册表） */
 async function fileHasExportTs(path: string): Promise<boolean> {
   try {
-    const content = getTabMarkdownByPath(path) ?? (await fs.readFile(path))
+    const content = getModelMarkdownByPath(path) ?? (await fs.readFile(path))
     const dt = extractDoctype(content)
     return dt ? Boolean(templateService.get(dt)?.exportFile) : false
   } catch {

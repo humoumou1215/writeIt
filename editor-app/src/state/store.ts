@@ -32,7 +32,7 @@ export interface Tab {
     /** M18 §4.6：内容指纹（磁盘外部变化自动刷新依据）；null = 未加载/已失效。
      *  M4（spec §6.2）：worktree/unstaged 基准改用模型 rev/diskHash 对账（未保存编辑进 diff）；
      *  staged/range 基准的 new 侧是 index/commit 内容（与 DocStore 无关）→ 保留 git hash 指纹。 */
-    freshToken: null |
+    freshToken: null
       | { kind: 'model'; rev: number; diskHash: string | null }
       | { kind: 'git'; oldHash: string; nextHash: string }
     renderLoading: boolean
@@ -184,6 +184,8 @@ export const state = reactive({
   treeVersion: 0,
   /** 瞄准定位：文件树中待高亮的文件路径（定位后自动清除） */
   revealPath: null as null | string,
+  /** 图片预览弹层（点击图片 / 悬停放大镜打开）：src 为可显示 URL；path 为仓库相对路径（可定位/资源管理器） */
+  imagePreview: null as null | { src: string; path?: string; name: string },
 })
 
 let tabSeq = 0

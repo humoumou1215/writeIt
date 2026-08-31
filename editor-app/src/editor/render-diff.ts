@@ -18,6 +18,7 @@ import { registerRefStringify } from './ref/stringify'
 import { featureConfigs } from './features'
 import { annotationSchema } from '../annotations/nodes'
 import { remarkAnnotation } from '../annotations/remark-annotation'
+import { annotationStringifyHandler } from '../annotations'
 import {
   buildDiffDecorations,
   mermaidDiffText,
@@ -440,7 +441,15 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
     })
     crepe.editor.use(refPlugin)
     // M18：批注实体解析（<mark data-note> → annotation 节点）——使批注增删改作为实体参与 diff（结构实体卡）
-    crepe.editor.use([...annotationSchema, ...$remark('renderDiffAnnotationRemark', () => remarkAnnotation as never)])
+    // 装配必须与主编辑器 annotationPlugin 对齐：schema（mark schema）+ 解析插件（md → annotation 节点）
+    // + stringify handler（annotation 节点 → <mark> 标签）。缺 stringify handler 时，任何对含批注内容的
+    // markdown 序列化（如 gfm 表格挂载时的 mdast 重写）都会以
+    // 「Cannot handle unknown node `annotation`」抛错 → 主渲染降级双栏。
+    crepe.editor.use([
+      annotationStringifyHandler,
+      ...annotationSchema,
+      ...$remark('renderDiffAnnotationRemark', () => remarkAnnotation as never),
+    ])
     // 自有 mermaid NodeView（覆写 code_block 视图；非 mermaid 委托 CodeMirrorBlock）
     // ——必须在 features 之后 use（nodeViewCtx 后者生效）
     const collector = new SettleCollector()

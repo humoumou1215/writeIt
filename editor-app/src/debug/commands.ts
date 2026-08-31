@@ -18,7 +18,6 @@ import {
   closeTab,
   toggleSourceMode,
 } from '../editor/manager'
-import { fs } from '../fs'
 import { gitBackendKind } from '../git'
 import { registerCommand } from './registry'
 import { eventsSince, lastSeq } from './events'
@@ -167,42 +166,123 @@ registerCommand('screenshot', async () => {
   }
 })
 
-const COLOR_PROPS = [
+/** 伪元素防御时检查的着色属性（html2canvas 会把伪元素内容克隆成普通元素再解析） */
+const PSEUDO_COLOR_PROPS = [
   'color',
   'backgroundColor',
+  'backgroundImage',
   'borderTopColor',
+  'borderRightColor',
   'borderBottomColor',
   'borderLeftColor',
-  'borderRightColor',
-  'outlineColor',
   'textDecorationColor',
-  'caretColor',
+  '-webkit-text-stroke-color',
   'boxShadow',
   'textShadow',
 ] as const
 
-/** 把元素计算样式里含 color( 的色值改写为 rgb() 内联（html2canvas 兼容）；返回还原函数 */
+/** 现代 CSS 色函数：浏览器把 oklch()/color-mix() 等计算为 color(srgb…)，html2canvas 的 tokenizer 不认 */
+const MODERN_COLOR_FN_RE = /(?:color|oklch|oklab|lab|lch|color-mix|light-dark|device-cmyk)\(/i
+/** 匹配一整段现代色函数（容忍一层嵌套括号） */
+const MODERN_COLOR_FN_MATCH_RE = /(?:color|oklch|oklab|lab|lch|color-mix|light-dark|device-cmyk)\((?:[^()]|\([^()]*\))*\)/gi
+
+/** 把元素计算样式里含现代色函数的色值改写为 rgb() 内联（html2canvas 兼容）；返回还原函数 */
+// ---------------- 现代色函数 → rgb() 解析 ----------------
+// 背景：Chrome 把 oklch()/color-mix() 等计算值序列化为 color(srgb …)，html2canvas 1.4.1
+// 的 tokenizer 不认。且 getComputedStyle(probe).color 会**原样返回** color()（不转 rgb()），
+// 所以不能靠探针换：用 canvas 2D 直接渲染色（浏览器原生支持 color()/oklch()/lab() 等，Chrome 111+）。
+
+/** 1×1 离屏 canvas（惰性创建；同源空白画布 getImageData 无污染问题） */
+let colorCtx: CanvasRenderingContext2D | null = null
+
+/** 解析单个现代色函数 → 'rgb(r,g,b)' / 'rgba(r,g,b,a)'；失败返回原串。 */
+function resolveModernColorFn(fn: string): string {
+  if (!colorCtx) {
+    try {
+      const c = document.createElement('canvas')
+      c.width = 1
+      c.height = 1
+      colorCtx = c.getContext('2d', { willReadFrequently: true })
+    } catch {
+      colorCtx = null
+    }
+  }
+  const ctx = colorCtx
+  if (!ctx) return fn
+  let trial = fn
+  for (let i = 0; i < 2; i++) {
+    try {
+      ctx.clearRect(0, 0, 1, 1)
+      ctx.fillStyle = trial
+      ctx.fillRect(0, 0, 1, 1)
+      const d = ctx.getImageData(0, 0, 1, 1).data
+      const a = d[3]
+      if (a === 255) return `rgb(${d[0]}, ${d[1]}, ${d[2]})`
+      const af = (a / 255).toFixed(4).replace(/\.?0+$/, '')
+      return `rgba(${d[0]}, ${d[1]}, ${d[2]}, ${af || '0'})`
+    } catch {
+      // 计算值里可能残留 none 关键字，canvas 不认 → 归零重试
+      trial = trial.replace(/\bnone\b/g, '0')
+    }
+  }
+  return fn
+}
+
 function sanitizeColorFunctions(root: HTMLElement): () => void {
-  const restore: Array<[HTMLElement, string]> = []
-  const probe = document.createElement('span')
-  probe.style.position = 'fixed'
-  probe.style.left = '-9999px'
-  document.body.appendChild(probe)
+  /** 还原动作：移除内联样式 / 移除临时属性 / 移除注入的 <style> */
+  const restores: Array<() => void> = []
+  const rewriteOne = (el: HTMLElement, prop: string, v: string): void => {
+    const resolved = v.replace(MODERN_COLOR_FN_MATCH_RE, resolveModernColorFn)
+    if (resolved === v) return
+    try {
+      el.style.setProperty(prop, resolved, 'important')
+      restores.push(() => el.style.removeProperty(prop))
+    } catch {
+      /* 个别属性不可内联设置则跳过 */
+    }
+  }
+  const pseudoRules: string[] = []
+  let pseudoSeq = 0
   for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
     const cs = getComputedStyle(el)
-    for (const prop of COLOR_PROPS) {
+    // ① 全量计算属性重写：不只名单里的直接色/阴影/渐变，还包括逻辑边框颜色、
+    //    CSS 变量（如 crepe diff 的 --crepe-color-diff-*）与简写——html2canvas 的
+    //    DocumentCloner 会把 element 的计算样式整份拷成克隆内联再解析，任何含
+    //    color() 的属性都可能触发 unsupported color function。
+    for (const prop of cs) {
       const v = cs.getPropertyValue(prop)
-      if (v.includes('color(')) {
-        probe.style.color = v
-        const resolved = getComputedStyle(probe).color // 浏览器解析为 rgb()/rgba()
-        el.style.setProperty(prop, resolved)
-        restore.push([el, prop])
+      if (!v || !MODERN_COLOR_FN_RE.test(v)) continue
+      rewriteOne(el, prop, v)
+    }
+    // ② 伪元素防御：html2canvas 会把有 content 的 ::before/::after 克隆成真实元素解析，
+    //    它的内联样式由伪元素计算值拷贝而来——用唯一属性选择器 + !important 覆盖。
+    for (const pseudo of ['::before', '::after', '::marker'] as const) {
+      const ps = getComputedStyle(el, pseudo)
+      let patched = false
+      for (const prop of PSEUDO_COLOR_PROPS) {
+        const v = ps.getPropertyValue(prop)
+        if (!v || !MODERN_COLOR_FN_RE.test(v)) continue
+        const resolved = v.replace(MODERN_COLOR_FN_MATCH_RE, resolveModernColorFn)
+        if (resolved === v) continue
+        if (!patched) {
+          patched = true
+          pseudoSeq += 1
+          const attr = `data-h2c-p${pseudoSeq}`
+          el.setAttribute(attr, '')
+          restores.push(() => el.removeAttribute(attr))
+        }
+        pseudoRules.push(`[data-h2c-p${pseudoSeq}]${pseudo}{${prop}:${resolved}!important}`)
       }
     }
   }
-  probe.remove()
+  if (pseudoRules.length) {
+    const styleEl = document.createElement('style')
+    styleEl.textContent = pseudoRules.join('\n')
+    root.appendChild(styleEl)
+    restores.push(() => styleEl.remove())
+  }
   return () => {
-    for (const [el, p] of restore) el.style.removeProperty(p)
+    for (const r of restores) r()
   }
 }
 

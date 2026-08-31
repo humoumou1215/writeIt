@@ -16,6 +16,7 @@ import { contentHash } from '../git/hash'
 import { refPlugin, resolveRefs, refConfigCtx, getRefConfig } from './ref'
 import type { RefConfig } from './ref/config'
 import { registerRefStringify } from './ref/stringify'
+import { imagePastePlugin } from './image-paste'
 import {
   serializeBlockContent,
   collectSourcePaths,
@@ -44,8 +45,6 @@ import { canonicalOf } from './docstore/serialize'
 import {
   collectBlockSizes,
   mapDocStepsToModel,
-  mapBlockStepsToModel,
-  mapStepsToHost,
   stepRawRange,
   type BlockContentRange,
 } from './docstore/posmap'
@@ -170,19 +169,6 @@ function stepsTouchBlock(
   return false
 }
 
-/** 块内坐标 → 源模型坐标（whole-file 嵌入：模型 range = 全文档） */
-function blockRangeFor(
-  binfo: HostBlockDetail,
-  modelDocSize: number
-): BlockContentRange {
-  return {
-    contentFrom: binfo.from + 1,
-    contentTo: binfo.from + binfo.nodeSize - 1,
-    modelFrom: 0,
-    modelTo: modelDocSize,
-  }
-}
-
 /** 查找某订阅块在宿主 doc 中的内容起始坐标（外部分发映射用；无需 blockId） */
 function findHostBlockStart(inst: Instance, blockId: string): number | null {
   let pos: number | null = null
@@ -213,8 +199,10 @@ async function commitBlockSteps(
   inSteps: import('@milkdown/kit/prose/transform').Step[]
 ): Promise<boolean> {
   // 任何失败出口 → 返回 false（resolve 语义：拦截器 .catch 只捕 reject）。
-  // M4b：不再回退旧路 propagateBlockEdits——块内编辑已全量由 M3a 精映射 / 多块 canonical
-  // 承担；失败 = 该编辑留在宿主、不写源（与断链/只读/折叠块行为一致），记日志便于诊察。
+  // V2：块内编辑不再使用 steps 精映射（带批注 mark 的内容上坐标会偏移，曾致
+  // 模型与源块不同构、兄弟块对齐后不一致）——统一 canonical 全量替换：
+  // 块内容序列化 → 模型侧 pipeline 解析 → replaceFromCanonical（rev++ + dispatcher 整块 align）。
+  // 失败 = 该编辑留在宿主、不写源（与断链/只读/折叠块行为一致），记日志便于诊察。
   const fail = (why: string): false => {
     m4diag.commitFail++
     console.warn('[docstore] commitBlockSteps 失败（该块编辑留在宿主，未写源）:', binfo.path, why)
@@ -232,33 +220,22 @@ async function commitBlockSteps(
       model = docStore.getModel(real)
     }
     if (!model?.doc) return fail('model')
-    // 跨编辑器 schema 不兼容 → 步骤不可直通（不同 Crepe 实例 schema 单例不同）。
-    // M4：不再回退旧路（registry 广播），改用 canonical 整块替换模型（spec I1：编辑必须经模型）——
-    // 块内容序列化 → 模型侧 pipeline 解析 → replaceFromCanonical（rev++ + dispatcher 整块 align 分发）。
     // 注意：必须用 blockId 重定位当前 pos（binfo.from 是旧 doc 坐标——块被删除/位移后
     // 序列化会读到错误节点，污染源模型；块已不存在 = 嵌入标记被移除 → 源不变）。
-    const hostSchema = inst.crepe.editor.action((ctx) => ctx.get(editorViewCtx)).state.schema
-    if (model.doc.type.schema !== hostSchema) {
-      const blockPos = findHostBlockStart(inst, binfo.blockId)
-      if (blockPos == null) return fail('block-gone')
-      const blockCanonical = serializeBlockContent(inst.crepe.editor, blockPos)
-      if (!blockCanonical) return fail('block-canonical')
-      try {
-        docStore.replaceFromCanonical(real, blockCanonical, `${tabId}#${binfo.blockId}`)
-        m4diag.commitBlockStepsOk++
-        return true
-      } catch (e) {
-        console.warn('[docstore] replaceFromCanonical 失败（该块编辑不写源）:', real, e)
-        return fail('replace:' + String(e).slice(0, 60))
-      }
+    const blockPos = findHostBlockStart(inst, binfo.blockId)
+    if (blockPos == null) return fail('block-gone')
+    const blockCanonical = serializeBlockContent(inst.crepe.editor, blockPos)
+    if (!blockCanonical) return fail('block-canonical')
+    try {
+      docStore.replaceFromCanonical(real, blockCanonical, `${tabId}#${binfo.blockId}`)
+      // 嵌入块编辑已写入源模型 → 脏标记同步到源文件（否则打开源文件窗口不亮脏灯）
+      docStore.markUserDirty(real)
+      m4diag.commitBlockStepsOk++
+      return true
+    } catch (e) {
+      console.warn('[docstore] replaceFromCanonical 失败（该块编辑不写源）:', real, e)
+      return fail('replace:' + String(e).slice(0, 60))
     }
-    const range = blockRangeFor(binfo, model.doc.content.size)
-    const { steps: mapped } = mapBlockStepsToModel(inSteps, range)
-    if (mapped.length === 0) return fail('mapped')
-    const steps = mapped.map((m) => m.step)
-    const applied = docStore.apply(real, steps, { originKey: `${tabId}#${binfo.blockId}`, reason: 'user' })
-    m4diag.commitBlockStepsOk++
-    return applied > 0
   } catch (e) {
     console.warn('[docstore] commitBlockSteps 失败:', binfo.path, e)
     return fail('err:' + String(e).slice(0, 60))
@@ -317,6 +294,8 @@ async function commitMultiBlockCanonical(
       const originKey = g.keys[0]
       try {
         docStore.replaceFromCanonical(real, content, originKey)
+        // 多块/跨界编辑已写入源模型 → 脏标记同步到源文件（同 commitBlockSteps）
+        docStore.markUserDirty(real)
         m4diag.commitMultiOk++
       } catch (e) {
         console.warn('[multiblock] replaceFromCanonical 失败（该块编辑不写源）:', real, e)
@@ -360,6 +339,8 @@ async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<str
       await fs.writeFile(real, snap.canonical)
       docStore.markDiskSynced(real, snap.canonical)
       flushed.set(real, snap.canonical)
+      // §6.4：磁盘已变 → 搜索磁盘内容缓存失效（模型可能被 gc，缓存会绕过新磁盘内容）
+      void import('../search').then((m) => m.invalidateSearchCache())
     } catch (e) {
       console.warn('[docstore] flush 失败:', real, e)
     }
@@ -424,6 +405,10 @@ function alignHostBlockFromModel(
       const cur = serializeBlockContent(subInst.crepe.editor, bpos)
       if (cur === canonical) return
       const filled = fillBlockContent(subInst.crepe.editor, bpos, path, readonly, canonical)
+      // V2：fill 是纯内容填充，块内 file_ref/object_ref 需重新消歧（与打开文件时一致）——
+      // 否则兄弟块显示原始链接而非对象文本/解析描述（realinput 回归：源块已消歧、兄弟块未消歧 → 不一致）。
+      // 消歧事务带 docstoreExternal meta，不回流模型。
+      if (filled != null) void resolveBlockRefs(subInst.crepe.editor, bpos)
       // 填充失败（只读/解析失败/块消失）且内容确实未同步 → 失步
       if (filled == null) {
         if (serializeBlockContent(subInst.crepe.editor, bpos) !== canonical) ok = false
@@ -1155,6 +1140,17 @@ export function getActiveTabMarkdown(): string | null {
   const tab = state.tabs.find((t) => t.id === state.activeTabId)
   if (tab?.viewMode === 'source' && inst.srcTa) return inst.srcTa.value
   return inst.crepe.getMarkdown()
+}
+
+/** §6.4 统一取数：打开标签（实时视图）→ DocStore 模型（含未保存编辑）→ null。
+ *  消除「已加载但未打开标签的模型（如被嵌入的源）落入磁盘旧值」的取数分歧。
+ *  磁盘兜底由调用方执行（读盘失败语义由调用方处理）。 */
+export function getModelMarkdownByPath(path: string): string | null {
+  const fromTab = getTabMarkdownByPath(path)
+  if (fromTab != null) return fromTab
+  const snap = docStore.snapshot(path)
+  if (snap && snap.canonical != null) return snap.canonical
+  return null
 }
 
 /** 按路径取已打开标签的 markdown（批量导出用；未打开返回 null） */
@@ -2431,6 +2427,21 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     ctx.set(tableConfigCtx.key, buildTableConfig(settings.shortcuts['tableAddRowBelow']))
   })
   crepe.editor.use(refPlugin)
+  // 图片粘贴：按设置策略把剪贴板图片写盘为独立文件（内嵌策略放行默认行为）
+  crepe.editor.use(
+    imagePastePlugin({
+      fs: {
+        writeBinary: (p, data) => fs.writeBinary!(p, data),
+        readBinary: (p) => fs.readBinary!(p),
+      },
+      getHostPath: () => tab.path,
+      getMode: () => settings.imagePaste,
+      toast,
+      onSaved: () => {
+        void refreshTree()
+      },
+    })
+  )
   // M6：批注插件（<mark data-note> 节点 + 运行时批注 decorations，tabId 经 ctx 注入）
   crepe.editor.use(annotationPlugin)
   // 表格增强：单元格换行 / Shift+Enter 新增行 / 多选复制粘贴 / 动态列宽（数组整体 use，同 refPlugin 模式）
@@ -2569,9 +2580,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     console.warn('[docstore] 拦截器安装失败（影子期元数据仍生效）:', tab.path, e)
   }
 
-  // M3：模型下行分发——apply(源) 后把本次 steps 增量应用到各宿主块视图（spec §5.3）。
-  //   · 逐订阅者定位宿主块 → mapStepsToHost（模型坐标 → 宿主块内偏移）→ external dispatch
-  //   · external meta 使分发的块内 transaction 不被拦截器回传（防回环）
+  // M3：模型下行分发（V2 全量同步）——docstore 模型 = 唯一事实源；每次 apply/替换后，
+  //  把模型 canonical 整块对齐到每个块视图订阅者（不再做 steps 增量映射：
+  //  多块/跨界/结构分歧时增量映射会错位或静默漏分发——曾出现「第二嵌入块失步却 stale=false」）。
+  //   · fill 事务带 docstoreExternal meta，拦截器据此跳过回流（防回环）
   //   · doc 视图与只读/折叠块不在此分发（快照对齐 / 固定快照）
   if (!docstoreDispatcherInstalled) {
     docstoreDispatcherInstalled = true
@@ -2579,86 +2591,23 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     setStaleAlignHandler((tabId, blockId, realPath) => alignStaleBlockFor(tabId, blockId, realPath))
     setDocStoreDispatcher((realPath, model, steps, fromRev, toRev, originKey) => {
       const w2 = window as unknown as Record<string, unknown>
-      const isCanonicalReplace = !steps || steps.length === 0 // M4：canonical 整块替换（跨 schema 块编辑）
-      if (!isCanonicalReplace) {
-        const modelSize = model.doc ? model.doc.content.size : 0
-        for (const sub of model.subscribers.values()) {
-          if (sub.source.kind !== 'block') continue
-          if (sub.stale) continue
-          if (originKey != null && sub.key === originKey) continue // 编辑源块不重复接收
-          const { tabId: subTabId, blockId } = sub.source
-          const subInst = instances.get(subTabId)
-          if (!subInst || !blockId) continue
-          // 同构门禁（M3b）：跨编辑器实例 schema 单例不同 → 步骤不可直通 → 整块内容对齐兜底
-          let hostSchema: unknown = null
-          try {
-            const hv = subInst.crepe.editor.action((ctx) => ctx.get(editorViewCtx))
-            hostSchema = hv.state.schema
-          } catch {
-            continue
-          }
-          const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
-          if (!model.doc || hostSchema !== model.doc.type.schema) {
-            // 跨 schema：steps 不可直通 → 整块对齐兜底；对齐失败 → 显式失步（I2）
-            if (canonical != null) {
-              const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
-              if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
-              else {
-                docStore.markSubStale(realPath, sub.key)
-                refreshStaleDeco(subInst.crepe.editor)
-              }
-            }
-            continue
-          }
-          const hostStart = findHostBlockStart(subInst, blockId)
-          if (hostStart == null) continue
-          const { steps: mapped } = mapStepsToHost(steps, { target: { kind: 'whole' }, from: 0, to: modelSize }, hostStart + 1)
-          if (mapped.length === 0) continue
-          // M4：分发是程序性变更——transaction 带 docstoreExternal meta，拦截器据此跳过回流
-          const dispatched = subInst.crepe.editor.action((ctx) => {
-            const v = ctx.get(editorViewCtx)
-            const tr = v.state.tr
-            try {
-              for (const m of mapped) tr.step(m.step)
-            } catch {
-              return false
-            }
-            if (tr.docChanged) v.dispatch(tr.setMeta('docstoreExternal', true))
-            return true
-          })
-          if (!dispatched) {
-            // steps 应用失败（结构边界等）→ 整块对齐兜底；对齐仍失败 → 显式失步（I2）
-            if (canonical != null) {
-              const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
-              if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
-              else {
-                docStore.markSubStale(realPath, sub.key)
-                refreshStaleDeco(subInst.crepe.editor)
-              }
-            }
-            continue
-          }
-          docStore.markSubSynced(realPath, sub.key, toRev) // I2：steps 直通成功 → 订阅基线前进
-          const t = state.tabs.find((x) => x.id === subTabId)
-          if (t) syncTabDirty(t, subInst)
+      // V2：全量同步核心——模型 canonical 作为唯一事实源，整块对齐所有块视图
+      const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
+      for (const sub of model.subscribers.values()) {
+        if (sub.source.kind !== 'block') continue
+        if (sub.stale) continue
+        if (originKey != null && sub.key === originKey) { sub.rev = toRev; continue } // 编辑源块不重复接收；rev 基线同步推进
+        const { tabId: subTabId, blockId } = sub.source
+        const subInst = instances.get(subTabId)
+        if (!subInst || !blockId || canonical == null) continue
+        const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
+        if (ok) {
+          docStore.markSubSynced(realPath, sub.key, toRev) // I2：对齐成功 → 订阅基线前进
           w2.__docstoreDispatchCount = ((w2.__docstoreDispatchCount as number) ?? 0) + 1
-        }
-      } else {
-        // M4：canonical 整块替换 —— 无 steps 可映射，直接对每个块订阅者整块对齐
-        const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
-        for (const sub of model.subscribers.values()) {
-          if (sub.source.kind !== 'block') continue
-          if (sub.stale) continue
-          if (originKey != null && sub.key === originKey) continue
-          const { tabId: subTabId, blockId } = sub.source
-          const subInst = instances.get(subTabId)
-          if (!subInst || !blockId || canonical == null) continue
-          const ok = alignHostBlockFromModel(subInst, blockId, canonical, realPath, sub.key, toRev, subTabId)
-          if (ok) docStore.markSubSynced(realPath, sub.key, toRev)
-          else {
-            docStore.markSubStale(realPath, sub.key)
-            refreshStaleDeco(subInst.crepe.editor)
-          }
+        } else {
+          // align 幂等同构时几乎不失败；真失败（只读/解析失败/块消失）→ 显式失步（I2）
+          docStore.markSubStale(realPath, sub.key)
+          refreshStaleDeco(subInst.crepe.editor)
         }
       }
 
@@ -2703,6 +2652,9 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     inst.m3aSuppressed = false
     // P2：分配 blockId + 注册块/文档视图（docStore 订阅定位基础）
     void syncTabViewsToRegistry(tabId)
+    // 挂载完成 → 用模型状态刷新脏灯：打开已被嵌入编辑的源文件时，
+    // 模型已有未保存用户输入（userDirty=true）→ 标签打开即亮脏灯
+    syncTabDirty(tab, inst)
   })
   void refreshBrokenState(crepe.editor)
   // 引用底部展示区：物化完成后重扫（应用链引用）/断链态稳定后刷新可见性

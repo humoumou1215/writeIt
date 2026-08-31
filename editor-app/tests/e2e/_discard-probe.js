@@ -113,19 +113,26 @@ const clickRow = await js(`(() => {
 cliLog('[discard] 打开 README diff: ' + clickRow)
 await L.waitMs(3500)
 C.check('diff 视图打开', (await L.q('.git-diff-view')) > 0)
-const baseTxt = await js(`(document.querySelector('.diff-base')?.textContent || '')`)
-cliLog('[discard] diff-base: ' + baseTxt)
-C.check('diff 基准可编辑（能触发还原流程）', true)
+const baseTxt = await js(`(() => { const v = document.querySelector('.git-diff-view'); return v ? 'diff-view-present:' + !!v.querySelector('.diff-row, .render-host') : 'no-view' })()`)
+cliLog('[discard] diff 视图: ' + baseTxt)
+C.check('diff 内容渲染', !baseTxt.includes('no-view'))
 
-// 还原整个文件
-// 还原整个文件（js click 触发原生 click，规避坐标偏移）
+// 还原整个文件（右键菜单 → js click 触发原生 click，规避坐标偏移）
 const clickRes = await js(`(() => {
-  const btns = [...document.querySelectorAll('.diff-toolbar [class*="danger"]')]
-  if (!btns.length) return 'no-danger-btn'
+  const v = document.querySelector('.git-diff-view')
+  if (!v) return 'no-diff-view'
+  v.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }))
+  return 'ctx-dispatched:' + (document.querySelector('.git-diff-view .menu-item') ? 'menu-shown' : 'no-menu')
+})()`)
+cliLog('[discard] 右键菜单 js-dispatch: ' + clickRes)
+await L.waitMs(400)
+const menuPick = await js(`(() => {
+  const btns = [...document.querySelectorAll('.menu-item')].filter(b => (b.textContent || '').includes('还原'))
+  if (!btns.length) return 'no-menu-item'
   btns[0].click()
   return 'clicked:' + btns[0].textContent
 })()`)
-cliLog('[discard] 还原按钮 js-click: ' + clickRes)
+cliLog('[discard] 还原菜单项 js-click: ' + menuPick)
 await L.waitMs(900)
 const dlgDump = await js(`(() => {
   const els = [...document.querySelectorAll('.modal-mask, .modal, .confirm-dialog')]

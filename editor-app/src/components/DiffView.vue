@@ -26,6 +26,35 @@ function setMode(m: 'render' | 'text') {
 // ---------- 布局 ----------
 const layout = ref<'split' | 'unified'>('split')
 
+// ---------- 模式循环（Ctrl+E：渲染 → 文本分栏 → 文本统一 → 渲染） ----------
+function cycleMode() {
+  if (mode.value === 'render') {
+    setMode('text')
+    layout.value = 'split'
+  } else if (layout.value === 'split') {
+    layout.value = 'unified'
+  } else {
+    setMode('render')
+  }
+}
+
+// ---------- diff 右键菜单（还原保留于此；关闭/导航走快捷键） ----------
+const ctxMenu = ref<null | { x: number; y: number }>(null)
+
+function openCtxMenu(e: MouseEvent) {
+  ctxMenu.value = { x: e.clientX, y: e.clientY }
+}
+
+function onDiscardFile() {
+  ctxMenu.value = null
+  void discardFileDiff(props.tabId)
+}
+
+function onClose() {
+  ctxMenu.value = null
+  void closeGitDiff(props.tabId)
+}
+
 // ---------- 行号计算 ----------
 // ctx：旧 = oldStart + 之前 ctx，新 = newStart + 之前 ctx
 // del：旧 = oldStart + 之前 ctx + 之前 del；新 = ''
@@ -146,12 +175,9 @@ function onKeydown(e: KeyboardEvent) {
   } else if (e.key === 'F7') {
     e.preventDefault()
     goHunk(e.shiftKey ? -1 : 1)
-  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'u') {
+  } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'e') {
     e.preventDefault()
-    layout.value = layout.value === 'split' ? 'unified' : 'split'
-  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
-    e.preventDefault()
-    setMode(mode.value === 'render' ? 'text' : 'render')
+    cycleMode()
   }
 }
 
@@ -184,66 +210,12 @@ const canDiscard = computed(() => diff.value && isDiffEditable(diff.value.base) 
 </script>
 
 <template>
-  <div v-if="diff" class="git-diff-view" :data-tab-id="tabId">
-    <!-- 工具栏 -->
-    <div class="diff-toolbar">
-      <span class="diff-path" :title="diff.path">{{ diff.path }}</span>
-      <span class="diff-base">{{ diff.base.label }}</span>
-      <span v-if="!diff.loading" class="diff-stats">
-        <span class="stat-add">+{{ diff.added }}</span>
-        <span class="stat-del">−{{ diff.deleted }}</span>
-        <span class="stat-hunks">{{ navCount }} 处改动</span>
-      </span>
-      <span class="spacer"></span>
-      <button class="mini" title="上一处改动 (Shift+F7)" :disabled="navCount === 0" @click="goHunk(-1)">◀</button>
-      <span class="nav-count">{{ activeHunk + 1 }}/{{ navCount }}</span>
-      <button class="mini" title="下一处改动 (F7)" :disabled="navCount === 0" @click="goHunk(1)">▶</button>
-      <span class="sep"></span>
-      <button
-        class="mini"
-        :class="{ active: layout === 'split' }"
-        title="分栏视图（左旧右新）"
-        @click="layout = 'split'"
-      >
-        分栏
-      </button>
-      <button
-        class="mini"
-        :class="{ active: layout === 'unified' }"
-        title="统一视图 (Ctrl+Shift+U)"
-        @click="layout = 'unified'"
-      >
-        统一
-      </button>
-      <span class="sep"></span>
-      <button
-        class="mini"
-        :class="{ active: mode === 'render' }"
-        title="渲染模式：单栏融合视图（mermaid/嵌入真实渲染）"
-        @click="setMode('render')"
-      >
-        渲染
-      </button>
-      <button
-        class="mini"
-        :class="{ active: mode === 'text' }"
-        title="文本模式 (Ctrl+Shift+R)"
-        @click="setMode('text')"
-      >
-        文本
-      </button>
-      <span class="sep"></span>
-      <button
-        class="mini danger"
-        :disabled="!canDiscard"
-        title="还原整个文件到 HEAD（丢弃全部未提交改动）"
-        @click="discardFileDiff(tabId)"
-      >
-        还原…
-      </button>
-      <button class="mini" title="关闭 diff (Esc)" @click="closeGitDiff(tabId)">✕</button>
-    </div>
-
+  <div
+    v-if="diff"
+    class="git-diff-view"
+    :data-tab-id="tabId"
+    @contextmenu.capture.stop.prevent="openCtxMenu"
+  >
     <!-- 内容 -->
     <div v-if="mode === 'render'" class="diff-body render">
       <div v-if="emptyState" class="diff-empty">{{ emptyState }}</div>
@@ -352,6 +324,31 @@ const canDiscard = computed(() => diff.value && isDiffEditable(diff.value.base) 
         </div>
       </template>
     </div>
+
+    <!-- 右键菜单：还原（保留功能入口）/ 关闭 -->
+    <Teleport to="body">
+      <div
+        v-if="ctxMenu"
+        class="menu-mask"
+        @click="ctxMenu = null"
+        @contextmenu.prevent="ctxMenu = null"
+      >
+        <div
+          class="menu"
+          :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
+        >
+          <button
+            class="menu-item danger"
+            :disabled="!canDiscard"
+            :title="canDiscard ? '还原整个文件到 HEAD（丢弃全部未提交改动）' : '当前对比基准只读，不可还原'"
+            @click="onDiscardFile"
+          >
+            还原整个文件到 HEAD
+          </button>
+          <button class="menu-item" @click="onClose">关闭 diff (Esc)</button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -365,72 +362,44 @@ const canDiscard = computed(() => diff.value && isDiffEditable(diff.value.base) 
   background: var(--chrome-background, #fff);
   font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace;
 }
-.diff-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--chrome-border);
+/* 右键菜单 */
+.menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+.menu {
+  position: fixed;
+  min-width: 180px;
   background: var(--chrome-surface);
-  flex-shrink: 0;
-  font-size: 12px;
-}
-.diff-path {
-  font-weight: 600;
-  max-width: 34%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.diff-base {
-  color: var(--chrome-on-surface-variant);
-  background: var(--chrome-selected);
-  padding: 1px 8px;
-  border-radius: 999px;
-}
-.diff-stats {
-  display: flex;
-  gap: 8px;
-  color: var(--chrome-on-surface-variant);
-}
-.stat-add {
-  color: #2e7d32;
-}
-.stat-del {
-  color: var(--chrome-error, #ba1a1a);
-}
-.spacer {
-  flex: 1;
-}
-.mini {
+  color: var(--chrome-on-surface);
   border: 1px solid var(--chrome-border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: var(--chrome-shadow-1);
+  display: flex;
+  flex-direction: column;
+}
+.menu-item {
+  border: none;
   background: transparent;
-  color: var(--chrome-on-surface-variant);
-  font-size: 11px;
-  padding: 3px 8px;
+  color: inherit;
+  text-align: left;
+  padding: 7px 12px;
   border-radius: 6px;
+  font-size: 13px;
   cursor: pointer;
   font-family: inherit;
 }
-.mini:hover:not(:disabled) {
+.menu-item:hover:not(:disabled) {
   background: var(--chrome-hover);
-  color: var(--chrome-on-background);
 }
-.mini.active {
-  background: var(--chrome-selected);
-  color: var(--chrome-primary);
-  border-color: var(--chrome-primary);
-}
-.mini:disabled {
+.menu-item:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.mini.danger {
+.menu-item.danger {
   color: var(--chrome-error, #ba1a1a);
-  border-color: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 60%);
-}
-.mini.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 90%);
 }
 .hunk-meta {
   position: sticky;
@@ -460,17 +429,6 @@ const canDiscard = computed(() => diff.value && isDiffEditable(diff.value.base) 
 }
 .hunk-discard:hover {
   background: color-mix(in srgb, var(--chrome-error, #ba1a1a), transparent 88%);
-}
-.nav-count {
-  font-size: 11px;
-  color: var(--chrome-on-surface-variant);
-  min-width: 30px;
-  text-align: center;
-}
-.sep {
-  width: 1px;
-  height: 16px;
-  background: var(--chrome-border);
 }
 .diff-body {
   flex: 1;

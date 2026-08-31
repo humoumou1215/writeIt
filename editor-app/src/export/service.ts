@@ -11,7 +11,7 @@ import { templateService } from '../template/service'
 import { extractDoctype } from '../template/service'
 import type { ExportContext, ExportModule, ExportOptions, ExportOutcome, ExportFormat, ExportChoice } from './types'
 import { mdToExportBlocks, mdToExportMarkdown, clearEmbedCache } from './mdast'
-import { getActiveTabMarkdown, getTabMarkdownByPath } from '../editor/manager'
+import { getActiveTabMarkdown, getModelMarkdownByPath } from '../editor/manager'
 import { fs } from '../fs'
 // 诊断埋点（D2）：导出成功/失败
 import { diag, diagEvent } from '../diagnostics/logger'
@@ -192,7 +192,7 @@ export async function exportFiles(
 
   for (const it of items) {
     try {
-      const content = getTabMarkdownByPath(it.path) ?? (await fs.readFile(it.path))
+      const content = getModelMarkdownByPath(it.path) ?? (await fs.readFile(it.path))
       const name = safeFilename(it.path.split('/').pop()?.replace(/\.(md|markdown|txt)$/i, '') ?? 'export')
       // 每文件格式：'export' → 模板定义（auto 回落）；否则用户指定
       const opts: ExportOptions = { format: it.format === 'export' ? 'auto' : it.format }

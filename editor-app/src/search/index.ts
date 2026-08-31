@@ -6,6 +6,7 @@ import { state } from '../state/store'
 import { fs } from '../fs'
 import { isEditableFile, type FsEntry } from '../fs/types'
 import { getTabMarkdownByPath } from '../editor/manager'
+import { docStore } from '../editor/docstore/store'
 
 export interface SearchHit {
   path: string
@@ -65,6 +66,9 @@ async function getContent(path: string): Promise<string> {
     const live = getTabMarkdownByPath(path)
     if (live != null) return live
   }
+  // §6.4：已加载模型（含未保存编辑；未打开标签但被嵌入/加载的文件也一致）→ 替代磁盘直读
+  const snap = docStore.snapshot(path)
+  if (snap?.canonical != null) return snap.canonical
   if (contentCache.has(path)) return contentCache.get(path)!
   const text = await fs.readFile(path)
   contentCache.set(path, text)

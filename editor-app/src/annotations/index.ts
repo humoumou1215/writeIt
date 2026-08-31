@@ -36,7 +36,7 @@ function annotationHandle(
 }
 
 /** 把 annotation stringify handler 注册进 remark stringify 选项（Create 阶段同步执行，早于 InitReady 消费） */
-const annotationStringifyHandler: MilkdownPlugin = (ctx: Ctx) => {
+export const annotationStringifyHandler: MilkdownPlugin = (ctx: Ctx) => {
   ctx.update(remarkStringifyOptionsCtx, (opts) => ({
     ...opts,
     handlers: { ...opts.handlers, annotation: annotationHandle as never },

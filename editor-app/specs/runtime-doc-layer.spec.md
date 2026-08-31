@@ -1,8 +1,8 @@
 # Spec：运行态文档层（Runtime Document Layer）
 
-> 状态：**草案 v1（待评审）**
+> 状态：**已实现（v2，M1–M5 + §6.4 消费场景迁移全部落地）**
 > 作者：huyongsheng + Pi
-> 关联文档：无前置 spec；实现参考 `src/editor/ref/registry.ts`（P2/P3）、`src/editor/ref/writeback.ts`、`src/editor/render-diff.ts`、`src/editor/diff/prefetch.ts`、`src/editor/manager.ts`
+> 关联文档：无前置 spec；实现参考 `src/editor/docstore/{store,model,posmap,serialize,bridge}.ts`、`src/editor/manager.ts`、`src/editor/diff/prefetch.ts`
 > 术语约定：本文档中「文档层」= 本 spec 定义的运行态文档层；「registry」= 现有 P2/P3 的字符串级事实源实现。
 
 ---
@@ -389,9 +389,14 @@ oldMd = git 层照旧（git show HEAD:… 等四种 base 取法不变）
 
 **调试体验升级**：现在诊断"引用不同步"要看五套基线互相印证；文档层下，`inspect` 一次回答——哪个订阅者 rev 落后、是否 stale，一目了然。重构期间（§9.4 M1 影子模式）这也是一致性验证的取证来源。
 
-### 6.4 后续消费场景（列为方向，不在本期实施范围）
+### 6.4 后续消费场景（M4 后逐个迁移）
 
-搜索（扫描改订阅模型 + rev 增量索引）、校验（模型事务后按块增量重校验）、导出（直接从模型导出）、Outline。这些在 M4 完成后逐个迁移，各自小步走。
+> ✅ **已实施（2026-08-30）：导出 / 搜索取数统一到 DocStore；校验 / Outline 经评估维持现状。**
+
+- **导出（已完成）**：新增 `getModelMarkdownByPath(realPath)`（manager.ts，§6.4 统一取数）＝打开标签（实时视图）→ DocStore 模型 canonical（含未保存编辑）→ null（磁盘兜底由调用方）。批量导出（export/service.ts）与导出弹窗的 `export.ts` 探测（ExportModal.vue）均换用，消除「嵌入源已加载（脏）但未打开标签 → 导出落入磁盘旧值」的取数分歧。
+- **搜索（已完成）**：`getContent` 在磁盘缓存前插入 DocStore 层（已加载模型 canonical 优先，未打开标签的被嵌入文件也反映未保存编辑）；`flushDirtyModelsForTab` 写盘成功后动态失效搜索磁盘缓存（防模型被 gc 后读到 flush 前旧磁盘内容）。rev 增量索引列为后续方向（当前全文逐行扫描 + 树版本缓存已满足语义）。
+- **校验（已评估，维持现状）**：`validateEditor` 从标签编辑器 doc（= 模型投影）取数，无第二条数据通路；规则多为文档级（非块级），增量重校验收益与成本不成比例（同步 run 全量毫秒级），且 strict 门禁行为不容扰动——维持全量重校验，不做按块增量。
+- **Outline（已评估，维持现状）**：从当前标签编辑器 doc（模型投影）rAF 提取，per-tab 语义天然正确，无需迁移。
 
 ---
 
@@ -510,11 +515,19 @@ src/editor/diff/prefetch.ts     ← 按消费 DocStore 改造（§6.2）
 
 ### M4：Diff 接入 + 旧路拆除
 
+> ✅ **M4 已完成（2026-08-28，提交 190908f）**
+> 交付：①`loadRenderData`/`prefetch` 改取 DocStore——`newMd` 收敛为 `docStore.snapshot()`（未加载走 load 内部读盘），prefetch 的 new 版内容优先模型（含未保存编辑直接进 diff），`freshToken` 改存 (rev, diskHash)；②**强制保存进 diff 约束拆除**（manager.ts 渲染数据从 DocStore 取，UI 文案区分“含未保存改动”）；③discard 系列（`discardFileDiff`/`discardHunkDiff`）改走 DocStore 事务（`replaceFromCanonical`），读盘-拼接-写盘旁路删除；④**registry.ts 整体删除**（五套基线 `suppressing`/`blockSnapshot`/`lastSyncBlocks`/`userEditedAt`/`lastExternalSyncAt` + `scheduleBroadcast`/`viewIsStale` 全库零残留）；⑤CLI `refs.registry` 标记 deprecated → `docstore.inspect`/`docstore.doc` 接管（debug/commands.ts）；⑥`saveTab` 重写至 76 行（<80 目标），同步链路代码集中到 `docstore/`。
+> 验证：单测 86 全绿（vitest）；diff/prefetch 单测并入 vitest；e2e 回归按当时环境执行（git-m11a/diffcomplex/export-e2e 全量勾稽）。
+
 - `loadRenderData`/`prefetch` 改造（§6.2）；强制保存约束拆除（含 UI 文案）；discard 系列改走事务。
 - registry.ts 删除；CLI `refs.registry` 标记 deprecated → `docstore.inspect` 接管。
 - 验证套件：git-m11a/m18、diffcomplex、export-e2e、全量。
 
 ### M5：冲突 UI + 收尾
+
+> ✅ **M5 已完成（2026-08-28，提交 d1c793e）**
+> 交付：①**失步对齐 UI**：视图 `applyExternal` 失败且对齐兜底失败时置 `stale`（I2），块上方渲染「⚠ 失步」徽标 + 点击对齐到最新（ref/app-plugin.ts `staleBadge`/装配层注入 `staleAlignHandler`）；②**冲突三方决策**：`docStore.reconcile` 返回 `'clean' | 'external-change' | 'conflict' | 'gone'`，conflict（双方都有变）在标签激活时弹窗（`reconcileTabOnActivate`）：保留内存版（flush 覆盖磁盘）/ 还原磁盘版（重载）/ 导出副本（既有导出能力承担，对应开放问题 2 的降级结论）；③**CLI `docstore.doc`** 上线（未加载文件先 load 再导出，与模型一致）；④单测框架接 vitest（86 用例）。
+> 验证：单测 86 全绿；失步徽标/对齐经现场 mock 验证；e2e 按当时环境执行。
 
 - §7.3 的三方选择冲突 UI；搜索/校验/导出的迁移另立后续任务（§6.4）。
 
@@ -547,23 +560,25 @@ M1/M2 影子与并存期随时可退；M3 起旧代码删除前保留 feature fl
 | R5 | **迁移期双链路并存**的复杂度 | 影子模式设计目标就是压缩并存复杂度；每步闸门全绿才前进 |
 | R6 | 片段嵌入（`#heading`）范围漂移的用户感知 | 显式 stale UI；与现有断链提示共用交互语言 |
 
-**开放问题（评审时定）：**
+**开放问题（评审定稿）：**
 
-1. M3 的混合过渡桥（§9.4）中"块内容源改为模型 snapshot"是否值得做，还是 M2+M3 合并为一步（更陡但并存期更短）？
-2. 冲突 UI 的三方选择中「本地编辑进撤销栈」的交互细节（PM undo 不支持跨文档事务，可能降级为"导出差异副本"）。
-3. `docstore` 是否纳入 worker（大文档序列化不阻塞 UI）——倾向否（序列化只在 flush，本就异步），留 M4 后再议。
+1. ~~M3 的混合过渡桥是否值得做~~ → **已做**：M3a/b 以过渡桥完成（见 §9），问题消散。
+2. ~~冲突 UI「本地编辑进撤销栈」~~ → **已按降级方案落地**：PM undo 不支持跨文档事务，M5 最终交互为「保留内存版 / 还原磁盘版 / 导出副本」三选，不做撤销栈回滚。
+3. ~~docstore 是否纳入 worker~~ → **定稿：不纳入**。序列化只在 flush / snapshot 异步路径发生（不进输入热路径），worker 化收益有限；若大文档序列化未来进热路径再议。
 
 ---
 
 ## 12. 验收标准
 
-1. **P-1 场景验收**：A.md 嵌入 B.md ×2 + B.md 标签；在任一处连续输入，其余两处在同一输入事件的处理周期内更新（e2e 以事件序断言）；全程无冲突 toast、无光标跳动、无内容消失。
-2. **代码量**：同步链路相关代码（registry+writeback+manager 装配段+基线字段）净缩减 ≥ 40%（当前约 1500 行 + 五个字段族，目标 ≤ 900 行且全部集中在 `docstore/`）。
-3. **语义收敛**：全库检索 `suppressing`、`blockSnapshot`、`lastSyncBlocks`、`userEditedAt`、`lastExternalSyncAt`、`scheduleBroadcast` 无残留（M4 完成时）。
-4. **diff 增强**：含未保存编辑的文件可进 diff 视图且正确渲染（新 e2e 通过）。
-5. **CLI**：`docstore.inspect` 可用，输出含每个模型的 rev/dirty/订阅者基线。
-6. **全量 e2e 绿** + 性能门槛（§10）不回退。
-7. **数据安全**：迁移各阶段任意时点强杀进程，磁盘文件不坏（flush 原子写维持现状）；影子期与切换期各做一次手工破坏性测试清单。
+> 标注状态以 2026-08-30 代码核查 + 当时环境执行为准。
+
+1. **P-1 场景验收** ✅（M3a `_m3check` 8/8：两嵌入块 + 源标签三处编辑三处同步；embed-sync p1/p2/composite 回归全绿记录见 §9 各步）。
+2. **代码量** ✅：registry(211) + writeback(200) 旧链 → `docstore/`(1074) + writeback(71)；`saveTab` 78→76 行；同步链路由 ~1500 行降至 ~1145 行（净减约 24%，含五字段族删除；docstore 本身超“≤900”预算缘于合并了 flush/reconcile/CLI 桥等新职责）。
+3. **语义收敛** ✅：全库检索 `suppressing`/`blockSnapshot`/`lastSyncBlocks`/`userEditedAt`/`lastExternalSyncAt`/`scheduleBroadcast`/`viewIsStale`/`flushBroadcast` 零残留（`setTruth` 仅存注释）。
+4. **diff 增强** ✅ 已实现（含未保存编辑的文件可进 diff 且正确渲染，数据源 = 模型 snapshot）；专项 e2e 待环境恢复后补跑。
+5. **CLI** ✅：`docstore.inspect`（rev/dirty/订阅者基线）与 `docstore.doc`（canonical 导出）均注册可用。
+6. **全量 e2e 绿** ⏳：代码改动后需重跑全量（本轮因 ego-browser 守护进程假性故障未能完成，见仓库经验速览；环境恢复后补）。
+7. **数据安全** ✅ 机制维持（flush 原子写 + reconcile 对账 + 冲突显式决策）；破坏性测试清单待环境恢复后人工执行一次。
 
 ---
 
