@@ -294,8 +294,9 @@ fn handle_conn(stream: TcpStream, app: &AppHandle) {
         let conn2 = conn.clone();
         thread::spawn(move || {
           thread::sleep(Duration::from_secs(15));
+          let st2 = app_for_timeout.state::<DebugServerState>();
           let removed = {
-            let mut p = app_for_timeout.state::<DebugServerState>().pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut p = st2.pending.lock().unwrap_or_else(|e| e.into_inner());
             p.remove(&gid).is_some()
           };
           if removed {
