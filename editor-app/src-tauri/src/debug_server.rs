@@ -60,7 +60,7 @@ pub struct DebugServerState {
   pub instance_id: Mutex<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RequestPayload {
   id: u64,
@@ -164,6 +164,7 @@ fn remove_discovery(app: &AppHandle) {
 
 pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Result<(), String> {
   stop_server(app, state);
+  let mode = mode.to_string(); // 转 owned，便于 move 进后台线程（避免 &str 逃逸生命周期报错）
   // 实例标识：进程内首启时生成，之后保持不变（设置页/Agent 指认用）
   {
     let mut id = state.instance_id.lock().map_err(|e| e.to_string())?;
@@ -179,7 +180,7 @@ pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Re
   *state.mode.lock().map_err(|e| e.to_string())? = mode.to_string();
   *state.listener.lock().map_err(|e| e.to_string())? = Some(listener.try_clone().map_err(|e| e.to_string())?);
   let instance_id = state.instance_id.lock().map_err(|e| e.to_string())?.clone();
-  write_discovery(app, mode, port, &token, &instance_id);
+  write_discovery(app, &mode, port, &token, &instance_id);
   write_registry(app, state);
 
   let app2 = app.clone();
