@@ -1934,7 +1934,7 @@ pub fn run() {
       if let Ok(v) = std::env::var("WRITEIT_DEBUG") {
         if v == "local" || v == "lan" {
           let state = app.state::<debug_server::DebugServerState>();
-          let _ = debug_server::start_server(app, &state, &v);
+          let _ = debug_server::start_server(app.handle(), &state, &v);
         }
       }
       Ok(())

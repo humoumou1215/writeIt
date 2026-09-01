@@ -21,7 +21,7 @@ use std::{
   thread,
   time::Duration,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 每连接一个写通道（writer 线程持有 TcpStream 副本）+ 存活标志
 #[derive(Clone)]
@@ -119,7 +119,9 @@ fn write_registry(app: &AppHandle, state: &DebugServerState) {
   let info = json!({
     "instanceId": state.instance_id.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     "pid": std::process::id(),
-    "port": state.listener.lock().ok().and_then(|g| g.as_ref()).and_then(|l| l.local_addr().ok()).map(|a| a.port()).unwrap_or(0),
+    "port": state.listener.lock().ok()
+      .and_then(|g| g.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port()))
+      .unwrap_or(0),
     "token": state.token.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     "mode": state.mode.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     "at": now_iso(),
@@ -183,7 +185,7 @@ pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Re
   let app2 = app.clone();
   thread::spawn(move || {
     let st = app2.state::<DebugServerState>();
-    let Some(l) = st.listener.lock().ok().and_then(|g| g.clone()) else { return };
+    let Some(l) = st.listener.lock().ok().and_then(|g| g.as_ref().and_then(|l| l.try_clone().ok())) else { return };
     // 非阻塞 accept + 轮询：stop_server 置 None 后线程能退出，真正解绑端口
     let _ = l.set_nonblocking(true);
     eprintln!("[debug_server] 监听 {mode} :{port} token={token}");
