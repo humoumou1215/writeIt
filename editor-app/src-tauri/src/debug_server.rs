@@ -162,7 +162,7 @@ fn remove_discovery(app: &AppHandle) {
   }
 }
 
-pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Result<(), String> {
+pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Result<u16, String> {
   stop_server(app, state);
   let mode = mode.to_string(); // 转 owned，便于 move 进后台线程（避免 &str 逃逸生命周期报错）
   // 实例标识：进程内首启时生成，之后保持不变（设置页/Agent 指认用）
@@ -207,7 +207,7 @@ pub fn start_server(app: &AppHandle, state: &DebugServerState, mode: &str) -> Re
       }
     }
   });
-  Ok(())
+  Ok(port)
 }
 
 pub fn stop_server(app: &AppHandle, state: &DebugServerState) {
@@ -246,7 +246,9 @@ fn handle_conn(stream: TcpStream, app: &AppHandle) {
   loop {
     line.clear();
     match reader.read_line(&mut line) {
-      Ok(0) | Err(_) => break, // EOF / 超时（超时无数据视为空闲，继续）
+      Ok(0) => break, // EOF
+      Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => continue, // 超时无数据：空闲，继续
+      Err(_) => break,
       Ok(_) => {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -334,7 +336,7 @@ pub fn debug_reply(
     p.remove(&id)
   };
   if let Some(s) = sink {
-    s.send(frame.to_string());
+    s.send(frame.to_string() + "\n");
   }
   Ok(())
 }
@@ -342,7 +344,7 @@ pub fn debug_reply(
 /// 前端推事件：广播给所有已认证连接
 #[tauri::command]
 pub fn debug_emit(state: State<'_, DebugServerState>, event: Value) -> Result<(), String> {
-  let frame = json!({"event": "push", "payload": event}).to_string();
+  let frame = json!({"event": "push", "payload": event}).to_string() + "\n";
   let sessions = {
     let s = state.sessions.lock().map_err(|e| e.to_string())?;
     s.clone()
@@ -363,10 +365,10 @@ pub fn debug_server_control(app: AppHandle, state: State<'_, DebugServerState>, 
       Ok(json!({"mode": "off", "instanceId": state.instance_id.lock().map_err(|e| e.to_string())?.clone()}))
     }
     "local" | "lan" => {
-      start_server(&app, &state, &mode)?;
+      let port = start_server(&app, &state, &mode)?;
       let token = state.token.lock().map_err(|e| e.to_string())?.clone();
       let instance_id = state.instance_id.lock().map_err(|e| e.to_string())?.clone();
-      Ok(json!({"mode": mode, "port": 0, "token": token, "instanceId": instance_id}))
+      Ok(json!({"mode": mode, "port": port, "token": token, "instanceId": instance_id}))
     }
     other => Err(format!("未知模式: {other}")),
   }
