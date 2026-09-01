@@ -226,7 +226,7 @@ pub fn stop_server(app: &AppHandle, state: &DebugServerState) {
 
 /// 处理单条连接（reader 线程 + writer 线程分离）
 fn handle_conn(stream: TcpStream, app: &AppHandle) {
-  let Ok(write_stream) = stream.try_clone() else { return };
+  let Ok(mut write_stream) = stream.try_clone() else { return };
   let (tx, rx) = channel::<String>();
   thread::spawn(move || {
     for msg in rx {
@@ -290,12 +290,12 @@ fn handle_conn(stream: TcpStream, app: &AppHandle) {
         let payload = RequestPayload { id: gid, cmd: cmd.to_string(), args };
         let _ = app.emit_to("main", "debug://request", payload);
         // 兜底超时：15s 无回 → 回 timeout 并清理（前端正常回会被 pending 覆盖）
-        let st2 = app.state::<DebugServerState>();
+        let app_for_timeout = app.clone();
         let conn2 = conn.clone();
         thread::spawn(move || {
           thread::sleep(Duration::from_secs(15));
           let removed = {
-            let mut p = st2.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut p = app_for_timeout.state::<DebugServerState>().pending.lock().unwrap_or_else(|e| e.into_inner());
             p.remove(&gid).is_some()
           };
           if removed {
