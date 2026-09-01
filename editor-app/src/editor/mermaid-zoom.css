@@ -1,10 +1,21 @@
 /* Mermaid 预览放大查看：悬停放大镜按钮 + Lightbox 弹层 */
 
-/* ---- 预览包裹层（inline-block 收缩到图表尺寸，靠 .preview 的 text-align:center 居中） ---- */
+/* ---- 预览包裹层：撑满父容器宽度，图表自适应放大 ---- */
 .mmd-zoomable {
   position: relative;
-  display: inline-block;
+  display: block;
+  width: 100%;
   max-width: 100%;
+}
+
+/* SVG 撑满包裹层宽度，高度按 viewBox 比例自适应。
+   mermaid 输出的 width/height 已被 fixSvgDimensions 替换为 viewBox 像素值，
+   这里用 max-width:100% 保证不溢出容器，height:auto 保持宽高比。 */
+.mmd-zoomable > svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
 }
 
 /* ---- 放大镜按钮（悬停预览区显示） ---- */

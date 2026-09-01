@@ -101,6 +101,8 @@ interface Instance {
 const instances = new Map<string, Instance>()
 // M1：docstore 解析管线已配置标志（幂等注入，见 mountEditor）
 let docstorePipelineConfigured = false
+// docstore 初始化失败 toast 去重标志
+let __docstoreInitWarnShown = false
 // M4b：提交路径观测计数（多块/跨界收敛验证；挂 window.__m4diag）
 const m4diag = { commitBlockStepsOk: 0, commitMultiOk: 0, commitFail: 0 }
 if (typeof window !== 'undefined') {
@@ -2480,8 +2482,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       configureDocStorePipeline(p)
       setDocstorePipelineCache(p)
       docstorePipelineConfigured = true
-    } catch {
-      // 管线取不到不阻塞编辑器（影子退化为仅元数据登记）
+    } catch (err) {
+      const msg = `docstore pipeline 初始化失败: ${err instanceof Error ? err.message : String(err)}`
+      console.warn('[docstore]', msg, err)
+      diag('warn', 'docstore', msg)
+      if (!__docstoreInitWarnShown) {
+        __docstoreInitWarnShown = true
+        toast(msg, 'warning')
+      }
     }
   }
   try {
@@ -2489,8 +2497,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       readFile: (p: string) => fs.readFile(p),
       writeFile: (p: string, c: string) => fs.writeFile(p, c),
     })
-  } catch {
-    /* 同上 */
+  } catch (err) {
+    const msg = `docstore IO 初始化失败: ${err instanceof Error ? err.message : String(err)}`
+    console.warn('[docstore]', msg, err)
+    diag('warn', 'docstore', msg)
+    if (!__docstoreInitWarnShown) {
+      __docstoreInitWarnShown = true
+      toast(msg, 'warning')
+    }
   }
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)

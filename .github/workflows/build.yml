@@ -104,6 +104,37 @@ jobs:
           cache: npm
           cache-dependency-path: editor-app/package-lock.json
 
+      # 构建前把应用版本号同步成当前 tag 的版本（去掉 v 前缀）。
+      # 这样 GitHub Release 用 v0.4.2，产物里的版本号也会是 0.4.2。
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          RAW_VER="${{ needs.filter.outputs.release_tag }}"
+          VERSION="${RAW_VER#v}"
+
+          # 只在 tag 是 vX.Y.Z 格式时同步，手动触发等场景跳过
+          if [[ ! "$RAW_VER" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Not a semantic version tag, skipping version sync."
+            exit 0
+          fi
+
+          echo "Syncing version to $VERSION"
+
+          # package.json（同时更新 package-lock.json）
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+          # Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+          # tauri.conf.json
+          node -e "
+            const fs = require('fs');
+            const path = 'src-tauri/tauri.conf.json';
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+            data.version = '$VERSION';
+            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+          "
+
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 

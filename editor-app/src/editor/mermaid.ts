@@ -32,6 +32,47 @@ let mermaidSeq = 0
 export class MermaidRenderError extends Error {}
 
 /**
+ * 后处理 mermaid 输出的 SVG：将 width="100%" + style="max-width:Xpx" 替换为 viewBox 的
+ * 显式像素尺寸。解决 Windows/WebView2 上 inline-block shrink-to-fit 容器中
+ * width="100%" 回退到 300px 默认替换元素尺寸、导致「渲染区域大但图表小」的问题。
+ *
+ * 原理：mermaid 在 useMaxWidth=true（默认）时输出 width="100%" + max-width 内联样式，
+ * 但 .mmd-zoomable 是 display:inline-block 的 shrink-to-fit 容器，percentage width
+ * 无法解析 → Chrome 回退到 300px 默认宽度。Windows WebView2 上这个回退值更大或表现
+ * 更不稳定，导致图表在宽容器中显得很小。用 viewBox 的原始像素替换后，SVG 有了明确的
+ * intrinsic width，shrink-to-fit 正确解析，再由 CSS max-width:100% 保证响应式。
+ */
+function fixSvgDimensions(svg: string): string {
+  // 提取 viewBox 的 width 和 height
+  const vbMatch = /viewBox="[\d.eE+-]+\s+[\d.eE+-]+\s+([\d.eE+-]+)\s+([\d.eE+-]+)"/.exec(svg)
+  if (!vbMatch) return svg
+  const vbW = parseFloat(vbMatch[1])
+  const vbH = parseFloat(vbMatch[2])
+  if (!vbW || !vbH) return svg
+
+  // 替换 width 属性：width="100%" → width="<vbW>"
+  let result = svg.replace(
+    /(<svg\b[^>]*?)\bwidth="[^"]*"/,
+    `$1width="${vbW}"`
+  )
+  // 替换/添加 height 属性（mermaid useMaxWidth 时不设 height）
+  if (/\bheight="[^"]*"/.test(result)) {
+    result = result.replace(
+      /(<svg\b[^>]*?)\bheight="[^"]*"/,
+      `$1height="${vbH}"`
+    )
+  } else {
+    result = result.replace(/<svg\b/, `<svg height="${vbH}"`)
+  }
+  // 移除 style 中的 max-width（由 CSS .mmd-zoomable svg { max-width:100% } 接管）
+  result = result.replace(
+    /(<svg\b[^>]*?)\s*style="[^"]*max-width\s*:[^"]*"/,
+    (_, pre) => pre
+  )
+  return result
+}
+
+/**
  * mermaid source → 渲染后 SVG HTML（escapeRefHash → mermaid.render → linkifyMermaidRefs →
  * wrapMermaidPreview）。与编辑器 preview 面板共用同一条代码路径（§4.1.2：divergence 仅限挂载点）。
  * 失败抛 MermaidRenderError（不带 DOM/调用栈依赖，node 可测）。
@@ -46,9 +87,11 @@ export async function renderMermaidSvg(src: string): Promise<string> {
       ms: performance.now() - t0,
       data: { srcLen: s.length, refs: refs.length },
     })
+    // 修复 SVG 尺寸：width="100%" → viewBox 显式像素（解决 Windows 上 shrink-to-fit 回退 300px）
+    const fixedSvg = fixSvgDimensions(svg)
     // M9：foreignObject 内 [[path#frag]] 文本 → 可点击链接（去 [[ ]] 显示路径）
     // 再包裹放大镜按钮（悬停显示，点击 Lightbox 放大查看，ESC 关闭）
-    return wrapMermaidPreview(linkifyMermaidRefs(svg, refs))
+    return wrapMermaidPreview(linkifyMermaidRefs(fixedSvg, refs))
   }
   try {
     return await run(src, [])

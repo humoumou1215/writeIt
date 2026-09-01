@@ -2325,7 +2325,7 @@ doctype:demo
 
 666777888999888
 
-新增1行23
+新增1行23调试调试23
 `,
   '流程图/助贷/助贷放款流程.md': `# 助贷放款流程
 
@@ -4011,4 +4011,4 @@ export const DEMO_DIRS: string[] = [
 ]
 
 /** 全部 demo 文件内容的聚合 hash（校验同步状态用） */
-export const DEMO_HASH = '1aoirf0'
+export const DEMO_HASH = '6wcu4n'

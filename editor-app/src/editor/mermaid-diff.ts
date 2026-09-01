@@ -21,6 +21,10 @@ export interface MermaidNodeDiff {
   del: string[]
   /** 修改（标签/文本变化） */
   mod: MermaidMod[]
+  /** 新增子图 id（flowchart；图内绿标） */
+  subAdd: string[]
+  /** 删除子图 id（flowchart；图内红标） */
+  subDel: string[]
   /** 合并后的源码（fence 渲染用；flowchart/state 尾部带 classDef/class 声明） */
   merged: string
   /** 解析置信度：0.5 以下视作 fence 级降级依据（保证层卡）；固定输出字符串供契约断言 */
@@ -69,6 +73,8 @@ interface FcNodeInfo {
   line: string
   /** 有形状定义（id[形状]）才算真实 label——裸 id 出现不视为修改 */
   hasShape: boolean
+  /** 形状 token（如 [拒绝] / {判断} / ((结束))）——重名 id 的旧值 ghost 节点重建用 */
+  shape: string
 }
 
 /** 提取 flowchart 节点（id → label + 定义行）。
@@ -86,21 +92,46 @@ export function extractFlowchartNodes(src: string): Map<string, FcNodeInfo> {
       if (m && !FC_KEYWORDS.has(m[1])) {
         const info = nodes.get(m[1])
         if (info && info.hasShape) continue
-        nodes.set(m[1], { label: m[2].slice(1, -1).trim(), line, hasShape: true })
+        nodes.set(m[1], { label: m[2].slice(1, -1).trim(), line, hasShape: true, shape: m[2] })
         continue
       }
       const idm = /^([A-Za-z0-9_]+)/.exec(seg)
       if (idm && !FC_KEYWORDS.has(idm[1]) && !nodes.has(idm[1])) {
-        nodes.set(idm[1], { label: idm[1], line, hasShape: false })
+        nodes.set(idm[1], { label: idm[1], line, hasShape: false, shape: '' })
       }
     }
   }
   return nodes
 }
 
+/** 提取 flowchart 子图（id → 标题 + 定义行）。子图 id 用于 class 声明（mermaid 认 title 即 id）。 */
+const SUBG_RE = /^\s*subgraph\s+([^\s\[]+)\s*(?:\[([^\]]*)\])\s*$/i
+export function extractSubgraphs(src: string): Map<string, { id: string; title: string; line: string }> {
+  const subs = new Map<string, { id: string; title: string; line: string }>()
+  for (const line of src.split('\n')) {
+    const m = SUBG_RE.exec(line)
+    if (!m) continue
+    const id = m[1].trim().replace(/^["']|["']$/g, '')
+    const title = (m[2] ?? '').trim()
+    if (!id) continue
+    subs.set(id, { id, title: title || id, line })
+  }
+  return subs
+}
+
+/** 生成 mod 旧值 ghost 节点的唯一 id（避免与既有节点/子图 id 冲突） */
+function uniqueGhostId(base: string, taken: Set<string>): string {
+  let id = `${base}_del`
+  let n = 2
+  while (taken.has(id)) id = `${base}_del${n++}`
+  return id
+}
+
 function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   const oldNodes = extractFlowchartNodes(oldSrc)
   const newNodes = extractFlowchartNodes(newSrc)
+  const oldSubs = extractSubgraphs(oldSrc)
+  const newSubs = extractSubgraphs(newSrc)
   const add: string[] = []
   const del: string[] = []
   const mod: MermaidMod[] = []
@@ -114,7 +145,11 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
   for (const id of oldNodes.keys()) {
     if (!newNodes.has(id)) del.push(id)
   }
-  let merged = mergeFlowchart(newSrc, oldNodes, { add, del, mod })
+  // 子图级：新增子图 → 绿标（title 即 id）；删除子图 → 红标（合并时回插块，class 才能命中）
+  const subAdd = [...newSubs.keys()].filter((id) => !oldSubs.has(id))
+  const subDel = [...oldSubs.keys()].filter((id) => !newSubs.has(id))
+  const ghostIds: string[] = []
+  let merged = mergeFlowchart(newSrc, oldSrc, oldNodes, oldSubs, { add, del, mod, subDel }, ghostIds)
   let confidence = 1
   let degradeReason: string | undefined
   // 置信度门槛（§4.8）：非空 flowchart body 但零节点提取 → 解析面不足，降级 fence 级
@@ -124,20 +159,33 @@ function diffFlowchart(oldSrc: string, newSrc: string): MermaidNodeDiff {
     degradeReason = 'flowchart 无法归类的 token（零节点提取）'
     merged = newSrc
   }
-  if (confidence >= 0.5 && (add.length || del.length || mod.length)) {
-    merged = appendMermaidClasses(merged, mod ? [...add, ...mod.map((m) => m.id)] : add, del)
+  if (confidence >= 0.5 && (add.length || del.length || mod.length || subAdd.length || subDel.length)) {
+    merged = appendMermaidClasses(
+      merged,
+      [...new Set([...add, ...mod.map((m) => m.id), ...subAdd])],
+      [...new Set([...del, ...ghostIds, ...subDel])]
+    )
   }
-  return { type: 'flowchart', add, del, mod, merged, confidence, degradeReason }
+  return { type: 'flowchart', add, del, mod, subAdd, subDel, merged, confidence, degradeReason }
 }
 
 function mergeFlowchart(
   newSrc: string,
+  oldSrc: string,
   oldNodes: Map<string, FcNodeInfo>,
-  diff: { add: string[]; del: string[]; mod: MermaidMod[] }
+  oldSubs: Map<string, { id: string; title: string; line: string }>,
+  diff: { add: string[]; del: string[]; mod: MermaidMod[]; subDel: string[] },
+  ghostIds: string[]
 ): string {
   const out = newSrc.split('\n')
-  // 删除节点加回（原定义行含边，保持可见；class 标注红）——不带任何逐行标注语法
+  const oldSrcLines = oldSrc.split('\n')
   const addedLines = new Set<string>()
+  // 既有 id 全集（旧节点 + 待回插节点），保证 ghost id 唯一
+  const taken = new Set<string>()
+  for (const [id] of oldNodes) taken.add(id)
+  for (const id of diff.del) taken.add(id)
+  for (const m of diff.mod) taken.add(m.id)
+  // 1) 删除节点加回（原定义行含边，保持可见；class 标注红）——不带任何逐行标注语法
   for (const id of diff.del) {
     const info = oldNodes.get(id)
     if (info && !addedLines.has(info.line)) {
@@ -145,7 +193,49 @@ function mergeFlowchart(
       addedLines.add(info.line)
     }
   }
+  // 2) mod 旧值 ghost 节点加回（独立红色节点，避免与新增 id 冲突）——复用原形状
+  for (const m of diff.mod) {
+    const info = oldNodes.get(m.id)
+    if (!info || !info.hasShape) continue
+    const gid = uniqueGhostId(m.id, taken)
+    taken.add(gid)
+    ghostIds.push(gid)
+    const line = `${gid}${info.shape}`
+    if (!addedLines.has(line)) {
+      out.push(line)
+      addedLines.add(line)
+    }
+  }
+  // 3) 删除子图块加回（header…end 整块；容器红标需在合并源码中真实存在）
+  for (const sid of diff.subDel) {
+    const sub = oldSubs.get(sid)
+    if (!sub) continue
+    const block = subgraphBlockLines(oldSrcLines, sub.line)
+    if (!block) continue
+    for (const l of block) {
+      if (!addedLines.has(l)) {
+        out.push(l)
+        addedLines.add(l)
+      }
+    }
+  }
   return out.join('\n')
+}
+
+/** 从旧源码里取 `subgraph … end` 整块（depth 计数支持嵌套） */
+function subgraphBlockLines(srcLines: string[], header: string): string[] | null {
+  const start = srcLines.findIndex((l) => l === header)
+  if (start < 0) return null
+  const out: string[] = []
+  let depth = 0
+  for (let i = start; i < srcLines.length; i++) {
+    const t = srcLines[i].trim()
+    out.push(srcLines[i])
+    if (/^subgraph\b/i.test(t)) depth++
+    else if (t === 'end') depth--
+    if (depth === 0) break
+  }
+  return depth === 0 ? out : null
 }
 
 // ---------- sequence ----------

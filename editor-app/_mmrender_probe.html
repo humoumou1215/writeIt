@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>mm render probe</title></head>
+<body>
+<div id="out"></div>
+<script type="module">
+import mermaid from '/node_modules/mermaid/dist/mermaid.esm.mjs'
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' })
+
+const merged = `flowchart TD
+  subgraph 贷前
+    A[接收进件] --> B{黑名单}
+    B -->|命中| X[直接拒绝]
+    B -->|未命中| C[额度评估]
+    B -->|白名单| I[秒批通道]
+    C --> D[(资金方池)]
+  end
+  subgraph 贷中
+    D -->|额度充足| E[放款处理]
+    D -->|额度不足| F[人工复核转人工]
+    E --> G([完成])
+  end
+  subgraph 贷后
+    E --> J[贷后监控]
+    J --> K[逾期预警]
+  end
+    F --> H[/补件通知\\]
+    X_del[拒绝]
+    F_del[人工复核]
+classDef diffAdd fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20,stroke-width:2px;
+classDef diffDel fill:#fdecea,stroke:#c62828,color:#8e0000,stroke-width:2px,stroke-dasharray:4 3;
+
+class I,J,K,X,F,贷后 diffAdd
+class H,X_del,F_del diffDel`
+
+const out = document.getElementById('out')
+try {
+  const { svg } = await mermaid.render('m-full', merged)
+  out.innerHTML = svg
+  const cls = [...svg.matchAll(/class="([^"]*)"/g)].map(m=>m[1])
+  window.__probe = { ok: true, diffAdd: cls.filter(c=>c.includes('diffAdd')), diffDel: cls.filter(c=>c.includes('diffDel')), len: svg.length }
+} catch (e) {
+  window.__probe = { ok: false, error: String(e.message || e) }
+}
+document.title = 'DONE'
+</script>
+</body>
+</html>
