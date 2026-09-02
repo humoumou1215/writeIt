@@ -1,5 +1,8 @@
-# WorkBuddy 本地记忆（不属于知识库，不入库）
-.workbuddy/
+# WorkBuddy 本地记忆与临时产物（不属于知识库，不入库）
+# 用 /* 而非 / ：父目录整块排除时 git 不会递归检查子级白名单，! 会静默失效
+.workbuddy/*
+# 例外：调试工具 skill 随仓库共享（memory/ 与 tmp/ 仍忽略）
+!.workbuddy/skills/
 
 # 依赖
 node_modules/
