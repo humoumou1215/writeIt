@@ -69,11 +69,57 @@ const takeBlob = async (timeout = 8000) => {
 
 const J = (v) => JSON.stringify(v)
 
-// 套件专用：每次运行用唯一命名空间（避免复用上次崩溃遗留的 user-held/非活跃空间导致硬停）。
-// 内存堆积由运行器/手动清理兜底：run-all 末尾与 _cleanup-spaces.ego.js 会 complete 关闭释放。
-// 用固定含义前缀便于识别（如 ref-e2e-12345）。
+// 套件专用：每个 Node 进程只创建一个可识别的测试空间。
+// 空间名带 run id，避免复用崩溃后遗留的 user-held/非活跃空间；回收由下面的
+// 进程级退出钩子 + 运行器父进程兜底共同保证。
+let activeTaskSpace = null
+let exitInProgress = false
+const realProcessExit = process.exit.bind(process)
+
+const releaseActiveTaskSpace = async () => {
+  const task = activeTaskSpace
+  if (!task?.id) return
+  activeTaskSpace = null
+  try {
+    await Promise.race([
+      completeTaskSpace(task.id, { keep: false }),
+      new Promise((resolve) => setTimeout(resolve, 8000)),
+    ])
+  } catch (e) {
+    // 正常用例通常已经显式 complete；重复关闭返回 not found 属于预期状态。
+    if (!String(e?.message || e).toLowerCase().includes('task space not found')) {
+      cliLog(`⚠️ task space 回收失败 (${task.id}): ${e?.message || e}`)
+    }
+  }
+}
+
+const shutdownWithCleanup = async (code) => {
+  if (exitInProgress) return
+  exitInProgress = true
+  await releaseActiveTaskSpace()
+  realProcessExit(code)
+}
+
+// 用例普遍在末尾显式 process.exit；重写为“先回收、再退出”，并覆盖异常/信号路径。
+// 这是集中式兜底，避免每个用例都必须手写 try/finally。
+process.exit = (code = 0) => { void shutdownWithCleanup(code) }
+process.on('uncaughtException', (err) => {
+  cliLog(`❌ 未捕获异常: ${err?.stack || err}`)
+  void shutdownWithCleanup(1)
+})
+process.on('unhandledRejection', (reason) => {
+  cliLog(`❌ 未处理 Promise 异常: ${reason?.stack || reason}`)
+  void shutdownWithCleanup(1)
+})
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => { void shutdownWithCleanup(128 + (signal === 'SIGINT' ? 2 : 15)) })
+}
+
 const acquireTaskSpace = async (name) => {
-  const t = await useOrCreateTaskSpace(`${name}-${Date.now() % 100000}`)
+  if (activeTaskSpace) return activeTaskSpace
+  const runId = `${Date.now()}-${process.pid}`
+  const t = await useOrCreateTaskSpace(`writeIt-e2e:${name}:${runId}`)
+  activeTaskSpace = t
   return t
 }
 

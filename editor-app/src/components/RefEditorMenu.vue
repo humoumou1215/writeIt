@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 编辑器右键菜单（替代浏览器默认 contextmenu）
-// 分组：① 剪贴板粘贴组（复制的文件 → 三种引用类型）② 常规编辑组 ③ 引用操作组 ④ 引用类型切换组
+// 分组：① 剪贴板粘贴组（复制的文件 → 三种引用类型）② 常规编辑组 ③ 引用操作组 ④ 引用类型切换组 ⑤ 视图切换组
 import { computed } from 'vue'
 import { editorMenuState, closeEditorMenu } from '../editor/ref/clipboard-core'
 import {
@@ -16,9 +16,33 @@ import {
 import type { RefMode } from '../editor/ref/core'
 import { openImagePreview } from '../editor/image-paste'
 import { fs } from '../fs'
-import { toast } from '../state/store'
+import { state, toast } from '../state/store'
+import { toggleSourceMode } from '../editor/manager'
 
 const st = editorMenuState
+
+/** M20：切换视图（在 wysiwyg/source/diff 之间切换） */
+async function switchView() {
+  const viewMode = st.viewMode
+  if (!viewMode) return
+  // 需要通过 cfg.tabId 找到对应的 tab
+  const tabId = st.cfg?.tabId
+  if (!tabId) return
+
+  if (viewMode === 'wysiwyg') {
+    await toggleSourceMode(tabId)
+  } else if (viewMode === 'source') {
+    await toggleSourceMode(tabId)
+  } else if (viewMode === 'diff') {
+    // diff 模式下：渲染 ↔ 文本 切换
+    const tab = state.tabs.find(t => t.id === tabId)
+    if (tab?.diff) {
+      const next = tab.diff.mode === 'render' ? 'text' : 'render'
+      tab.diff.mode = next
+    }
+  }
+  closeEditorMenu()
+}
 
 /** 当前引用类型（类型切换组的勾选） */
 const currentMode = computed<RefMode>(() => {

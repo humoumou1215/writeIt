@@ -16,7 +16,7 @@ function cleanupSpaces() {
   try {
     const { spawnSync } = require('node:child_process')
     const script = readFileSync(join(here, '_cleanup-spaces.ego.js'), 'utf8')
-    spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000 })
+    spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'ignore', 'ignore'] })
   } catch (e) { /* 清理失败不影响结果 */ }
 }
 
@@ -86,6 +86,8 @@ function run(name) {
 
 const results = []
 async function main() {
+// 清除上一次异常中断留下的测试空间，再开始本轮回归。
+cleanupSpaces()
 for (const name of SUITES) {
   process.stdout.write(`▶ ${name} … `)
   const r = await run(name)
@@ -103,6 +105,8 @@ for (const name of SUITES) {
     console.log(r.out.split('\n').slice(-8).join('\n'))
   }
   results.push({ ...r, summary })
+  // 即使子套件因崩溃/超时退出，也在下一套件前释放它的浏览器上下文。
+  cleanupSpaces()
 }
 
 console.log('\n===== E2E 汇总 =====')

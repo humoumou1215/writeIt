@@ -185,25 +185,52 @@ function mergeFlowchart(
   for (const [id] of oldNodes) taken.add(id)
   for (const id of diff.del) taken.add(id)
   for (const m of diff.mod) taken.add(m.id)
-  // 1) 删除节点加回（原定义行含边，保持可见；class 标注红）——不带任何逐行标注语法
-  for (const id of diff.del) {
-    const info = oldNodes.get(id)
-    if (info && !addedLines.has(info.line)) {
-      out.push(info.line)
-      addedLines.add(info.line)
-    }
-  }
-  // 2) mod 旧值 ghost 节点加回（独立红色节点，避免与新增 id 冲突）——复用原形状
+  // mod 旧值 → ghost id 映射：旧边/旧定义行里出现的 mod id 一律改写为 ghost id，
+  //   ghost 节点才接得上原边（否则悬空无连线）。
+  const idToGhost = new Map<string, string>()
   for (const m of diff.mod) {
     const info = oldNodes.get(m.id)
     if (!info || !info.hasShape) continue
     const gid = uniqueGhostId(m.id, taken)
     taken.add(gid)
     ghostIds.push(gid)
-    const line = `${gid}${info.shape}`
-    if (!addedLines.has(line)) {
-      out.push(line)
-      addedLines.add(line)
+    idToGhost.set(m.id, gid)
+    // ghost 定义行（独立节点，保证至少 node 可见；旧边由下面步骤加回）
+    const defLine = `${gid}${info.shape}`
+    if (!addedLines.has(defLine)) {
+      out.push(defLine)
+      addedLines.add(defLine)
+    }
+  }
+  // 旧行改写：mod id → ghost id（只改写 id 引用，不影响其他 token）
+  const rewriteOld = (line: string): string => {
+    if (!idToGhost.size) return line
+    let r = line
+    for (const [id, gid] of idToGhost) r = r.replace(new RegExp(id, 'g'), gid)
+    return r
+  }
+  // 1) 删除节点加回（原定义行含边，保持可见；class 标注红）——mod id 改写后指向 ghost，
+  //    删除节点的旧边才不会错连到新节点
+  for (const id of diff.del) {
+    const info = oldNodes.get(id)
+    if (!info) continue
+    const rl = rewriteOld(info.line)
+    if (!addedLines.has(rl)) {
+      out.push(rl)
+      addedLines.add(rl)
+    }
+  }
+  // 2) mod 旧值 ghost 的旧边加回（含 ghost id 的边行，源/目标任一命中即可）——
+  //    保证 ghost 与原有节点有连线，不再悬空
+  for (const [id, gid] of idToGhost) {
+    for (const line of oldSrcLines) {
+      const t = line.trim()
+      if (!EDGE_SEP_RE.test(t) || !t.includes(id)) continue
+      const rl = rewriteOld(line)
+      if (!addedLines.has(rl)) {
+        out.push(rl)
+        addedLines.add(rl)
+      }
     }
   }
   // 3) 删除子图块加回（header…end 整块；容器红标需在合并源码中真实存在）

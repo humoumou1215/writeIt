@@ -209,6 +209,8 @@ export const editorMenuPlugin = $prose((ctx) => {
         editorMenuState.image = null
         editorMenuState.clip = clipFromInternal()
         editorMenuState.hasSelection = !view.state.selection.empty
+        // M20：获取当前视图模式（用于右键菜单的「切换视图」项）
+        editorMenuState.viewMode = cfg?.getViewMode?.()
         editorMenuState.x = Math.min(e.clientX, window.innerWidth - 210)
         editorMenuState.y = Math.min(e.clientY, window.innerHeight - 280)
         editorMenuState.visible = true
@@ -235,6 +237,8 @@ export const editorMenuPlugin = $prose((ctx) => {
         editorMenuState.image = img
         editorMenuState.clip = clipFromInternal()
         editorMenuState.hasSelection = !view.state.selection.empty
+        // M20：获取当前视图模式（用于右键菜单的「切换视图」项）
+        editorMenuState.viewMode = cfg?.getViewMode?.()
         editorMenuState.x = Math.min(x, window.innerWidth - 210)
         editorMenuState.y = Math.min(y, window.innerHeight - 240)
         editorMenuState.visible = true

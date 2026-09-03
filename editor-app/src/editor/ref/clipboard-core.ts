@@ -320,6 +320,8 @@ export interface EditorMenuState {
   /** 剪贴板是否有纯文本内容（「粘贴」是否可用） */
   hasText: boolean
   hasSelection: boolean
+  /** M20：当前视图模式（通过 cfg.getViewMode() 或 state.tabs 获取） */
+  viewMode?: 'wysiwyg' | 'source' | 'diff'
 }
 
 export const editorMenuState = shallowReactive<EditorMenuState>({
@@ -334,6 +336,7 @@ export const editorMenuState = shallowReactive<EditorMenuState>({
   clip: null,
   hasText: false,
   hasSelection: false,
+  viewMode: undefined,
 })
 
 /** 关闭菜单（点击外部 / 执行动作后） */

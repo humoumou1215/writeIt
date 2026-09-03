@@ -2378,6 +2378,8 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       }
       return baseName(absPath)
     },
+    // M20：获取当前编辑器的视图模式（右键菜单「切换视图」项用）
+    getViewMode: () => state.tabs.find((t) => t.id === tabId)?.viewMode ?? 'wysiwyg',
   }
   /** 引用 chip 点击 → 解析真实路径 → 打开标签 → #片段滚动（原 registerOpenRefHandler 逻辑） */
   async function handleOpenRef(path: string, fragment: string | null) {

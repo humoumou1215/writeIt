@@ -9,6 +9,9 @@ import type { Node } from '@milkdown/kit/prose/model'
 import type { FsEntry } from '../../fs/types'
 import type { SuggestObject, Template } from '../../template/types'
 
+/** M20：视图模式类型 */
+export type ViewMode = 'wysiwyg' | 'source' | 'diff'
+
 /** ref 插件实际用到的最小文件系统接口（fs 抽象的子集） */
 export interface RefFs {
   readFile(path: string): Promise<string>
@@ -53,6 +56,8 @@ export interface RefConfig {
    *  工作区内返回相对路径；无根路径/工作区外返回文件名（Obsidian 式全库匹配）；
    *  由装配层实现（有 fs.rootPath 全量能力），插件包不做系统路径转换。 */
   resolveExternalPath?: (absPath: string) => string
+  /** M20：获取当前编辑器的视图模式（用于右键菜单的「切换视图」项） */
+  getViewMode?: () => ViewMode
 }
 
 /** ref 配置切片（$ctx 插件：注册进容器时默认 null；装配层 config 回调 set 覆盖）。
