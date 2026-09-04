@@ -11,13 +11,18 @@ const { homedir } = require('node:os')
 const here = __dirname
 // ego-browser 可执行文件：优先环境变量，其次 ~/.local/bin（ego lite 安装默认位置），最后 PATH
 const EGO = process.env.EGO_BROWSER_BIN || join(homedir(), '.local/bin/ego-browser')
-// 释放所有遗留 task space（防内存堆积；每个 <- 测试遗留的未关闭空间）
+// 释放所有遗留 task space（防内存堆积；每个测试遗留的未关闭空间）。
+// 这项清理会连接浏览器并可能等待服务端，不能在每个成功套件后重复执行。
 function cleanupSpaces() {
+  const started = Date.now()
   try {
     const { spawnSync } = require('node:child_process')
     const script = readFileSync(join(here, '_cleanup-spaces.ego.js'), 'utf8')
-    spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'ignore', 'ignore'] })
-  } catch (e) { /* 清理失败不影响结果 */ }
+    const r = spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'ignore', 'ignore'] })
+    return { ms: Date.now() - started, timedOut: r.error?.code === 'ETIMEDOUT', code: r.status }
+  } catch (e) {
+    return { ms: Date.now() - started, timedOut: false, code: null, error: e?.message || String(e) }
+  }
 }
 
 const SUITES = [
@@ -52,6 +57,8 @@ const SUITES = [
   'refs-footer-e2e', // 引用/被引用 底部展示区：点击 chip 打开目标文件（回归 b3be328 后打开失败）
   'paste-ref-e2e',   // 复制文件粘贴为引用（Ctrl+V 链接）+ 编辑器右键菜单（三种粘贴/类型切换）
   'table-enhance-e2e', // 表格增强：单元格换行 round-trip / Shift+Enter 新增行 / 动态列宽
+  'table-width-e2e',   // 表格列边界稳定、真实拖拽、活动编辑器自动列宽
+  'table-clipboard-e2e', // Excel HTML/TSV 逐格粘贴与 TSV 引号/换行
   'embed-sync-p1-e2e',      // 嵌入同步回归①：last-wins 止血 / 双块对称 / 写回守卫（真实输入补强）
   'embed-sync-p2-e2e',      // 嵌入同步回归②：registry 单一事实来源 / blockId / 跨标签
   'embed-sync-caret-regress-e2e', // 嵌入同步：NodeView 不重建（光标/输入落点回归）
@@ -71,6 +78,30 @@ const SUITES = [
   'tabbar-overflow-e2e', // 标签栏布局：独立滚动区/右端固定/滚轮横滚/末标签点击
   'app-e2e',      // 综合（清空 demo-shots/）
 ]
+const requestedSuites = process.env.E2E_SUITES
+  ? process.env.E2E_SUITES.split(',').map((name) => name.trim()).filter(Boolean)
+  : null
+const unknownSuites = requestedSuites?.filter((name) => !SUITES.includes(name)) || []
+if (unknownSuites.length) {
+  console.error(`未知 E2E 套件: ${unknownSuites.join(', ')}`)
+  process.exitCode = 2
+  process.exit()
+}
+const suitesToRun = requestedSuites || SUITES
+const workers = Math.max(1, Number.parseInt(process.env.E2E_WORKERS || '2', 10) || 1)
+// 仅这些已验证不共享页面状态、跨标签或输出文件的套件进入 worker 池。
+// 其余套件显式串行：包括嵌入同步/保存竞态、导出、Git、诊断和综合套件。
+const SERIAL_SUITES = new Set([
+  'export-e2e', 'git-m11a-e2e', 'git-m18-fixture-e2e', 'git-m11a-smoke',
+  'diagnostics-e2e', 'app-e2e',
+  ...SUITES.filter((name) => name.startsWith('embed-')),
+])
+const PARALLEL_SAFE_SUITES = new Set([
+  'ref-e2e', 'm3-e2e', 'm4-e2e', 'm4b-e2e', 'm4c-e2e',
+  'drag-e2e', 'm7-apidoc-e2e', 'xxljob-e2e', 'm8-db-e2e', 'm9-placeholder-e2e',
+  'scroll-e2e', 'refs-footer-e2e', 'paste-ref-e2e',
+  'table-enhance-e2e', 'table-width-e2e', 'table-clipboard-e2e', 'tabbar-overflow-e2e',
+])
 
 function run(name) {
   return new Promise((resolve) => {
@@ -83,18 +114,22 @@ function run(name) {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let out = ''
+    const started = Date.now()
+    const heartbeat = setInterval(() => {
+      process.stdout.write(`\n  … ${name} 已运行 ${Math.round((Date.now() - started) / 1000)}s`)
+    }, 15000)
     p.stdout.on('data', (d) => (out += d))
     p.stderr.on('data', (d) => (out += d))
     p.stdin.end(body)
-    p.on('close', (code) => resolve({ name, code, out }))
+    p.on('close', (code, signal) => {
+      clearInterval(heartbeat)
+      resolve({ name, code, signal, out, ms: Date.now() - started })
+    })
   })
 }
 
 const results = []
-async function main() {
-// 清除上一次异常中断留下的测试空间，再开始本轮回归。
-cleanupSpaces()
-for (const name of SUITES) {
+async function runOne(name) {
   process.stdout.write(`▶ ${name} … `)
   const r = await run(name)
   const m = /结果: (\d+) 通过 \/ (\d+) 失败/.exec(r.out)
@@ -105,14 +140,38 @@ for (const name of SUITES) {
     : r.code === 0
       ? '✅ done'
       : `❌ code=${r.code}`
-  process.stdout.write(summary + '\n')
+  process.stdout.write(`${summary} (${(r.ms / 1000).toFixed(1)}s${r.signal ? `, ${r.signal}` : ''})\n`)
   if (!m && r.code !== 0) {
-    // 崩溃：打印尾部日志
     console.log(r.out.split('\n').slice(-8).join('\n'))
   }
-  results.push({ ...r, summary })
-  // 即使子套件因崩溃/超时退出，也在下一套件前释放它的浏览器上下文。
-  cleanupSpaces()
+  return { ...r, summary }
+}
+
+async function runBatch(names) {
+  const batch = await Promise.all(names.map(runOne))
+  results.push(...batch)
+  if (batch.some((r) => r.code !== 0 || r.signal || /❌/.test(r.summary))) {
+    const recovery = cleanupSpaces()
+    console.log(`  批次异常后清理：${(recovery.ms / 1000).toFixed(1)}s${recovery.timedOut ? '（超时）' : ''}`)
+  }
+}
+
+async function main() {
+const runStarted = Date.now()
+console.log(`E2E 回归：${suitesToRun.length}/${SUITES.length} 个套件，workers=${workers}`)
+// 清除上一次异常中断留下的测试空间，再开始本轮回归。
+const initialCleanup = cleanupSpaces()
+console.log(`清理历史 task space：${(initialCleanup.ms / 1000).toFixed(1)}s${initialCleanup.timedOut ? '（超时）' : ''}`)
+for (let i = 0; i < suitesToRun.length;) {
+  if (workers === 1 || !PARALLEL_SAFE_SUITES.has(suitesToRun[i])) {
+    await runBatch([suitesToRun[i++]])
+    continue
+  }
+  const batch = []
+  while (i < suitesToRun.length && batch.length < workers && PARALLEL_SAFE_SUITES.has(suitesToRun[i])) {
+    batch.push(suitesToRun[i++])
+  }
+  await runBatch(batch)
 }
 
 console.log('\n===== E2E 汇总 =====')
@@ -123,8 +182,12 @@ for (const r of results) {
   console.log(`${ok ? '✅' : '❌'} ${r.name}: ${r.summary}`)
 }
 console.log(fail === 0 ? '\n全部通过 🎉' : `\n${fail} 个套件未通过 ❌`)
+const totalMs = Date.now() - runStarted
+const slow = [...results].sort((a, b) => b.ms - a.ms).slice(0, 5)
+console.log(`总耗时：${(totalMs / 1000).toFixed(1)}s；最慢套件：${slow.map((r) => `${r.name} ${(r.ms / 1000).toFixed(1)}s`).join('，')}`)
 console.log('\n释放遗留 task space…')
-cleanupSpaces()
+const finalCleanup = cleanupSpaces()
+console.log(`最终清理：${(finalCleanup.ms / 1000).toFixed(1)}s${finalCleanup.timedOut ? '（超时）' : ''}`)
 process.exit(fail === 0 ? 0 : 1)
 }
 void main()
