@@ -133,6 +133,33 @@ const clearDemoShots = () => {
 // ---------------- 时间（ego-browser 的 wait 单位是秒） ----------------
 const waitMs = (ms) => wait(ms / 1000)
 
+// Application navigation used to pay a fixed 2.5–3.5s delay on every suite,
+// even when Vite/Milkdown had already finished.  Poll the same observable
+// readiness signal the tests use (the editor API, a mounted ProseMirror, and
+// a populated file tree), and keep a short stability window so this does not
+// turn a partially mounted
+// editor into a false positive.  The old delay remains the timeout fallback.
+const waitForEditorReady = async (fallbackMs = 2500, timeoutMs = 10000) => {
+  const started = Date.now()
+  let readySince = 0
+  while (Date.now() - started < timeoutMs) {
+    const ready = await js(`(() => document.readyState === 'complete' && !!window.__editorGetMarkdown && !!document.querySelector('.milkdown .ProseMirror') && document.querySelectorAll('.tree .name').length > 0)()`)
+    if (ready) {
+      if (!readySince) readySince = Date.now()
+      if (Date.now() - readySince >= 150) return true
+    } else {
+      readySince = 0
+    }
+    await waitMs(100)
+  }
+  // Preserve the previous minimum timing contract when the app is genuinely
+  // not ready (or a future test page does not expose the editor marker),
+  // without adding fallbackMs on top of the polling timeout.
+  const remaining = fallbackMs - (Date.now() - started)
+  if (remaining > 0) await waitMs(remaining)
+  return false
+}
+
 // ---------------- DOM 查询（全部走浏览器侧 js()，一次返回） ----------------
 // 元素数量
 const q = (sel) => js(`document.querySelectorAll(${J(sel)}).length`)
@@ -319,24 +346,27 @@ const ensureViewport = async () => {
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
   } catch { /* 无该能力时忽略 */ }
 }
-const openApp = async (url, settleMs = 2500) => {
+const openApp = async (url, settleMs) => {
   await openOrReuseTab(url, { wait: true, timeout: 60 })
   await ensureViewport()
-  await waitMs(settleMs)
+  if (settleMs == null) await waitForEditorReady(2500)
+  else await waitMs(settleMs)
 }
 // 清空 mock 文件系统并重新加载（防止测试残留新文件/被改文件串扰下一个套件）
-const resetMockFs = async (settleMs = 3500) => {
+const resetMockFs = async (settleMs) => {
   await js(`localStorage.removeItem('milkdown-note-mock-fs-v2'); location.reload()`)
-  await waitMs(settleMs)
+  if (settleMs == null) await waitForEditorReady(3500)
+  else await waitMs(settleMs)
 }
 // 打开新会话：开应用 + 强制重置 mock，保证每个套件从同一份基线开始
-const freshApp = async (url, settleMs = 2500) => {
+const freshApp = async (url, settleMs) => {
   await openApp(url, settleMs)
   await resetMockFs()
 }
-const reloadApp = async (settleMs = 2500) => {
+const reloadApp = async (settleMs) => {
   await js(`location.reload()`)
-  await waitMs(settleMs)
+  if (settleMs == null) await waitForEditorReady(2500)
+  else await waitMs(settleMs)
 }
 
 // ---------------- 编辑器调试钩子（见 src/editor/manager.ts） ----------------
@@ -376,7 +406,7 @@ const newChecker = () => {
 
 // ---------------- 命名空间（用例统一用 L.xxx 访问） ----------------
 const L = {
-  J, waitMs, acquireTaskSpace, demoShotsDir, clearDemoShots, setupDownloads, latestDownload, headOf, readAllText, installBlobCapture, resetBlobs, takeBlob,
+  J, waitMs, waitForEditorReady, acquireTaskSpace, demoShotsDir, clearDemoShots, setupDownloads, latestDownload, headOf, readAllText, installBlobCapture, resetBlobs, takeBlob,
   q, has, qText, txt, txtAll, attr, vis, box, boxText, val, scrollIntoView, treeClick,
   clickEl, clickText, rightClick, rightClickText, middleClick, middleClickText, dblClickEl, hoverEl, hoverText, selectText,
   press, type, fill,
