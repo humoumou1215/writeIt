@@ -60,6 +60,12 @@ const SUITES = [
   'embed-indep-verify-e2e', // 嵌入同步独立重验证：registry 严格断言（磁盘/块全等、并发分叉、只读、跨宿主）
   'embed-indep-verify2-e2e', // 嵌入同步独立重验证②：关闭重开/reload 持久化/无源标签写回/真实输入
   'embed-sync-alwaysalign-e2e', // 嵌入同步 V2 回归：docstore 全量同步（去增量映射）+ 源脏标记（双 bug 修复验证）
+  'embed-save-race-e2e',        // P0：输入后立即保存 + 连续保存串行化
+  'embed-nested-writeback-e2e', // P0：A→B→C 最深层编辑回写/重载
+  'embed-failure-recovery-e2e', // P0/P2：写入/原子写/rename 故障恢复
+  'embed-cas-conflict-e2e',     // P0/P1：CAS 外部冲突拒绝覆盖
+  'embed-projection-lifecycle-e2e', // P1：投影重建订阅生命周期
+  'embed-external-change-e2e',  // P0：外部磁盘变更保存保护
   'annotations-overlap-e2e',// 批注 v8：重叠/嵌套/同文多条/跨行 + 旧文件兼容
   'diagnostics-e2e', // 问题诊断包：logger/双入口/生成 zip/异常提示红点（D1-D3，2026-08-22）
   'tabbar-overflow-e2e', // 标签栏布局：独立滚动区/右端固定/滚轮横滚/末标签点击

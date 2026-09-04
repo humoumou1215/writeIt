@@ -111,6 +111,12 @@ export const webFs: FileSystem = {
     await w.close()
   },
 
+  async writeFileAtomic(path, content) {
+    // File System Access API 的 close() 提交 writable 临时版本；与普通写入相同语义，
+    // 由浏览器负责提交，保留独立方法供保存协调器统一调用。
+    return this.writeFile(path, content)
+  },
+
   async writeBinary(path, data) {
     if (!rootHandle || !(await ensurePermission())) throw new Error('未授权访问目录')
     // 父目录自动创建

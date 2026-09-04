@@ -24,6 +24,8 @@ export interface FileSystem {
   readTree(showAll: boolean): Promise<FsEntry[]>
   readFile(path: string): Promise<string>
   writeFile(path: string, content: string): Promise<void>
+  /** 尽力原子写入：桌面/开发后端使用同目录临时文件替换；其他后端回退普通写入。 */
+  writeFileAtomic?(path: string, content: string): Promise<void>
   createFile(path: string): Promise<void>
   createDir(path: string): Promise<void>
   rename(oldPath: string, newPath: string): Promise<void>

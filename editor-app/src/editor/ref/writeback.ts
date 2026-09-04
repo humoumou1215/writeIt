@@ -15,6 +15,10 @@ export interface BlockEntry {
   size: number
 }
 
+export type BlockSerializeResult =
+  | { ok: true; canonical: string; explicitlyEmpty: boolean }
+  | { ok: false; reason: 'block-gone' | 'invalid-content' | 'parse-failed' }
+
 /** 收集文档中所有已物化的 file_block（含 size，用于范围序列化）。 */
 function collectBlockEntries(editor: Editor): BlockEntry[] {
   return editor.action((ctx) => {
@@ -40,20 +44,27 @@ function collectBlockEntries(editor: Editor): BlockEntry[] {
  * content（物化时来自源文件解析）包成临时 doc 序列化。
  * round-trip：序列化 → 再解析 → 再序列化，避免弄脏保存基线。 */
 export function serializeBlockContent(editor: Editor, pos: number): string {
+  const result = serializeBlockContentResult(editor, pos)
+  return result.ok ? result.canonical : ''
+}
+
+/** 结构化序列化结果：合法空文档与内部失败不可混为一谈。 */
+export function serializeBlockContentResult(editor: Editor, pos: number): BlockSerializeResult {
   return editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const schema = ctx.get(schemaCtx)
     const parser = ctx.get(parserCtx)
     const serializer = ctx.get(serializerCtx)
     const node = view.state.doc.nodeAt(pos)
-    if (!node || node.type.name !== 'file_block') return ''
+    if (!node || node.type.name !== 'file_block') return { ok: false, reason: 'block-gone' }
     const doc = schema.topNodeType.createAndFill(null, node.content)
-    if (!doc) return ''
+    if (!doc) return { ok: false, reason: 'invalid-content' }
     const md = serializer(doc)
     const reparsed = parser(md)
-    const stable = reparsed ? serializer(reparsed) : md
+    if (!reparsed) return { ok: false, reason: 'parse-failed' }
+    const stable = serializer(reparsed)
     if (md.length !== stable.length) console.log('[writeback] roundtrip diff:', md.length, '->', stable.length, JSON.stringify(md.slice(-30)), '|', JSON.stringify(stable.slice(-30)))
-    return stable
+    return { ok: true, canonical: stable, explicitlyEmpty: stable.trim() === '' }
   })
 }
 

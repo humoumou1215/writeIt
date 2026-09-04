@@ -61,6 +61,11 @@ export function onTabClosed(tabId: string): void {
   docStore.unregisterTab(tabId)
 }
 
+/** 标签仍存活但 replaceAll 重建了 file_block：清理旧块订阅，保留 doc 订阅。 */
+export function onTabProjectionRebuilt(tabId: string): void {
+  docStore.rebindTabBlocks(tabId)
+}
+
 /** [影子] 一致性断言（诊断/CLI + 影子期回归网） */
 export function shadowConsistencyCheck(realPath: string): { ok: boolean; meta: string } | null {
   return docStore.assertConsistent(realPath)

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { EditorState } from '@milkdown/kit/prose/state'
 import { createTestParser } from '../helpers/parser'
-import { docStore, setDocStoreIo, setDocStorePipeline } from '../../../src/editor/docstore/store'
+import { docStore, DocStoreConflictError, setDocStoreIo, setDocStorePipeline } from '../../../src/editor/docstore/store'
 import type { DocPipeline } from '../../../src/editor/docstore/serialize'
 
 let p: DocPipeline
@@ -68,6 +68,14 @@ describe('docstore/store（M1 影子语义）', () => {
     const after = docStore.apply('B.md', tr.steps, { originKey: null, reason: 'user' })
     expect(after).toBe(before + 1)
     expect(docStore.isDirty('B.md')).toBe(true)
+  })
+
+  it('replaceFromCanonical：旧基线不得覆盖更新后的模型（CAS）', async () => {
+    await docStore.load('B.md')
+    const base = docStore.getModel('B.md')!.rev
+    docStore.replaceFromCanonical('B.md', MD_B + '先到编辑\n', null, base)
+    expect(() => docStore.replaceFromCanonical('B.md', MD_B + '迟到编辑\n', null, base)).toThrow(DocStoreConflictError)
+    expect(docStore.snapshot('B.md')!.canonical).toContain('先到编辑')
   })
 
   it('subscribe/unsubscribe + gc：订阅清零且不脏 → 模型释放', async () => {

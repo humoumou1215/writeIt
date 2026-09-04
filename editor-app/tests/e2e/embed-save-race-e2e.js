@@ -1,0 +1,20 @@
+// P0：真实输入后立即保存 + 连续保存。所有结果同时检查视图、模型、磁盘和 dirty。
+const C = L.newChecker(); const task = await L.acquireTaskSpace('embed-save-race')
+await L.freshApp('http://localhost:5173/?backend=mock')
+const K='milkdown-note-mock-fs-v2', SRC='race-src.md', HOST='race-host.md'
+const set = (p,v) => js(`(()=>{const d=JSON.parse(localStorage.getItem('${K}')||'{}');d.files[${L.J(p)}]=${L.J(v)};localStorage.setItem('${K}',JSON.stringify(d))})()`)
+const disk = p => js(`JSON.parse(localStorage.getItem('${K}')||'{}').files[${L.J(p)}]??null`)
+const blocks = () => js(`(()=>{const p=[...document.querySelectorAll('.editor-pane')].find(x=>x.getClientRects().length);return p?[...p.querySelectorAll('.ref-file-block:not(.readonly) .ref-file-block-content')].map(x=>x.textContent||''):[]})()`)
+const waitFor = async (f, ms=10000) => { const t=Date.now(); while(Date.now()-t<ms){if(await f())return true;await L.waitMs(100)} return false }
+await set(SRC,'race-base'); await set(HOST,'# Host\n\n![[race-src]]'); await L.reloadApp(2500); await js(`window.__editorOpenPath('${HOST}')`)
+await waitFor(()=>js(`document.querySelectorAll('.ref-file-block-content').length===1`),10000)
+await L.clickEl('.ref-file-block-content',0); await L.type('立即保存-R1'); await L.press('Control+s')
+C.check('输入后立即保存最终磁盘含最新编辑', await waitFor(()=>js(`(JSON.parse(localStorage.getItem('${K}')||'{}').files['${SRC}']||'').includes('立即保存-R1')`)))
+C.check('立即保存后视图含最新编辑', (await blocks())[0]?.includes('立即保存-R1'))
+const model = await js(`window.__docstoreInspect?.().models.find(x=>x.realPath==='${SRC}')||null`)
+C.check('立即保存后模型已加载且不脏', !!model && model.dirty===false && model.rev===model.diskRev)
+C.check('立即保存后 tab 不脏', !(await js(`!!document.querySelector('.tab .dot.dirty')`)))
+await L.type('最后一次-L2'); await L.press('Control+s'); await L.press('Control+s')
+C.check('连续保存最终磁盘是最后模型状态', await waitFor(()=>js(`(JSON.parse(localStorage.getItem('${K}')||'{}').files['${SRC}']||'').includes('最后一次-L2')`)))
+C.check('连续保存未产生重复标记', ((await disk(SRC)).match(/最后一次-L2/g)||[]).length===1)
+cliLog(C.summary()); await completeTaskSpace(task.id,{keep:false}); process.exit(C.fail?1:0)

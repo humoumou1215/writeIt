@@ -1,0 +1,10 @@
+// P0/P2：一次原子写失败、rename 失败；原文件完整，编辑器保持 dirty/error。
+const C=L.newChecker();const task=await L.acquireTaskSpace('embed-failure-recovery');await L.freshApp('http://localhost:5173/?backend=mock')
+const K='milkdown-note-mock-fs-v2',SRC='fail-src.md',set=(p,v)=>js(`(()=>{const d=JSON.parse(localStorage.getItem('${K}')||'{}');d.files[${L.J(p)}]=${L.J(v)};localStorage.setItem('${K}',JSON.stringify(d))})()`),disk=()=>js(`JSON.parse(localStorage.getItem('${K}')||'{}').files['${SRC}']||''`)
+const toast=()=>js(`[...document.querySelectorAll('.toast')].map(x=>x.textContent||'').join('|')`)
+await set(SRC,'原文件-KEEP');await L.reloadApp(2200);await js(`window.__editorOpenPath('${SRC}')`);await L.waitMs(2500);await L.focusEditor();await L.goEnd();await L.type('失败编辑-F1')
+await js(`window.__mockFsTestControl?.({writeAtomic:1})`);await js('window.__saveActiveTab?.()');await L.waitMs(700)
+C.check('写失败后原文件保持完整',(await disk())==='原文件-KEEP');C.check('写失败后仍 dirty',await js(`!!document.querySelector('.tab .dot.dirty')`));C.check('写失败明确提示且非已保存',(await toast()).includes('保存失败')&&!(await toast()).includes('已保存'))
+await js(`window.__mockFsTestControl?.({rename:1})`);await js(`window.__mockFsTestControl?.({writeAtomic:1})`);await js('window.__saveActiveTab?.()');await L.waitMs(500)
+C.check('连续注入失败不清空文件',(await disk())==='原文件-KEEP');C.check('故障注入已消耗且控制可恢复',(await js(`window.__mockFsTestControl?.()`)).writeAtomic===0)
+cliLog(C.summary());await completeTaskSpace(task.id,{keep:false});process.exit(C.fail?1:0)

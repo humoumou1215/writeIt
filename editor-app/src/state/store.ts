@@ -16,6 +16,8 @@ export interface Tab {
   lastModified: number
   /** M11：视图模式——wysiwyg = Crepe / source = 源码 textarea / diff = Git diff 视图 */
   viewMode: ViewMode
+  /** 打开阶段已成功读取的内容；挂载时不得再次读取并在失败时降级为空文档。 */
+  initialContent?: string
   /** M11：diff 视图数据（viewMode==='diff' 时有效） */
   diff: null | {
     path: string

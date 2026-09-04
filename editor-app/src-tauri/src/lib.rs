@@ -122,6 +122,28 @@ fn write_file(
   fs::write(&full, content).map_err(|e| e.to_string())
 }
 
+/// 原子文本写入：同目录临时文件完成写入并同步后替换目标，避免直接截断目标文件。
+#[tauri::command]
+fn write_file_atomic(
+  state: State<'_, AppState>,
+  path: String,
+  content: String,
+) -> Result<(), String> {
+  use std::io::Write;
+  let root = state.root.lock().unwrap().clone().ok_or("尚未选择目录")?;
+  let full = resolve(&root, &path)?;
+  if let Some(parent) = full.parent() {
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  }
+  let tmp = full.with_extension(format!("{}writeit-tmp", full.extension().and_then(|x| x.to_str()).unwrap_or("")));
+  let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+  f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+  f.sync_all().map_err(|e| e.to_string())?;
+  #[cfg(windows)]
+  if full.exists() { fs::remove_file(&full).map_err(|e| e.to_string())?; }
+  fs::rename(&tmp, &full).map_err(|e| e.to_string())
+}
+
 /// 写二进制文件（粘贴图片等）：前端传 base64，这里解码后落盘
 #[tauri::command]
 fn write_file_binary(
@@ -1940,6 +1962,7 @@ pub fn run() {
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
+      write_file_atomic,
       set_root,
       app_dir,
       read_tree,

@@ -33,6 +33,9 @@ export const devFs: FileSystem = {
   writeFile(path, content) {
     return call<void>('write', { path, content })
   },
+  writeFileAtomic(path, content) {
+    return call<void>('write-atomic', { path, content })
+  },
   writeBinary(path, data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
     return call<void>('write-binary', { path, base64: bytesToBase64(bytes) })

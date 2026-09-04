@@ -11,7 +11,7 @@ import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 
 import { TextSelection, AllSelection, Plugin } from '@milkdown/kit/prose/state'
 
-import { fs, useRealDirFs } from '../fs'
+import { fs, useRealDirFs, writeFileSafely } from '../fs'
 import { contentHash } from '../git/hash'
 import { refPlugin, resolveRefs, refConfigCtx, getRefConfig } from './ref'
 import type { RefConfig } from './ref/config'
@@ -19,6 +19,7 @@ import { registerRefStringify } from './ref/stringify'
 import { imagePastePlugin } from './image-paste'
 import {
   serializeBlockContent,
+  serializeBlockContentResult,
   collectSourcePaths,
 } from './ref/writeback'
 import { fillBlockContent, genBlockId, resolveBlockRefs, probeRealPath } from './ref/resolve'
@@ -35,11 +36,12 @@ import {
   configureDocStorePipeline,
   onCommitted,
   onTabClosed,
+  onTabProjectionRebuilt,
   onTruthChanged,
   registerBlockShadow,
   registerDocShadow,
 } from './docstore/bridge'
-import { docStore, setDocStoreDispatcher } from './docstore/store'
+import { docStore, DocStoreConflictError, setDocStoreDispatcher } from './docstore/store'
 import { canonicalOf } from './docstore/serialize'
 
 import {
@@ -99,6 +101,12 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+/** 同一标签的异步模型投影必须串行，避免旧刷新晚于新刷新完成而回退视图。 */
+const tabRefreshQueues = new Map<string, Promise<void>>()
+/** 块编辑提交不能 fire-and-forget：保存/关闭前必须等待本标签已发起的提交。 */
+const pendingModelCommits = new Map<string, Set<Promise<boolean>>>()
+/** 同一标签的保存请求串行化，避免两个 Ctrl+S 交错写入不同快照。 */
+const tabSaveQueues = new Map<string, Promise<boolean>>()
 // M1：docstore 解析管线已配置标志（幂等注入，见 mountEditor）
 let docstorePipelineConfigured = false
 // docstore 初始化失败 toast 去重标志
@@ -122,16 +130,18 @@ interface HostBlockDetail {
 }
 function collectHostBlockDetails(doc: import('@milkdown/kit/prose/model').Node): HostBlockDetail[] {
   const out: HostBlockDetail[] = []
-  doc.content.forEach((n, off) => {
-    if (n.type.name !== 'file_block') return
+  // 必须包含嵌套 file_block；块编辑归属由 groupBlockSteps 选择最深容器。
+  doc.descendants((n, pos) => {
+    if (n.type.name !== 'file_block') return true
     out.push({
-      from: off,
+      from: pos,
       nodeSize: n.nodeSize,
       blockId: (n.attrs.blockId as string | null) ?? null,
       path: String(n.attrs.path ?? ''),
       readonly: Boolean(n.attrs.readonly),
       folded: Boolean(n.attrs.collapsed) || !Boolean(n.attrs.materialized),
     })
+    return true
   })
   return out
 }
@@ -146,7 +156,10 @@ function groupBlockSteps(
     const raw = stepRawRange(s)
     if (!raw) continue
     const [f, t] = raw
-    const owner = blocks.find((b) => f >= b.from && t <= b.from + b.nodeSize)
+    // 嵌套块时取最深（nodeSize 最小）的容器，避免把 C 的编辑误归属给 B。
+    const owner = blocks
+      .filter((b) => f >= b.from && t <= b.from + b.nodeSize)
+      .sort((a, b) => a.nodeSize - b.nodeSize)[0]
     if (!owner) continue
     const arr = byBlock.get(owner.from) ?? []
     arr.push(s)
@@ -185,6 +198,28 @@ function findHostBlockStart(inst: Instance, blockId: string): number | null {
     })
   })
   return pos
+}
+
+function trackModelCommit(tabId: string, promise: Promise<boolean>): void {
+  const set = pendingModelCommits.get(tabId) ?? new Set<Promise<boolean>>()
+  set.add(promise)
+  pendingModelCommits.set(tabId, set)
+  void promise.finally(() => {
+    if (set.delete(promise) && set.size === 0 && pendingModelCommits.get(tabId) === set) {
+      pendingModelCommits.delete(tabId)
+    }
+  })
+}
+
+async function drainModelCommits(tabId: string): Promise<boolean> {
+  let ok = true
+  // 提交完成前可能又产生新的提交，因此循环直到集合稳定为空。
+  while (true) {
+    const pending = [...(pendingModelCommits.get(tabId) ?? [])]
+    if (pending.length === 0) return ok
+    const results = await Promise.all(pending.map((p) => p.catch(() => false)))
+    if (results.some((v) => !v)) ok = false
+  }
 }
 
 /**
@@ -226,10 +261,12 @@ async function commitBlockSteps(
     // 序列化会读到错误节点，污染源模型；块已不存在 = 嵌入标记被移除 → 源不变）。
     const blockPos = findHostBlockStart(inst, binfo.blockId)
     if (blockPos == null) return fail('block-gone')
-    const blockCanonical = serializeBlockContent(inst.crepe.editor, blockPos)
-    if (!blockCanonical) return fail('block-canonical')
+    const baseRev = model.rev
+    const serialized = serializeBlockContentResult(inst.crepe.editor, blockPos)
+    if (!serialized.ok) return fail('block-canonical:' + serialized.reason)
+    const blockCanonical = serialized.canonical
     try {
-      docStore.replaceFromCanonical(real, blockCanonical, `${tabId}#${binfo.blockId}`)
+      docStore.replaceFromCanonical(real, blockCanonical, `${tabId}#${binfo.blockId}`, baseRev)
       // 嵌入块编辑已写入源模型 → 脏标记同步到源文件（否则打开源文件窗口不亮脏灯）
       docStore.markUserDirty(real)
       m4diag.commitBlockStepsOk++
@@ -262,21 +299,23 @@ async function commitMultiBlockCanonical(
     const cfg = inst.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key))
     if (!cfg || !affected.length) return false
     const hostTab = state.tabs.find((t) => t.id === tabId)
-    type Cand = { real: string; key: string; content: string }
+    type Cand = { real: string; key: string; content: string; baseRev: number }
     const cands: Cand[] = []
     for (const b of affected) {
       if (b.readonly || !b.blockId || b.folded) continue
       const real = await probeRealPath(cfg, b.path, hostTab?.path ?? null)
       if (!real) continue
+      if (!docStore.getModel(real)?.doc) await docStore.load(real)
       const pos = findHostBlockStart(inst, b.blockId)
       if (pos == null) continue // 块已被整体删除 → 源不变
-      const content = serializeBlockContent(inst.crepe.editor, pos)
-      if (content === '') continue // 空块（内容全删）不写源
+      const serialized = serializeBlockContentResult(inst.crepe.editor, pos)
+      if (!serialized.ok) continue // 节点消失/解析失败：不覆盖源文件
+      const content = serialized.canonical
       const key = `${tabId}#${b.blockId}`
       // M4：基线 = 源模型当前 canonical（模型层单一事实源；不再有 registry 视图基线）
       const snap = docStore.snapshot(real)
       if (snap && snap.canonical === content) continue
-      cands.push({ real, key, content })
+      cands.push({ real, key, content, baseRev: snap?.rev ?? docStore.getModel(real)?.rev ?? 0 })
     }
     // 按真实路径聚合；同源多处且内容不同 → 歧义跳过（绝不静默覆盖）
     const byReal = new Map<string, { contents: Set<string>; keys: string[] }>()
@@ -294,12 +333,16 @@ async function commitMultiBlockCanonical(
       }
       const content = [...g.contents][0]
       const originKey = g.keys[0]
+      const baseRev = cands.find((c) => c.real === real && c.key === originKey)?.baseRev
       try {
-        docStore.replaceFromCanonical(real, content, originKey)
+        docStore.replaceFromCanonical(real, content, originKey, baseRev)
         // 多块/跨界编辑已写入源模型 → 脏标记同步到源文件（同 commitBlockSteps）
         docStore.markUserDirty(real)
         m4diag.commitMultiOk++
       } catch (e) {
+        if (e instanceof DocStoreConflictError) {
+          cfg.toast(`引用源「${real}」在编辑期间已发生变化，当前块修改未覆盖新内容`)
+        }
         console.warn('[multiblock] replaceFromCanonical 失败（该块编辑不写源）:', real, e)
       }
     }
@@ -317,8 +360,9 @@ let docstorePipelineCache: import('./docstore/serialize').DocPipeline | null = n
  * 覆盖两层：本标签模型（host 文档自身）+ 该标签所有可编辑嵌入块的源模型。
  * 返回已 flush 的 realPath（writeBackBlocks 跳过，防双写）。
  */
-async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<string, string>> {
+async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<{ flushed: Map<string, string>; failures: string[] }> {
   const flushed = new Map<string, string>()
+  const failures: string[] = []
   let cfg: import('./ref/config').RefConfig | null = null
   try {
     cfg = inst.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key))
@@ -336,15 +380,23 @@ async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<str
     }
     if (!docStore.has(real) || !docStore.isDirty(real)) return
     const snap = docStore.snapshot(real)
-    if (!snap || snap.canonical == null) return
+    if (!snap || snap.canonical == null) {
+      failures.push(real)
+      return
+    }
+    if (!(await diskMatchesModelBaseline(real, snap.diskHash))) {
+      failures.push(`${real}(磁盘已被外部修改)`)
+      return
+    }
     try {
-      await fs.writeFile(real, snap.canonical)
+      await writeFileSafely(real, snap.canonical)
       docStore.markDiskSynced(real, snap.canonical)
       flushed.set(real, snap.canonical)
       // §6.4：磁盘已变 → 搜索磁盘内容缓存失效（模型可能被 gc，缓存会绕过新磁盘内容）
       void import('../search').then((m) => m.invalidateSearchCache())
     } catch (e) {
       console.warn('[docstore] flush 失败:', real, e)
+      failures.push(real)
     }
   }
   await tryFlush(tab.path)
@@ -354,15 +406,27 @@ async function flushDirtyModelsForTab(inst: Instance, tab: Tab): Promise<Map<str
       for (const p of srcs) await tryFlush(p)
     } catch (e) {
       console.warn('[docstore] collectSourcePaths 失败:', e)
+      failures.push(tab.path)
     }
   }
-  return flushed
+  return { flushed, failures }
 }
 function pipelineOf(_inst: Instance): import('./docstore/serialize').DocPipeline | null {
   return docstorePipelineCache
 }
 function pipelineOfCache(): import('./docstore/serialize').DocPipeline | null {
   return docstorePipelineCache
+}
+
+async function diskMatchesModelBaseline(realPath: string, expectedHash: string | null): Promise<boolean> {
+  if (expectedHash == null) return true
+  try {
+    const disk = await fs.readFile(realPath)
+    const canonical = docstorePipelineCache ? canonicalOf(docstorePipelineCache, disk) : disk
+    return contentHash(canonical) === expectedHash
+  } catch {
+    return false
+  }
 }
 export function setDocstorePipelineCache(p: import('./docstore/serialize').DocPipeline | null): void {
   docstorePipelineCache = p
@@ -551,6 +615,9 @@ async function ensureDocSynced(tabId: string): Promise<void> {
   if (ta.value === current) return
   inst.crepe.editor.action(replaceAll(ta.value))
   await resolveRefs(inst.crepe.editor)
+  // replaceAll 会重建运行时 blockId；重新绑定当前实际投影，清除旧订阅。
+  onTabProjectionRebuilt(tabId)
+  await syncTabViewsToRegistry(tabId)
   void refreshBrokenState(inst.crepe.editor)
 }
 
@@ -2040,6 +2107,7 @@ export async function openTab(path: string, contentOverride?: string, kind: 'edi
     dirty: false,
     lastModified: Date.now(),
     viewMode: 'wysiwyg',
+    initialContent: content,
     diff: null,
   }
   state.tabs.push(tab)
@@ -2063,6 +2131,9 @@ export function activateTab(id: string) {
   // M5 §7.3：激活时磁盘对账（外部修改 → external-change 重投影 / conflict → 三方决策 UI）
   const accTab = state.tabs.find((x) => x.id === id)
   if (accTab && prevId && prevId !== id) void reconcileTabOnActivate(accTab).catch(() => undefined)
+  // 激活是视图重新成为用户可见面的边界：用模型快照做一次幂等收敛，
+  // 兜住异步 dispatcher 尚未完成的窗口（尤其是“块编辑后切回源标签”）。
+  void reconcileViewFromModel(id)
   syncActiveTopbar()
   // 引用底部展示区：切到该标签时重扫反向引用（其它标签可能新增了对它的引用）
   scheduleRefsFooterRefresh(id)
@@ -2396,13 +2467,13 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     void handleOpenRef(path, fragment)
   })
 
-  // M4：初始内容 = 模型 canonical（外部对齐过的打开）否则读盘（openTab 的 content 不再入 Tab）
+  // M4：初始内容优先使用 openTab 已成功读取的快照；模型快照用于外部对齐后的重开。
   let initial = ''
   try {
     const snap0 = docStore.snapshot(tab.path)
-    initial = snap0 && snap0.canonical != null ? snap0.canonical : await fs.readFile(tab.path)
+    initial = snap0 && snap0.canonical != null ? snap0.canonical : (tab.initialContent ?? '')
   } catch {
-    /* 读盘失败保持空（断链/新建场景） */
+    initial = tab.initialContent ?? ''
   }
   const crepe = new Crepe({
     root: container,
@@ -2539,7 +2610,6 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       // M4：外部事务（dispatcher 分发 / 物化 / 程序化对齐）以 docstoreExternal meta 标记，
       // 拦截器跳过——不回流模型（防回环）。用户编辑（无 meta）照常提交。
       if (!tr.docChanged || tr.getMeta('docstoreExternal')) return
-      if (inst.m3aSuppressed) return
       try {
         // —— M2 路径：块外正文编辑 → 宿主模型 ——
         const model = docStore.getModel(tab.path)
@@ -2567,25 +2637,27 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
         //    单块内步骤 → 精映射（commitBlockSteps）；多块/跨界步骤 → canonical 整块替换
         //    （commitMultiBlockCanonical：对每个受影响块序列化当前内容 → 源模型 rev++ + 分发）
         //    物化期（resolveRefs fill 事务）抑制：物化整块替换不是用户编辑
-        if (!inst.m3aSuppressed) {
-          if (blockEdits.size === 1) {
+        if (blockEdits.size === 1) {
             const [blockFrom, inSteps] = [...blockEdits.entries()][0]
             const binfo = hostDetails.find((b) => b.from === blockFrom)
             if (binfo && binfo.blockId && !binfo.readonly && !binfo.folded) {
               // M3a 单块精映射（失败由 fail() 记日志，不恢复旧路）
-              void commitBlockSteps(tabId, inst, binfo, inSteps).catch((e) => {
+              const pending = commitBlockSteps(tabId, inst, binfo, inSteps).catch((e) => {
                 console.warn('[docstore] commitBlockSteps 未捕获异常:', tab.path, e)
+                return false
               })
+              trackModelCommit(tabId, pending)
             }
-          } else {
+        } else {
             // M4b：多块/跨界步骤（blockEdits.size>1 或 0 但触碰块区间）→ canonical 整块替换
             const affected = hostDetails.filter((b) => stepsTouchBlock(tr.steps, b))
             if (affected.length) {
-              void commitMultiBlockCanonical(tabId, inst, affected).catch((e) => {
+              const pending = commitMultiBlockCanonical(tabId, inst, affected).catch((e) => {
                 console.warn('[docstore] commitMultiBlockCanonical 未捕获异常:', tab.path, e)
+                return false
               })
+              trackModelCommit(tabId, pending)
             }
-          }
         }
       } catch (e) {
         docstoreRejectCount++
@@ -2647,9 +2719,10 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
           sub.rev = toRev
           continue
         }
-        void refreshTabToContent(srcInst, srcTab, content, false).then(() => {
+        void enqueueTabRefresh(srcInst, srcTab, content, false).then(() => {
+          // 只有刷新完成后推进订阅基线；失败时保留旧 rev，下一次分发仍会重试。
           sub.rev = toRev
-        }).catch(() => undefined)
+        }).catch((e) => console.warn('[sync] 排队刷新失败:', srcTab.path, e))
       }
     })
   }
@@ -2793,11 +2866,14 @@ async function refreshTabToContent(
     replaceTabDocExternal(srcInst, content)
     // 替换后块标记行重新出现——重新物化引用（物化 fill 亦带 external meta，幂等）
     await resolveRefs(srcInst.crepe.editor)
+    // replaceAll 会生成新的运行时块身份，订阅必须按实际视图重建。
+    onTabProjectionRebuilt(srcTab.id)
+    await syncTabViewsToRegistry(srcTab.id)
     const canonical = srcInst.crepe.getMarkdown()
     if (diskUpdated) {
       // 联动写盘（保存对齐）：落盘 canonical + 模型磁盘基线对齐
       try {
-        await fs.writeFile(srcTab.path, canonical)
+        await writeFileSafely(srcTab.path, canonical)
       } catch (e) {
         console.warn('[sync] 应然内容落盘失败:', srcTab.path, e)
       }
@@ -2812,6 +2888,36 @@ async function refreshTabToContent(
   } catch (e) {
     console.warn('[sync] 源标签刷新失败:', srcTab.path, e)
   }
+}
+
+/** 将模型快照按到达顺序投影到标签；每个标签只有一个刷新管线。 */
+function enqueueTabRefresh(
+  srcInst: Instance,
+  srcTab: Tab,
+  content: string,
+  diskUpdated: boolean,
+): Promise<void> {
+  const previous = tabRefreshQueues.get(srcTab.id) ?? Promise.resolve()
+  const next = previous
+    .catch(() => undefined)
+    .then(() => refreshTabToContent(srcInst, srcTab, content, diskUpdated))
+    .finally(() => {
+      if (tabRefreshQueues.get(srcTab.id) === next) tabRefreshQueues.delete(srcTab.id)
+    })
+  tabRefreshQueues.set(srcTab.id, next)
+  return next
+}
+
+async function reconcileViewFromModel(tabId: string): Promise<void> {
+  const tab = state.tabs.find((t) => t.id === tabId && t.kind === 'editor')
+  const inst = instances.get(tabId)
+  const snap = tab ? docStore.snapshot(tab.path) : null
+  if (!tab || !inst || !snap || snap.canonical == null) return
+  const current =
+    pipelineOfCache() != null
+      ? canonicalOf(pipelineOfCache()!, inst.crepe.getMarkdown())
+      : inst.crepe.getMarkdown()
+  if (current !== snap.canonical) enqueueTabRefresh(inst, tab, snap.canonical, false)
 }
 
 /** M5 §7.3：激活标签时磁盘对账。
@@ -2969,7 +3075,7 @@ async function syncTabViewsToRegistry(tabId: string): Promise<void> {
   if (!docStore.getModel(tab.path)?.doc) await docStore.load(tab.path)
 }
 
-export async function saveTab(tabId: string): Promise<boolean> {
+async function saveTabImpl(tabId: string): Promise<boolean> {
   const inst = instances.get(tabId)
   const tab = state.tabs.find((t) => t.id === tabId)
   if (!tab) return false
@@ -2997,7 +3103,6 @@ export async function saveTab(tabId: string): Promise<boolean> {
     })
     if (!ok) return false
   }
-  const md = inst.crepe.getMarkdown()
   // 组合文本（IME）尚未提交 → 先失焦重聚生效，否则保存会丢用户输入
   try {
     const view = inst.crepe.editor.action((ctx) => ctx.get(editorViewCtx))
@@ -3009,11 +3114,27 @@ export async function saveTab(tabId: string): Promise<boolean> {
   } catch {
     /* 编辑器可能未就绪 */
   }
+  // 只能在组合输入提交后取值；否则旧 markdown 会覆盖宿主文件的最新投影。
+  const md = inst.crepe.getMarkdown()
   // M4（spec §6.1）：保存 = flush 各脏模型（本标签 + 引用源）——嵌入块编辑已在拦截器内即时进模型
-  const flushedByModel = await flushDirtyModelsForTab(inst, tab)
+  const commitsOk = await drainModelCommits(tabId)
+  if (!commitsOk) {
+    toast('保存失败：引用块尚有未提交或提交失败的编辑', 'error')
+    return false
+  }
+  const { flushed: flushedByModel, failures } = await flushDirtyModelsForTab(inst, tab)
+  if (failures.length > 0) {
+    toast(`保存失败：无法写入 ${failures.join('、')}`, 'error')
+    return false
+  }
+  const hostSnap = docStore.snapshot(tab.path)
+  if (hostSnap && !(await diskMatchesModelBaseline(tab.path, hostSnap.diskHash))) {
+    toast(`保存失败：${tab.path} 在保存前已被外部修改`, 'error')
+    return false
+  }
   // 本标签自身落盘：写盘 user 所见（getMarkdown）；模型磁盘基线追平（磁盘 = 模型、视图三方一致）
   try {
-    await fs.writeFile(tab.path, md)
+    await writeFileSafely(tab.path, md)
   } catch (e) {
     toast(`保存失败: ${(e as Error).message}`, 'error')
     diag('error', 'save', `保存失败 ${tab.path}: ${(e as Error).message}`)
@@ -3045,6 +3166,18 @@ export async function saveTab(tabId: string): Promise<boolean> {
   if (tab.path === '.template' || tab.path.startsWith('.template/')) void templateService.rescan()
   diagEvent('save', { target: tab.path, ok: true, ms: performance.now() - t0 })
   return true
+}
+
+export function saveTab(tabId: string): Promise<boolean> {
+  const previous = tabSaveQueues.get(tabId) ?? Promise.resolve(true)
+  const next = previous
+    .catch(() => false)
+    .then(() => saveTabImpl(tabId))
+    .finally(() => {
+      if (tabSaveQueues.get(tabId) === next) tabSaveQueues.delete(tabId)
+    })
+  tabSaveQueues.set(tabId, next)
+  return next
 }
 
 export async function saveActiveTab(): Promise<boolean> {

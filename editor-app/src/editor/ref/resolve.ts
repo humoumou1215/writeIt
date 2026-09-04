@@ -330,6 +330,8 @@ export function fillBlockContent(
     // 重新定位容器（期间文档可能被编辑）
     const atPos = view.state.doc.nodeAt(pos)
     if (!atPos || atPos.type.name !== 'file_block') return
+    // 异步物化/广播完成时位置可能已被复用；路径不一致时拒绝填充，避免旧结果污染新块。
+    if (String(atPos.attrs.path ?? '') !== String(_path)) return
     if (atPos.attrs.readonly !== readonly) return
 
     const parsed = parser(source)

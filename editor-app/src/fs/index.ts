@@ -31,6 +31,11 @@ export const fs = new Proxy({} as FileSystem, {
   },
 })
 
+export async function writeFileSafely(path: string, content: string): Promise<void> {
+  if (fs.writeFileAtomic) return fs.writeFileAtomic(path, content)
+  return fs.writeFile(path, content)
+}
+
 /** 浏览器环境是否支持打开真实目录（File System Access API） */
 export function canOpenRealDir(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window

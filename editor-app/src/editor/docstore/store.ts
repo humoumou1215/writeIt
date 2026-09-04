@@ -28,6 +28,14 @@ export interface ApplyMeta {
   reason: 'user' | 'external' | 'discard' | 'reconcile'
 }
 
+/** 全量快照提交的基线已过期；调用方必须重试/合并，不能静默覆盖新版本。 */
+export class DocStoreConflictError extends Error {
+  constructor(public readonly realPath: string, public readonly expectedRev: number, public readonly actualRev: number) {
+    super(`[docstore] stale snapshot for ${realPath}: expected rev ${expectedRev}, actual ${actualRev}`)
+    this.name = 'DocStoreConflictError'
+  }
+}
+
 /** 分发执行器（M3 起装配层注入：把本次 steps 映射到各视图）。
  *  M2 前为空（doc 视图走快照对齐）；M3 块视图订阅者用它做 steps 增量直通。
  *  originKey：编辑源订阅 key（分发时跳过，防回环/双写）。 */
@@ -195,9 +203,12 @@ class DocStore {
    * 整体覆盖模型 doc → rev++ → 照常分发（dispatcher 内部按各订阅者 schema 决定 steps/align）。
    * 等价 record 的覆盖语义 + apply 的分发语义（spec I1：编辑必须经模型，不旁路）。
    */
-  replaceFromCanonical(realPath: string, canonical: string, originKey: string | null): number {
+  replaceFromCanonical(realPath: string, canonical: string, originKey: string | null, expectedRev?: number): number {
     const m = this.ensure(realPath)
     if (!pipeline) throw new Error(`[docstore] replaceFromCanonical without pipeline: ${realPath}`)
+    if (expectedRev != null && m.rev !== expectedRev) {
+      throw new DocStoreConflictError(realPath, expectedRev, m.rev)
+    }
     const parsed = pipeline.parse(canonical)
     if (!parsed) throw new Error(`[docstore] replaceFromCanonical parse failed: ${realPath}`)
     // 内容幂等：同内容替换（外部刷新/同源 publish 双发）不推进 rev——
@@ -299,6 +310,20 @@ class DocStore {
           m.subscribers.delete(key)
           touched = true
         } else if (src.kind === 'block' && src.tabId === tabId) {
+          m.subscribers.delete(key)
+          touched = true
+        }
+      }
+      if (touched) this.gc(realPath)
+    }
+  }
+
+  /** 投影重建时只移除旧块订阅，保留该标签自身的 doc 订阅。 */
+  rebindTabBlocks(tabId: string): void {
+    for (const [realPath, m] of this.models) {
+      let touched = false
+      for (const [key, s] of m.subscribers) {
+        if (s.source.kind === 'block' && s.source.tabId === tabId) {
           m.subscribers.delete(key)
           touched = true
         }

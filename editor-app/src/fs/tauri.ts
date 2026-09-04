@@ -59,6 +59,9 @@ export const tauriFs: FileSystem = {
   async writeFile(path, content) {
     await (await core()).invoke('write_file', { path, content })
   },
+  async writeFileAtomic(path, content) {
+    await (await core()).invoke('write_file_atomic', { path, content })
+  },
 
   /** 图片等二进制落盘：前端 Uint8Array → base64 → Rust 解码写盘 */
   async writeBinary(path, data) {

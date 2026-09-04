@@ -13,6 +13,14 @@ import {
 
 const KEY = 'milkdown-note-mock-fs-v2'
 
+// E2E fault injection（仅 mock backend；默认关闭）。故障在执行真实 mutation 前抛出，
+// 用于验证保存失败时原文件不会被部分写入。
+const mockTestFaults: { writeAtomic: number; write: number; rename: number } = {
+  writeAtomic: 0,
+  write: 0,
+  rename: 0,
+}
+
 const MOCK_EXTRA: Record<string, string> = {
   'Mermaid 图表集.md': mermaidMd,
   '笔记/会议记录.md': `# 会议记录
@@ -507,6 +515,13 @@ export function refreshMockSamples(): { files: number; dirs: number; updated: nu
   }
 }
 
+;(window as unknown as { __mockFsTestControl?: unknown }).__mockFsTestControl = (patch: Partial<typeof mockTestFaults> = {}) => {
+  for (const key of Object.keys(mockTestFaults) as Array<keyof typeof mockTestFaults>) {
+    if (patch[key] !== undefined) mockTestFaults[key] = Math.max(0, Number(patch[key]) || 0)
+  }
+  return { ...mockTestFaults }
+}
+
 function buildTree(data: MockData, showAll: boolean): FsEntry[] {
   const root: FsEntry[] = []
   const dirMap = new Map<string, FsEntry>()
@@ -561,6 +576,20 @@ export const mockFs: FileSystem = {
   },
 
   async writeFile(path, content) {
+    if (mockTestFaults.write > 0) {
+      mockTestFaults.write--
+      throw new Error('mock injected write failure')
+    }
+    const data = load()
+    data.files[path] = content
+    persist(data)
+  },
+
+  async writeFileAtomic(path, content) {
+    if (mockTestFaults.writeAtomic > 0) {
+      mockTestFaults.writeAtomic--
+      throw new Error('mock injected atomic write failure')
+    }
     const data = load()
     data.files[path] = content
     persist(data)
@@ -608,6 +637,10 @@ export const mockFs: FileSystem = {
   },
 
   async rename(oldPath, newPath) {
+    if (mockTestFaults.rename > 0) {
+      mockTestFaults.rename--
+      throw new Error('mock injected rename failure')
+    }
     const data = load()
     if (oldPath === newPath) return
     if (newPath in data.files || data.dirs.includes(newPath)) {

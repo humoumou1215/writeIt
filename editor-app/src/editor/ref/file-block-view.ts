@@ -14,10 +14,12 @@ export class FileBlockView implements NodeView {
   contentDOM: HTMLElement | null
   private readonly header: HTMLElement
   private curNode: ProseNode
+  private readonly getPos: () => number | undefined
 
   private readonly editorView: unknown
   constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
     this.editorView = editorViewRef
+    this.getPos = getPosRef
     this.curNode = node
     const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
     const locked = Boolean(node.attrs.readonly) || Boolean(collapsed)
@@ -124,6 +126,7 @@ export class FileBlockView implements NodeView {
     // 实验：dom 仅含 contentDOM（header 分离——验证 header 元素干扰输入映射的假设）
     // 拦截内容区文本输入（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步）
     content.addEventListener('beforeinput', this.handleContentBeforeInput)
+    content.addEventListener('mousedown', this.handleContentMouseDown)
 
     // header 已在上面按折叠/非折叠分支追加；
     // 折叠时 content 保持空容器（提示卡是 contentDOM 外的手写 DOM，不污染内容结构）
@@ -165,7 +168,23 @@ export class FileBlockView implements NodeView {
     if ((inputType === 'insertText' || inputType === 'insertCompositionText') && ev.data) {
       e.preventDefault()
       try {
-        const { from, to } = view.state.selection
+        let { from, to } = view.state.selection
+        // 自定义 NodeView 的 contentDOM 在部分物化/广播路径没有完整 view-desc，
+        // state.selection 可能仍停在上一个嵌入块。优先使用浏览器当前真实光标，
+        // 并验证它确实落在本块范围内，避免把输入写到兄弟块或宿主正文。
+        const domSel = window.getSelection()
+        const anchor = domSel?.anchorNode
+        const focus = domSel?.focusNode
+        if (anchor && focus && this.contentDOM?.contains(anchor) && this.contentDOM.contains(focus)) {
+          const domFrom = view.posAtDOM(anchor, domSel!.anchorOffset)
+          const domTo = view.posAtDOM(focus, domSel!.focusOffset)
+          const blockStart = view.posAtDOM(this.contentDOM, 0)
+          const blockEnd = blockStart + this.curNode.nodeSize - 2
+          if (domFrom >= blockStart && domFrom <= blockEnd && domTo >= blockStart && domTo <= blockEnd) {
+            from = Math.min(domFrom, domTo)
+            to = Math.max(domFrom, domTo)
+          }
+        }
         view.dispatch(view.state.tr.insertText(ev.data, from, to).scrollIntoView())
       } catch {
         /* 忽略 */
@@ -173,6 +192,31 @@ export class FileBlockView implements NodeView {
     }
     // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截
     // deleteContentBackward 等由 ProseMirror keymap 处理（keydown → dispatch）
+  }
+
+  /** 物化块的 contentDOM 偶尔没有完整 view-desc，浏览器点击不会更新 PM selection。
+   * 若点击前 selection 不在本块，先把光标锚定到本块开头，避免输入落到兄弟块。 */
+  private handleContentMouseDown = (e: MouseEvent) => {
+    const view = this.editorView as unknown as EditorView | null
+    if (!view || this.contentDOM?.getAttribute('contenteditable') === 'false') return
+    const pos = this.getPos()
+    if (pos == null) return
+    const block = view.state.doc.nodeAt(pos)
+    const sel = window.getSelection()
+    const contentFrom = pos + 1
+    const contentTo = pos + (block?.nodeSize ?? 2) - 1
+    if (view.state.selection.from >= contentFrom && view.state.selection.to <= contentTo) return
+    e.preventDefault()
+    try {
+      const target = contentFrom
+      const next = TextSelection.near(view.state.doc.resolve(target))
+      view.dispatch(view.state.tr.setSelection(next))
+      view.focus()
+      // ProseMirror focus 会负责把 DOM selection 同步到 NodeView 内容区。
+      void sel
+    } catch {
+      /* 忽略 */
+    }
   }
 
   update(node: ProseNode): boolean {

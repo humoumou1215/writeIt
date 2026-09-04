@@ -410,6 +410,15 @@ async function handleFs(req: IncomingMessage, res: ServerResponse, action: strin
         send(res, { ok: true })
         return
       }
+      case 'write-atomic': {
+        const full = resolveRel(String(body.path))
+        await fs.mkdir(path.dirname(full), { recursive: true })
+        const tmp = `${full}.writeit-${process.pid}-${Date.now().toString(36)}.tmp`
+        await fs.writeFile(tmp, String(body.content ?? ''), 'utf8')
+        await fs.rename(tmp, full)
+        send(res, { ok: true })
+        return
+      }
       case 'write-binary': {
         // 粘贴图片等：base64 → Buffer 落盘
         const full = resolveRel(String(body.path))
