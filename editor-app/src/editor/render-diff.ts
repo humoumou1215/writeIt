@@ -11,8 +11,9 @@ import type { Node } from '@milkdown/kit/prose/model'
 import { Fragment } from '@milkdown/kit/prose/model'
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view'
-import { $prose, $remark } from '@milkdown/kit/utils'
-import { refPlugin, refConfigCtx, type RefConfig } from './ref'
+import { $prose, $remark, $view } from '@milkdown/kit/utils'
+import { refPlugin, refConfigCtx, fileBlockSchema, type RefConfig } from './ref'
+import { diffFileBlockView } from './ref/file-block-view'
 import { resolveRefs } from './ref/resolve'
 import { registerRefStringify } from './ref/stringify'
 import { featureConfigs } from './features'
@@ -74,6 +75,7 @@ let newFileNoteSeq = 0
 // ---------- diff 装饰插件：mount 前预构建的 DecorationSet（write-once）+ meta 更新 ----------
 
 const diffDecoKey = new PluginKey<DecorationSet>('writeit-diff-deco')
+const diffFileBlockNodeView = $view(fileBlockSchema.node, diffFileBlockView)
 
 function diffDecoPlugin(getInitial: () => DecorationSet) {
   return $prose(
@@ -483,6 +485,9 @@ async function mountRenderCrepe(target: HTMLElement, opts: RenderDiffOptions): P
       })
     })
     crepe.editor.use(refPlugin)
+    // 普通编辑器的 file_block 是 DocStore 静态投影；Diff 的预填充 doc
+    // 必须保留 contentDOM，才能让结构装饰和 data-dnote 落到卡片正文。
+    crepe.editor.use(diffFileBlockNodeView)
     // M18：批注实体解析（<mark data-note> → annotation 节点）——使批注增删改作为实体参与 diff（结构实体卡）
     // 装配必须与主编辑器 annotationPlugin 对齐：schema（mark schema）+ 解析插件（md → annotation 节点）
     // + stringify handler（annotation 节点 → <mark> 标签）。缺 stringify handler 时，任何对含批注内容的
@@ -671,6 +676,7 @@ async function mountPlainCrepe(root: HTMLElement, md: string, refCfg: RefConfig)
       registerRefStringify(ctx)
     })
     crepe.editor.use(refPlugin)
+    crepe.editor.use(diffFileBlockNodeView)
     await crepe.create()
     crepe.setReadonly(true)
     return crepe

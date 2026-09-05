@@ -325,7 +325,6 @@ export function fillBlockContent(
   let blockId: string | null = null
   editor.action((ctx) => {
     const view = ctx.get(editorViewCtx)
-    const parser = ctx.get(parserCtx)
 
     // 重新定位容器（期间文档可能被编辑）
     const atPos = view.state.doc.nodeAt(pos)
@@ -334,13 +333,11 @@ export function fillBlockContent(
     if (String(atPos.attrs.path ?? '') !== String(_path)) return
     if (atPos.attrs.readonly !== readonly) return
 
-    const parsed = parser(source)
-    if (!parsed) return
-
-    const from = pos + 1
-    const to = pos + atPos.nodeSize - 1
-    const tr = view.state.tr.replaceWith(from, to, parsed.content)
-    // 空源文件（解析为空）会留下空块：block+ 不允空块，setNodeMarkup 会抛错——补默认段落
+    // 静态投影模式：不把 source 解析节点复制进宿主文档；宿主只保留满足
+    // block+ 的占位段落，实际正文由 NodeView 从 DocStore 读取并递归渲染。
+    void source
+    const tr = view.state.tr
+    // 空源文件也必须保留合法占位内容。
     ensureBlockHasContent(tr, pos)
     // P2：分配块身份（幂等；已存在则保留，保证跨广播稳定）
     const existing = atPos.attrs.blockId as string | null

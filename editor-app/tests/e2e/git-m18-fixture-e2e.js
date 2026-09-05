@@ -24,7 +24,7 @@ await L.waitMs(8000)
 const main = await js(`(() => {
   const host = document.querySelector('.render-host') || document.body
   const blocks = [...host.querySelectorAll('.ref-file-block')]
-  const meeting = blocks.find(x => x.querySelector('.ref-embed-diff-badge'))
+  const meeting = blocks.find(x => x.querySelector('.ref-file-block-content [data-dnote]'))
   const content = meeting?.querySelector('.ref-file-block-content')
   return {
     hostDiffIns: host.querySelectorAll('.diff-ins').length,
@@ -39,7 +39,8 @@ const main = await js(`(() => {
     meetingCardIns: content ? content.querySelectorAll('.diff-ins').length : -1,
     meetingCardDnote: content ? content.querySelectorAll('[data-dnote]').length : -1,
     addBadge: blocks.some(b => b.querySelector('.ref-embed-add')),
-    diffBadge: blocks.some(b => b.querySelector('.ref-embed-diff-badge')),
+    redundantDiffBadge: blocks.some(b => b.querySelector('.ref-embed-diff-badge')),
+    noteCards: document.querySelectorAll('.ad-card').length,
   }
 })()`)
 C.check('装饰：host diff-ins > 0（结构 diff 渲染）', main.hostDiffIns > 0)
@@ -49,7 +50,8 @@ C.check('mermaid eager：SVG 已渲染', main.eagerSvgs >= main.mermaidFences)
 C.check('classDef 主路径：SVG 内 diffAdd class（mermaid 原生渲染）', main.svgDiffAdd > 0)
 C.check('嵌入预填充：卡片内容非空（write-once 物化）', main.prefilledBlocks > 0)
 C.check('嵌入内容级 diff：卡内 data-dnote 装饰', main.meetingCardDnote > 0)
-C.check('嵌入徽标：内容有改动', main.diffBadge === true)
+C.check('嵌入内容改动不显示冗余概览徽标', main.redundantDiffBadge === false)
+C.check('批注抽屉：主 diff 已生成改动说明卡', main.noteCards > 0)
 
 // ---------- 6：循环引用折叠卡（P3a） ----------
 // 环测试/甲 行只显示「Git演示/环测试」路径片段 → 直接点含「环测试」的行
@@ -69,16 +71,6 @@ const cycle = await js(`(() => {
 C.check('循环引用：折叠卡存在（data-collapsed）', cycle.collapsed >= 1)
 C.check('循环引用：折叠提示文案', cycle.collapseHint.some(t => t.includes('循环引用')))
 
-// ---------- 7：批注抽屉 ----------
-await L.clickEl('.ad-toggle.expand', 0, { label: '打开批注抽屉' })
-await L.waitMs(800)
-const cards = await js(`(() => ({
-  count: document.querySelectorAll('.ad-card').length,
-  texts: [...document.querySelectorAll('.ad-card-content')].slice(0, 8).map(e => e.textContent.slice(0, 50)),
-}))()`)
-C.check('批注抽屉：diff 改动说明卡 > 0', cards.count > 0)
-
 cliLog('\n' + C.summary())
 await completeTaskSpace(task.id, { keep: false })
 process.exit(C.fail ? 1 : 0)
-EOF_MARKER

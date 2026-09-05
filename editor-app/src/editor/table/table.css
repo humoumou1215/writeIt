@@ -41,12 +41,11 @@
   transform: scale(0.94);
 }
 
-/* 拖拽列宽的竖向指示条 */
-.tb-resize-handle {
-  position: fixed;
-  width: 2px;
-  background: var(--chrome-accent, #4a90d9);
-  z-index: 60;
+/* Crepe 的边线仅用于加行/列；列宽拖拽由 GFM columnResizingPlugin 处理。
+ * 让边线穿透到单元格，避免两套 resize 命中区域互相抢事件和闪烁。 */
+.milkdown .milkdown-table-block .line-handle {
   pointer-events: none;
-  cursor: col-resize;
+}
+.milkdown .milkdown-table-block .line-handle .add-button {
+  pointer-events: auto;
 }

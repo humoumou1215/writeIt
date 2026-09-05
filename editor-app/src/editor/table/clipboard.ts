@@ -20,25 +20,35 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** 单元格 → 文本行数组（以 hardbreak 为换行边界） */
-function cellLines(cell: { content: { forEach: (fn: (n: { isText?: boolean; text?: string; type?: { name: string }; textContent?: string }) => void) => void } }): string[] {
+/** 单元格 → 文本行数组（递归识别段落内部的 hardbreak） */
+function cellLines(cell: { content: { forEach: (fn: (n: NodeLike) => void) => void } }): string[] {
   const lines: string[] = []
   let cur = ''
-  cell.content.forEach((node) => {
+  const visit = (node: NodeLike) => {
     if (node.isText) cur += node.text ?? ''
     else if (node.type?.name === 'hardbreak') {
       lines.push(cur)
       cur = ''
-    } else cur += node.textContent
-  })
+    } else if (node.content) node.content.forEach(visit)
+    else cur += node.textContent ?? ''
+  }
+  cell.content.forEach(visit)
   lines.push(cur)
   return lines
 }
 
-/** 单元格 → 单段文本（换行用字面 \n 表示；TSV 用） */
-function cellToText(cell: { attrs?: unknown; content: { forEach: (fn: never) => void } }): string {
+interface NodeLike {
+  isText?: boolean
+  text?: string
+  textContent?: string
+  type?: { name: string }
+  content?: { forEach: (fn: (n: NodeLike) => void) => void }
+}
+
+/** 单元格 → TSV 字段（保留真实换行，按 Excel 约定转义） */
+function cellToText(cell: { attrs?: unknown; content: { forEach: (fn: (n: NodeLike) => void) => void } }): string {
   const lines = cellLines(cell)
-  return lines.join('\\n').replace(/\t/g, '\\t')
+  return lines.join('\n')
 }
 
 /** 单元格 → HTML（换行用 <br>，保留对齐） */
@@ -47,6 +57,61 @@ function cellToHtml(cell: { attrs: { alignment?: string }; content: { forEach: (
   const alignStyle = align && align !== 'left' ? ` style="text-align:${align}"` : ''
   const body = cellLines(cell).map(escapeHtml).join('<br>')
   return `<td${alignStyle}>${body}</td>`
+}
+
+function escapeTsvField(value: string): string {
+  const escaped = value.replace(/"/g, '""')
+  return /[\t\r\n"]/.test(value) ? `"${escaped}"` : escaped
+}
+
+/** 清洗 Excel/WPS HTML，只保留表格语义和少量可安全解析的行内标签。 */
+function cleanExcelTable(source: HTMLTableElement): HTMLTableElement {
+  const out = document.createElement('table')
+  const body = document.createElement('tbody')
+  const grid: Array<Array<{ html: string; occupied: boolean } | null>> = []
+  const allowed = new Set(['BR', 'A', 'B', 'STRONG', 'I', 'EM', 'CODE', 'SPAN'])
+  const cleanCell = (cell: HTMLTableCellElement): string => {
+    const clone = cell.cloneNode(true) as HTMLElement
+    clone.querySelectorAll('*').forEach((el) => {
+      if (!allowed.has(el.tagName)) {
+        el.replaceWith(document.createTextNode(el.textContent || ''))
+        return
+      }
+      for (const attr of [...el.attributes]) {
+        if (el.tagName !== 'A' || attr.name !== 'href') el.removeAttribute(attr.name)
+      }
+    })
+    return clone.innerHTML || escapeHtml(cell.textContent || '')
+  }
+  const rows = [...source.querySelectorAll('tr')]
+  rows.forEach((row, ri) => {
+    if (!grid[ri]) grid[ri] = []
+    let ci = 0
+    for (const cell of [...row.cells]) {
+      while (grid[ri][ci]) ci++
+      const rs = Math.max(1, Number(cell.getAttribute('rowspan')) || 1)
+      const cs = Math.max(1, Number(cell.getAttribute('colspan')) || 1)
+      const html = cleanCell(cell)
+      for (let y = 0; y < rs; y++) {
+        if (!grid[ri + y]) grid[ri + y] = []
+        for (let x = 0; x < cs; x++) {
+          grid[ri + y][ci + x] = { html: y === 0 && x === 0 ? html : '', occupied: true }
+        }
+      }
+      ci += cs
+    }
+  })
+  for (const row of grid) {
+    const tr = document.createElement('tr')
+    for (const cell of row || []) {
+      const td = document.createElement('td')
+      td.innerHTML = cell?.html || ''
+      tr.appendChild(td)
+    }
+    if (tr.cells.length) body.appendChild(tr)
+  }
+  out.appendChild(body)
+  return out
 }
 
 /** 把当前多选单元格矩形序列化为 HTML <table> 字符串 */
@@ -79,7 +144,7 @@ export function cellSelectionToTsv(state: { selection: CellSelection }): string 
     const cells: string[] = []
     for (let c = left; c < right; c++) {
       const cell = table.nodeAt(map.map[r * map.width + c])
-      cells.push(cell ? cellToText(cell as never) : '')
+      cells.push(cell ? escapeTsvField(cellToText(cell as never)) : '')
     }
     lines.push(cells.join('\t'))
   }
@@ -91,16 +156,38 @@ function looksLikeTable(text: string): boolean {
   return text.includes('\t')
 }
 
-/** TSV 文本 → 规范 HTML <table> 字符串（\\n / \\t 反向解码） */
-function tsvToHtmlTable(text: string): string {
-  let rows = text.split('\n').map((r) => r.replace(/\r$/, ''))
-  while (rows.length && rows[rows.length - 1] === '') rows.pop()
-  const parts: string[] = ['<table><tbody>']
-  for (const row of rows) {
-    const cells = row.split('\t').map((c) => escapeHtml(c.replace(/\\n/g, '\n').replace(/\\t/g, '\t')))
-    parts.push(`<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`)
+/** 解析 Excel/Sheets 的 TSV：支持 CRLF、双引号和单元格内换行。 */
+function parseTsv(text: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++ }
+      else if (ch === '"') quoted = false
+      else field += ch
+    } else if (ch === '"' && field.length === 0) quoted = true
+    else if (ch === '\t') { row.push(field); field = '' }
+    else if (ch === '\r' || ch === '\n') {
+      row.push(field); field = ''
+      if (ch === '\r' && text[i + 1] === '\n') i++
+      rows.push(row); row = []
+    } else field += ch
   }
-  parts.push('</tbody></table>')
+  if (field.length || row.length) { row.push(field); rows.push(row) }
+  while (rows.length && rows[rows.length - 1].every((v) => v === '')) rows.pop()
+  return rows
+}
+
+/** TSV 矩阵 →干净的 table HTML（避免把 table 嵌套进 table）。 */
+function tsvToHtmlTable(text: string): string {
+  const parts: string[] = ['<tbody>']
+  for (const row of parseTsv(text)) {
+    parts.push(`<tr>${row.map((c) => `<td>${escapeHtml(c) .replace(/\n/g, '<br>')}</td>`).join('')}</tr>`)
+  }
+  parts.push('</tbody>')
   return parts.join('')
 }
 
@@ -167,7 +254,7 @@ export const tableClipboardPlugin = $prose(() => {
           wrap.innerHTML = html
           const tbl = wrap.querySelector('table')
           if (tbl) {
-            slice = DOMParser.fromSchema(view.state.schema).parseSlice(tbl, {
+            slice = DOMParser.fromSchema(view.state.schema).parseSlice(cleanExcelTable(tbl), {
               preserveWhitespace: true,
             })
           }

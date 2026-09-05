@@ -99,6 +99,19 @@ span.ref-object:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ref-file-block-edit {
+  margin-left: auto;
+  border: 1px solid var(--chrome-border);
+  border-radius: 5px;
+  padding: 1px 7px;
+  color: var(--chrome-primary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+.ref-file-block-edit:hover {
+  background: color-mix(in srgb, var(--chrome-primary), transparent 88%);
+}
 .ref-file-block-content {
   padding: 6px 14px;
   background: var(--chrome-background);

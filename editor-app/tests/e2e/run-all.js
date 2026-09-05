@@ -69,6 +69,7 @@ const SUITES = [
   'embed-sync-alwaysalign-e2e', // 嵌入同步 V2 回归：docstore 全量同步（去增量映射）+ 源脏标记（双 bug 修复验证）
   'embed-save-race-e2e',        // P0：输入后立即保存 + 连续保存串行化
   'embed-nested-writeback-e2e', // P0：A→B→C 最深层编辑回写/重载
+  'embed-shared-complex-e2e',    // 静态投影：A→B×2、B→C/D、A→C、旁路标签与共享收敛
   'embed-failure-recovery-e2e', // P0/P2：写入/原子写/rename 故障恢复
   'embed-cas-conflict-e2e',     // P0/P1：CAS 外部冲突拒绝覆盖
   'embed-projection-lifecycle-e2e', // P1：投影重建订阅生命周期

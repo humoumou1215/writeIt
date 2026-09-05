@@ -1,247 +1,189 @@
-// file_block 的 NodeView：卡片边框 + 头部（路径/只读徽标）+ 内容区
-// 内容区是 contentDOM，ProseMirror 原生渲染容器内的块；只读变体禁用编辑
-// + 多层嵌入治理：collapsed 非空（环 / 超深折叠）→ 渲染折叠提示卡（不可编辑），
-//   点击链路路径跳到对应源文件（经 refClickPlugin 的 a.ref-file 处理，无新接线）。
+// file_block 静态投影 NodeView。
+// 宿主 ProseMirror 只保留 marker/占位节点；嵌入正文由 app 层从 DocStore 渲染，
+// 因而不会再把 B/C/D 的可编辑副本放进 A 的编辑状态。
 import type { NodeView, NodeViewConstructor } from '@milkdown/kit/prose/view'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { ViewMutationRecord, EditorView } from 'prosemirror-view'
-import { TextSelection } from '@milkdown/kit/prose/state'
 import type { Ctx } from '@milkdown/kit/ctx'
 import { MAX_EMBED_DEPTH, type CollapsedInfo } from './embed-chain'
 
+export interface FileBlockProjectionCallbacks {
+  render: (node: ProseNode, content: HTMLElement, view: EditorView) => void
+  edit: (node: ProseNode, view: EditorView) => void
+}
+
+let callbacks: FileBlockProjectionCallbacks | null = null
+const liveViews = new Set<FileBlockView>()
+
+export function setFileBlockProjectionCallbacks(next: FileBlockProjectionCallbacks | null): void {
+  callbacks = next
+}
+
+/** 模型更新后刷新全部静态投影；不生成 ProseMirror transaction。 */
+export function refreshFileBlockProjections(): void {
+  for (const view of liveViews) view.refreshProjection()
+}
+
 export class FileBlockView implements NodeView {
   dom: HTMLElement
-  contentDOM: HTMLElement | null
+  contentDOM: HTMLElement | null = null
   private readonly header: HTMLElement
+  private readonly content: HTMLElement
   private curNode: ProseNode
-  private readonly getPos: () => number | undefined
+  private readonly editorView: EditorView
 
-  private readonly editorView: unknown
-  constructor(node: ProseNode, editorViewRef: unknown, getPosRef: () => number | undefined) {
-    this.editorView = editorViewRef
-    this.getPos = getPosRef
+  constructor(node: ProseNode, editorView: unknown, _getPos: () => number | undefined) {
     this.curNode = node
+    this.editorView = editorView as EditorView
     const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
     const locked = Boolean(node.attrs.readonly) || Boolean(collapsed)
+
     this.dom = document.createElement('div')
-    this.dom.className =
-      'ref-file-block' +
-      (node.attrs.readonly ? ' readonly' : '') +
-      (collapsed ? ' is-collapsed' : '')
+    this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '') + (collapsed ? ' is-collapsed' : '')
     if (collapsed) {
-      this.dom.setAttribute('data-collapsed', '')
-      this.dom.setAttribute('data-chain', collapsed.chain.join('|'))
+      this.dom.dataset.collapsed = ''
+      this.dom.dataset.chain = collapsed.chain.join('|')
     }
 
     this.header = document.createElement('div')
     this.header.className = 'ref-file-block-header'
-    const badge = node.attrs.readonly ? '🔒 只读引用' : '📄 引用'
-    this.header.innerHTML = ''
-    const badgeEl = document.createElement('span')
-    badgeEl.className = 'ref-file-block-badge'
-    badgeEl.textContent = badge
-    const pathEl = document.createElement('span')
-    pathEl.className = 'ref-file-block-path'
-    pathEl.textContent = node.attrs.path
-    this.header.append(badgeEl, pathEl)
+    const badge = document.createElement('span')
+    badge.className = 'ref-file-block-badge'
+    badge.textContent = node.attrs.readonly ? '🔒 只读引用' : '📄 引用'
+    const path = document.createElement('span')
+    path.className = 'ref-file-block-path'
+    path.textContent = String(node.attrs.path ?? '')
+    this.header.append(badge, path)
 
-    // 折叠提示卡（collapsed 非空）：与 contentDOM 同级的手写 DOM（B4：不污染内容 DOM），
-    // contentDOM 保持空 + 禁编辑；点击链路路径 → refClickPlugin 打开对应源文件。
+    if (!locked) {
+      const edit = document.createElement('button')
+      edit.type = 'button'
+      edit.className = 'ref-file-block-edit'
+      edit.textContent = '编辑源文件'
+      edit.addEventListener('mousedown', (e) => e.preventDefault())
+      edit.addEventListener('click', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        callbacks?.edit(this.curNode, this.editorView)
+      })
+      this.header.append(edit)
+    }
+
+    this.content = document.createElement('div')
+    this.content.className = 'ref-file-block-content'
+    this.dom.append(this.header)
+    if (collapsed) this.dom.append(this.makeCollapseHint(collapsed, String(node.attrs.path ?? '')))
+    this.dom.append(this.content)
+    liveViews.add(this)
+    if (collapsed) this.content.style.display = 'none'
+    else this.refreshProjection()
+  }
+
+  private makeCollapseHint(collapsed: CollapsedInfo, path: string): HTMLElement {
+    const hint = document.createElement('div')
+    hint.className = 'ref-file-block-collapsed'
+    const line = document.createElement('div')
+    line.className = 'ref-hint-line'
+    line.textContent = collapsed.reason === 'cycle'
+      ? `↻ 循环引用：${path} 已在上级层级出现`
+      : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
+    hint.append(line)
+    const chain = document.createElement('div')
+    chain.className = 'ref-hint-chain'
+    collapsed.chain.forEach((p, i) => {
+      if (i) chain.append(' › ')
+      const a = document.createElement('a')
+      a.className = 'ref-file'
+      a.dataset.path = p
+      a.textContent = p
+      chain.append(a)
+    })
+    hint.append(chain)
+    return hint
+  }
+
+  refreshProjection(): void {
+    if (this.curNode.attrs.collapsed || !callbacks) return
+    callbacks.render(this.curNode, this.content, this.editorView)
+  }
+
+  ignoreMutation(_mutation: ViewMutationRecord): boolean {
+    return true
+  }
+
+  stopEvent(event: Event): boolean {
+    const target = event.target as Node | null
+    if (!target || !this.dom.contains(target)) return false
+    // 编辑按钮由 NodeView 自己处理；链接 click 交给 PM 的引用插件，
+    // 普通静态正文只拦截按下事件，避免把它误当成宿主选区。
+    if ((target as HTMLElement).closest?.('.ref-file-block-edit')) return true
+    return event.type === 'mousedown' || event.type === 'beforeinput' || event.type === 'input'
+  }
+
+  update(node: ProseNode): boolean {
+    const changed = this.curNode.attrs.path !== node.attrs.path ||
+      this.curNode.attrs.readonly !== node.attrs.readonly ||
+      Boolean(this.curNode.attrs.collapsed) !== Boolean(node.attrs.collapsed)
+    if (changed) return false
+    this.curNode = node
+    this.refreshProjection()
+    return true
+  }
+
+  destroy(): void {
+    liveViews.delete(this)
+    this.dom.remove()
+  }
+}
+
+export const fileBlockView = (_ctx: Ctx): NodeViewConstructor =>
+  (node, view, getPos) => new FileBlockView(node, view, getPos)
+
+/** Diff 专用只读 NodeView：正文必须由 ProseMirror 通过 contentDOM 挂载，
+ * 才能保留预填充结构、DecorationSet 和 data-dnote 锚点。 */
+export const diffFileBlockView = (_ctx: Ctx): NodeViewConstructor =>
+  (node) => {
+    const dom = document.createElement('div')
+    const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
+    dom.className = 'ref-file-block readonly' + (collapsed ? ' is-collapsed' : '')
+    if (collapsed) {
+      dom.dataset.collapsed = ''
+      dom.dataset.chain = collapsed.chain.join('|')
+    }
+
+    const header = document.createElement('div')
+    header.className = 'ref-file-block-header'
+    const badge = document.createElement('span')
+    badge.className = 'ref-file-block-badge'
+    badge.textContent = '🔒 引用对比'
+    const path = document.createElement('span')
+    path.className = 'ref-file-block-path'
+    path.textContent = String(node.attrs.path ?? '')
+    header.append(badge, path)
+    dom.append(header)
+
     if (collapsed) {
       const hint = document.createElement('div')
       hint.className = 'ref-file-block-collapsed'
       const line = document.createElement('div')
       line.className = 'ref-hint-line'
-      line.textContent =
-        collapsed.reason === 'cycle'
-          ? `↻ 循环引用：${node.attrs.path} 已在上级层级出现`
-          : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
+      line.textContent = collapsed.reason === 'cycle'
+        ? `↻ 循环引用：${String(node.attrs.path ?? '')} 已在上级层级出现`
+        : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
       hint.append(line)
-      if (collapsed.chain && collapsed.chain.length) {
-        const chainEl = document.createElement('div')
-        chainEl.className = 'ref-hint-chain'
-        collapsed.chain.forEach((p, i) => {
-          if (i > 0) chainEl.append(' › ')
-          const a = document.createElement('a')
-          a.className = 'ref-file'
-          a.setAttribute('data-path', p)
-          a.textContent = p
-          a.title = p
-          chainEl.append(a)
-        })
-        hint.append(chainEl)
-      }
-      this.dom.append(this.header, hint)
-    } else {
-      this.dom.append(this.header)
+      dom.append(hint)
+      return { dom, contentDOM: null, ignoreMutation: () => true, stopEvent: () => true }
     }
 
-    const content = document.createElement('div')
-    content.className = 'ref-file-block-content'
-    // 只读 / 折叠变体禁编辑；可编辑块不显式设 contenteditable（继承编辑器根的可编辑性——
-    // 显式 'true' 造成嵌套 contenteditable，可能干扰 ProseMirror 的输入/IME 组合同步）
-    if (locked) content.contentEditable = 'false'
-
-    // 头部点击（非编辑区，ProseMirror 不自行处理）→ 聚焦 + 光标移入块内开头，
-    // 并同步 DOM selection（否则 DOM 光标与 view selection 不一致，ProseMirror 丢弃输入）。
-    // 注意：内容区点击不要干预（ProseMirror 自然处理 selection——干预会破坏 DOM/view 一致性，
-    // 导致输入进 DOM 但不进 doc）。
-    this.header.addEventListener('mousedown', (e) => {
-      if (locked) return
-      e.preventDefault()
-      const pos = getPosRef()
-      const editorView = editorViewRef as unknown as EditorView | null
-      if (pos == null || !editorView) return
-      try {
-        const doc = editorView.state.doc
-        const block = doc.nodeAt(pos)
-        if (!block || block.type.name !== 'file_block') return
-        const target = pos + 1
-        const $pos = doc.resolve(target)
-        const sel = TextSelection.near($pos)
-        if (!editorView.state.selection.eq(sel)) {
-          editorView.dispatch(editorView.state.tr.setSelection(sel))
-        }
-        editorView.focus()
-        // DOM selection 同步到块内开头（确保与 view selection 一致）
-        const dom = editorView.domAtPos(target)
-        const range = document.createRange()
-        try {
-          range.setStart(dom.node, dom.offset)
-        } catch {
-          range.selectNodeContents(editorView.dom)
-          range.collapse(true)
-        }
-        range.collapse(true)
-        const sel2 = window.getSelection()
-        if (sel2) {
-          sel2.removeAllRanges()
-          sel2.addRange(range)
-        }
-      } catch {
-        /* 忽略 */
-      }
-    })
-
-    // 实验：dom 仅含 contentDOM（header 分离——验证 header 元素干扰输入映射的假设）
-    // 拦截内容区文本输入（NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不同步）
-    content.addEventListener('beforeinput', this.handleContentBeforeInput)
-    content.addEventListener('mousedown', this.handleContentMouseDown)
-
-    // header 已在上面按折叠/非折叠分支追加；
-    // 折叠时 content 保持空容器（提示卡是 contentDOM 外的手写 DOM，不污染内容结构）
-    this.dom.append(content)
-    this.contentDOM = content
-  }
-
-  // 只读模式下忽略 ProseMirror 对内容 DOM 的变更（防止误改）
-  ignoreMutation(mutation: ViewMutationRecord): boolean {
-    if (this.contentDOM?.getAttribute('contenteditable') === 'false') return true
-    // 头部自身的变更由我们管理
-    return this.header.contains(mutation.target as unknown as Node) ?? false
-  }
-
-  stopEvent(event: Event): boolean {
-    // 只读模式下拦截内容区的输入
-    if (this.contentDOM?.getAttribute('contenteditable') === 'false') {
-      const target = event.target as HTMLElement | null
-      return this.contentDOM.contains(target) && !this.header.contains(target)
-    }
-    return false
-  }
-
-  /**
-   * 兜底：拦截块内容区的文本输入（beforeinput insertText/insertCompositionText），
-   * 手动 dispatch 到 doc（NodeView 内容 DOM 的 DOMObserver 同步不可靠）。
-   * 不再强制 update() 重建（频繁重建会引发监听竞态）。
-   * 根因：物化（replaceWith）后的 NodeView 内容 DOM 没有 pmViewDesc，ProseMirror 的
-   * DOMObserver 无法把块内 DOM 文本变化同步到 doc（表格/宿主段落正常——它们有 desc）。
-   * 这里在浏览器把文本插入 DOM 前拦截，直接用 ProseMirror 事务插入 → doc 与 DOM 一致。
-   */
-  private handleContentBeforeInput = (e: Event) => {
-    const ev = e as InputEvent
-    const inputType = ev.inputType || ''
-    const view = this.editorView as unknown as EditorView | null
-    if (!view) return
-    // 普通文本插入 + IME 组合文本：拦截默认（浏览器改 DOM）→ 手动 dispatch 到 doc。
-    // 根因：NodeView 内容 DOM 无 pmViewDesc → DOMObserver 不把块内文本变化同步到 doc。
-    if ((inputType === 'insertText' || inputType === 'insertCompositionText') && ev.data) {
-      e.preventDefault()
-      try {
-        let { from, to } = view.state.selection
-        // 自定义 NodeView 的 contentDOM 在部分物化/广播路径没有完整 view-desc，
-        // state.selection 可能仍停在上一个嵌入块。优先使用浏览器当前真实光标，
-        // 并验证它确实落在本块范围内，避免把输入写到兄弟块或宿主正文。
-        const domSel = window.getSelection()
-        const anchor = domSel?.anchorNode
-        const focus = domSel?.focusNode
-        if (anchor && focus && this.contentDOM?.contains(anchor) && this.contentDOM.contains(focus)) {
-          const domFrom = view.posAtDOM(anchor, domSel!.anchorOffset)
-          const domTo = view.posAtDOM(focus, domSel!.focusOffset)
-          const blockStart = view.posAtDOM(this.contentDOM, 0)
-          const blockEnd = blockStart + this.curNode.nodeSize - 2
-          if (domFrom >= blockStart && domFrom <= blockEnd && domTo >= blockStart && domTo <= blockEnd) {
-            from = Math.min(domFrom, domTo)
-            to = Math.max(domFrom, domTo)
-          }
-        }
-        view.dispatch(view.state.tr.insertText(ev.data, from, to).scrollIntoView())
-      } catch {
-        /* 忽略 */
-      }
-    }
-    // insertFromPaste / drop 等由 ProseMirror 的 clipboard 处理（dispatch），不需要拦截
-    // deleteContentBackward 等由 ProseMirror keymap 处理（keydown → dispatch）
-  }
-
-  /** 物化块的 contentDOM 偶尔没有完整 view-desc，浏览器点击不会更新 PM selection。
-   * 若点击前 selection 不在本块，先把光标锚定到本块开头，避免输入落到兄弟块。 */
-  private handleContentMouseDown = (e: MouseEvent) => {
-    const view = this.editorView as unknown as EditorView | null
-    if (!view || this.contentDOM?.getAttribute('contenteditable') === 'false') return
-    const pos = this.getPos()
-    if (pos == null) return
-    const block = view.state.doc.nodeAt(pos)
-    const sel = window.getSelection()
-    const contentFrom = pos + 1
-    const contentTo = pos + (block?.nodeSize ?? 2) - 1
-    if (view.state.selection.from >= contentFrom && view.state.selection.to <= contentTo) return
-    e.preventDefault()
-    try {
-      const target = contentFrom
-      const next = TextSelection.near(view.state.doc.resolve(target))
-      view.dispatch(view.state.tr.setSelection(next))
-      view.focus()
-      // ProseMirror focus 会负责把 DOM selection 同步到 NodeView 内容区。
-      void sel
-    } catch {
-      /* 忽略 */
+    const contentDOM = document.createElement('div')
+    contentDOM.className = 'ref-file-block-content'
+    dom.append(contentDOM)
+    return {
+      dom,
+      contentDOM,
+      ignoreMutation: () => false,
+      stopEvent: () => true,
+      update: (next: ProseNode) => next.type === node.type &&
+        next.attrs.path === node.attrs.path && !next.attrs.collapsed,
     }
   }
-
-  update(node: ProseNode): boolean {
-    // 返回 true → PM 用 updateChildren 维护 contentDOM 子节点（desc 保留、DOM 复用、光标稳定）。
-    // 之前恒返回 false → 每次输入/物化都强制重建 NodeView → 光标/selection 丢失（用户问题2根因），
-    // 且 beforeinput 手动 dispatch 与 PM 原生输入叠加产生双插（问题1根因）。
-    // attrs 变化（collapsed 折叠态 / readonly）影响卡片 UI 结构（折叠提示卡/只读徽标）——
-    // 这些由 PM 重建承载（返回 false 安全重建），普通 content 变化返回 true 让 PM 增量更新。
-    const prev = this.curNode
-    this.curNode = node
-    if (
-      !prev ||
-      Boolean(prev.attrs.collapsed) !== Boolean(node.attrs.collapsed) ||
-      prev.attrs.readonly !== node.attrs.readonly
-    ) {
-      return false // 折叠/只读态切换 → 交还 PM 完整重建（卡面结构变化）
-    }
-    return true
-  }
-
-  destroy() {
-    this.dom.remove()
-  }
-}
-
-export const fileBlockView = (_ctx: Ctx): NodeViewConstructor => {
-  return (node, view, getPos) => new FileBlockView(node, view, getPos)
-}
