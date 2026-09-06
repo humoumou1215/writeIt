@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: writeit-debug
 description: WriteIt 运行时问题现场勘查手册。用户报告编辑器引用不同步 / 渲染或布局异常 / 保存或报错等运行问题时加载。核心原则：就地勘查（writeit 工具），不要求用户复现。
 ---

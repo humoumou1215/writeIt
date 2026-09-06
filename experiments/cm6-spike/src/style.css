@@ -1,0 +1,57 @@
+:root {
+  color: #e8edf5;
+  background: #10151f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 1100px; background: #10151f; }
+button, textarea, input { font: inherit; }
+button { color: #e8edf5; border: 1px solid #39465d; background: #1b2535; border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+button:hover { border-color: #6d92c9; background: #253550; }
+.shell { min-height: 100vh; padding: 20px 24px; }
+.topbar { display: flex; justify-content: space-between; gap: 24px; align-items: start; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 20px; letter-spacing: .01em; }
+h2 { margin: 0 0 8px; font-size: 14px; color: #b8c6da; }
+.topbar p, .muted { margin: 6px 0 0; color: #8291a9; font-size: 12px; }
+.top-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+.tabs { display: flex; gap: 6px; border-bottom: 1px solid #2a3548; padding-bottom: 7px; }
+.tab.active { background: #3b5c8c; border-color: #78a3e2; }
+.workspace { display: grid; grid-template-columns: minmax(640px, 1fr) 390px; gap: 16px; margin-top: 16px; align-items: start; }
+.editors { height: min(760px, calc(100vh - 170px)); min-height: 520px; max-height: calc(100vh - 170px); border: 1px solid #2a3548; border-radius: 9px; background: #0b1018; overflow: auto; }
+.editor-mount { display: none; min-height: 660px; }
+.editor-mount.active { display: block; }
+.cm-editor { min-height: 660px; font-size: 15px; }
+.cm-scroller { padding: 18px 0; }
+.cm-content { min-height: 600px; }
+.cm-line { padding: 0 18px; }
+.cm6-bold-preview { color: #ffd47a; font-weight: 700; }
+.cm6-table-widget, .cm6-embed-projection { margin: 10px 18px; border: 1px solid #41516a; border-radius: 7px; background: #151e2c; overflow: hidden; }
+.table-toolbar, .embed-label { padding: 7px 9px; background: #1d2b41; color: #a9c5ed; font-size: 11px; display: flex; gap: 6px; align-items: center; }
+.table-toolbar span { margin-right: auto; }
+.table-toolbar button { padding: 3px 6px; font-size: 11px; }
+.cm6-table-widget table { border-collapse: collapse; width: 100%; }
+.cm6-table-widget td { border: 1px solid #34445c; padding: 0; }
+.cm6-table-widget input { display: block; width: 100%; min-width: 82px; color: #e8edf5; background: transparent; border: 0; padding: 8px; outline: none; }
+.cm6-table-widget input:focus { box-shadow: inset 0 0 0 2px #6d9ee9; background: #1d2c43; }
+.cm6-table-widget input[data-composing="true"] { box-shadow: inset 0 0 0 2px #d2a94d; background: #3b301a; }
+.cm6-table-widget input.table-header-cell { color: #a9c5ed; font-weight: 700; }
+.cm6-table-widget td.table-selected-cell { background: #30496e; }
+.cm6-mermaid-widget { margin: 10px 18px; padding: 18px; border: 1px dashed #6b7e9e; border-radius: 6px; background: #182235; color: #b3cbf5; }
+.embed-editor-mount { margin: 0 10px 10px; border: 1px solid #354864; border-radius: 5px; overflow: hidden; }
+.embed-editor-mount .cm-editor { min-height: 130px; max-height: 390px; font-size: 13px; }
+.embed-editor-mount .cm-content { min-height: 100px; }
+.embed-circular, .embed-missing { padding: 12px; color: #ffb6b6; background: #33202a; }
+.side-panel { display: flex; flex-direction: column; gap: 12px; }
+.panel-card { border: 1px solid #2a3548; border-radius: 9px; background: #151c28; padding: 12px; }
+#source-editor { width: 100%; height: 180px; margin: 8px 0; resize: vertical; color: #dbe6f6; background: #0c121c; border: 1px solid #35445a; border-radius: 5px; padding: 8px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.panel-card > button { width: 100%; }
+.small-output, .diff-output, details pre { white-space: pre-wrap; word-break: break-word; max-height: 190px; overflow: auto; color: #9aacc6; background: #0c121c; border-radius: 5px; padding: 8px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.diff-output { min-height: 70px; }
+.diff-added { color: #9be7af; background: #173522; }
+.diff-removed { color: #ffabab; background: #3c1d25; }
+.diag-block { margin-bottom: 12px; }
+.diag-row { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; color: #aebbd0; font-size: 11px; }
+.diag-row.stale { color: #ff9e9e; background: #321f28; }
+details summary { cursor: pointer; color: #8faee0; font-size: 11px; }

@@ -1,6 +1,7 @@
-# Milkdown Note
+# WriteIt v1 Legacy Editor
 
-> 📖 仓库级完整文档在 [`../doc/`](../doc/README.md)（架构 / 各功能板块实现与使用），里程碑设计见 [`docs/design.md`](docs/design.md)。本文件为快速上手。
+> 本目录是 WriteIt v1 legacy 实现，不是当前 v2 开发主线；v2 主线见 [`../writeit-v2/`](../writeit-v2/)。
+> 旧版运行规则见 [`AGENTS.md`](AGENTS.md)，运行态文档规格见 [`specs/runtime-doc-layer.spec.md`](specs/runtime-doc-layer.spec.md)。本文件为快速上手。
 
 基于 **Tauri 2 + Vue 3 + Vite + @milkdown/crepe** 的 Markdown 编辑器。
 打开本地目录 → 文件树（完整 CRUD）→ 多标签页编辑 → Ctrl+S / 自动保存。
@@ -115,7 +116,7 @@ npm run tauri dev    # 需要 Rust 工具链
 - 关闭标签才销毁实例；有未保存修改时弹确认框
 - 数据流单向：文件内容只经 `getMarkdown()` 取出、`replaceAll()` 注入
 
-## Git 工作台（M11–M14）
+## Git 工作台（M11–M18）
 
 - **入口**：图标列 🔀 恒开 Git 面板；文件树/标签右键「Git 改动」；`Ctrl+Shift+D`（当前活动文件）。
 - **面板三区块**：仓库状态条（分支徽标/未提交数）· 分支（点击过滤历史 / ⇄ 切换）· 工作区（状态色块 + 行数，点击 → diff）· 历史（点击展开变更文件 → commit diff；**Shift+点击两提交 = 范围对比 a..b**）。
@@ -123,7 +124,7 @@ npm run tauri dev    # 需要 Rust 工具链
   - **文本**：分栏（左旧右新）/ 统一；行级 + 词级高亮；hunk 折叠；F7/Shift+F7 导航；还原（整文件/单段）。
   - **渲染**（默认）：单 Crepe 渲染「组合 md」——纯删/新增/修改统一 `{--删词--}{++增词++}` 内联标记；**mermaid 节点级**（新增绿/删除红划线/修改黄）；嵌入卡片「内容有改动」角标；右侧**批注抽屉**自动生成「改动说明」卡（点击定位 + 连线）。
 - **浏览器演示**：vite dev 直接可用（mock 后端），内置 `Git演示/` 真实 git diff 数据仓库（mermaid / 嵌入块内容调整 / 表格单元格级 / 词级 / 纯删除 / 多提交 / 双分支）。
-- 详细文档：[`../doc/git.md`](../doc/git.md) · 设计：[`docs/git-workbench.md`](docs/git-workbench.md)。
+- 实现见 [`src/git/`](src/git/)；回归用例见 [`tests/e2e/`](tests/e2e/) 中的 `git-*.js`。
 
 ## 批注 · 校验 · 模板 · 引用（M1–M6）
 
@@ -132,9 +133,9 @@ npm run tauri dev    # 需要 Rust 工具链
 - **校验**：按模板规则自动检查（需求表必须存在/版本章节必填等），违规进批注抽屉（⚠️/⛔），strict 模式保存前把关。
 - **批注**：选中文本 → 工具条「添加批注」或 `Ctrl+R`，评论线程（回复/标记已解决）；代码块内批注自动升级为整块批注。
 
-## Mermaid 图表（自 editor/ 子项目移植）
+## Mermaid 图表
 
-与 `editor/` 子项目能力对齐，已集成到多标签架构：
+已集成到多标签架构，当前实现位于 `src/editor/`：
 
 - **代码块预览**：任意 ```` ```mermaid ```` 代码块点击右上角 👁 按钮，经 `mermaid.render` 渲染 SVG（含 loading 与错误提示）
 - **斜杠命令**：`/` 菜单新增「Mermaid」分组，精选 8 种模板（Flowchart/Sequence/State/Class/Mindmap/ER/C4/Gantt），选中即插入带示例的代码块
@@ -142,7 +143,7 @@ npm run tauri dev    # 需要 Rust 工具链
 - 实现：`src/editor/mermaid.ts`（feature 配置工厂，每个 Crepe 实例应用）+ `src/editor/mermaid-diagrams.ts`（30 种图表数据源）
 - 注意：CodeMirror 代码块为 **IntersectionObserver 懒加载**，滚动到可视区才会初始化
 
-> 代码块语言按钮等细节来自 `editor/` 子项目的验证结论：必须用本地 Vite 构建（esm.sh CDN 有 `basicSetup` 导出丢失与 CSS 404 问题），本项目本身就是本地构建，无此问题。
+> 代码块语言按钮等细节来自早期 CodeMirror 实验的验证结论：必须用本地 Vite 构建（esm.sh CDN 有 `basicSetup` 导出丢失与 CSS 404 问题），本项目本身就是本地构建，无此问题。
 
 ## 保存策略
 

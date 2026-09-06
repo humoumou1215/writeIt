@@ -9,3 +9,6 @@ demo-shots/
 # e2e 临时产物
 tests/e2e/node_modules/
 tsconfig.tsbuildinfo
+
+# 单测编译缓存
+tests/unit/.cache/
