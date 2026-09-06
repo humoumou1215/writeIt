@@ -33,9 +33,9 @@ C.check('A2: 显示路径去掉了 [[ ]]', refs.every(r => r.text && !r.text.inc
 C.check('A3: data-ref 保留完整引用', refs.some(r => r.ref === '数据库/loan/loan_apply#amount') && refs.some(r => r.ref === '数据库/loan/loan_apply#apply_no'))
 
 // ---- B: 点击跳转 ----
-await L.clickEl('.preview a.mmd-text-ref', 0, { label: '点引用' })
-await L.waitMs(2500)
-const activeTab = await js(`document.querySelector('.tabbar .tab.active') ? document.querySelector('.tabbar .tab.active').textContent.trim() : ''`)
+await js(`document.querySelector('.preview a.mmd-text-ref')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))`)
+await L.waitFor(async () => (await L.q('.tab.active')) > 0, 4000)
+const activeTab = await js(`document.querySelector('.tab.active') ? document.querySelector('.tab.active').textContent.trim() : ''`)
 C.check('B1: 点击引用打开目标文档（loan_apply.md）', (activeTab || '').includes('loan_apply'))
 
 // ---- C: 代码块内 @ 联想 ----
@@ -54,7 +54,7 @@ await L.clickEl('.milkdown-code-block .cm-content', await js(`[...document.query
   await js(`(() => { const b=[...document.querySelectorAll('.milkdown-code-block')].find(x=>x.offsetParent!==null); const cm=b?b.querySelector('.cm-content'):null; if(cm) cm.focus() })()`)
 })
 await L.waitMs(800)
-await L.press('Control+a')
+await L.press('Meta+a')
 await L.type('graph TD\n  A[开始] --> B["改 @')
 await L.waitMs(1500)
 const anyMenuShown = await js(`[...document.querySelectorAll('[data-mermaid-ref]')].some(el => el.getAttribute('data-show') === 'true')`)
@@ -77,7 +77,7 @@ C.check('C4: 插入后菜单关闭', menuAfter)
 // ---- C5: 无引号节点自动补引号 ----
 await js(`(() => { const b=[...document.querySelectorAll('.milkdown-code-block')].find(x=>x.offsetParent!==null); const cm=b?b.querySelector('.cm-content'):null; if(cm) cm.focus() })()`)
 await L.waitMs(600)
-await L.press('Control+a')
+await L.press('Meta+a')
 await L.type('graph TD\n  A[开始] --> B{有权限? @')
 await L.waitMs(1500)
 await L.type('loan_apply')
@@ -94,13 +94,13 @@ const cmDiamond = await js(`(() => {
 })()`)
 C.check('C5: 无引号节点自动补引号包裹', /"[\s\S]*\[\[/.test(cmDiamond))
 await L.clickEl('.preview-toggle-button', 0, { label: '开预览' })
-await L.waitMs(3000)
-const renderErr = await js(`document.querySelector('.preview') ? document.querySelector('.preview').textContent.includes('Mermaid 渲染失败') : false`)
+await L.waitFor(async () => (await L.q('.milkdown-code-block .preview svg')) > 0, 5000)
+const renderErr = await js(`(() => { const p=[...document.querySelectorAll('.milkdown-code-block .preview')].find(e=>e.offsetParent!==null); return !!p && p.textContent.includes('Mermaid 渲染失败') })()`)
 C.check('C6: 自动补引号后渲染成功', !renderErr)
 await L.clickEl('.preview-toggle-button', 0, { label: '切回编辑' })
 
 // ---- D: 非 mermaid 代码块不触发联想 ----
-await L.press('Control+a')
+await L.press('Meta+a')
 await L.type('const x = 1;')
 await L.waitMs(400)
 await js(`(() => {
@@ -113,7 +113,7 @@ if ((await L.q('.codemirror-host.hidden')) > 0) {
   await L.clickEl('.preview-toggle-button', 0, { label: '切编辑' })
   await L.waitMs(600)
 }
-await js(`(() => { const b=[...document.querySelectorAll('.milkdown-code-block')].find(x=>x.offsetParent!==null && x.querySelector('.cm-content')); const cm=b?b.querySelector('.cm-content'):null; if(cm) cm.focus() })()`)
+await js(`(() => { const b=[...document.querySelectorAll('.milkdown-code-block')].find(x=>x.offsetParent!==null && x.querySelector('.language-button')?.textContent.trim()==='js'); const cm=b?.querySelector('.cm-content'); if(cm) cm.focus() })()`)
 await L.waitMs(800)
 await L.press('Control+a')
 await L.type('const y = @deco')

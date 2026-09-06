@@ -24,20 +24,20 @@ await L.shotTo('01-新布局初始.png')
 await L.clickText('.tree .node', '笔记')
 await L.waitMs(400)
 await L.clickText('.tree .name', '会议记录.md')
-await L.waitMs(2500)
+await L.exactWaitMs(2500)
 C.check('编辑器渲染', (await L.has('.milkdown h1', '会议记录')))
 C.check('打开文件后不收纳', !(await js(`document.querySelector('.content-col').classList.contains('collapsed')`)))
 C.check('标签出现', (await L.q('.tab')) === 1)
 
 // 3.5 连续打开第二个文件
 await L.clickText('.tree .name', 'README.md')
-await L.waitMs(2000)
+await L.exactWaitMs(2000)
 C.check('连续打开第二个文件', (await L.q('.tab')) === 2)
 C.check('连续打开时侧边栏仍展开', !(await js(`document.querySelector('.content-col').classList.contains('collapsed')`)))
 await L.shotTo('02-打开文件不收纳-连续多开.png')
 
 // 4. 点击编辑区 → 收纳；点图标重新展开
-await L.clickEl('.workspace', 0, { dx: 320, dy: 200 })
+await L.clickEl('.editor-pane', 0, { label: '点击编辑区' })
 await L.waitMs(400)
 C.check('点击编辑区收纳', await js(`document.querySelector('.content-col').classList.contains('collapsed')`))
 await L.clickEl('.icon-col .icon-btn', 0, { label: '展开' })
@@ -59,7 +59,9 @@ C.check('保存后脏标记清除', (await L.q('.tab .dot.dirty')) === 0)
 await L.clickEl('.icon-col .icon-btn[title^="设置"]', 0, { label: '设置' })
 await L.waitMs(500)
 C.check('设置弹窗打开', await L.vis('.settings-modal'))
-C.check('弹窗有 常规/快捷键 两个页签', (await L.q('.tab-btn')) === 2)
+const settingsTabs = (await L.txtAll('.settings-modal .tab-btn')).map((x) => x.trim())
+C.check('弹窗有 常规/图片/快捷键/高级四个页签',
+  settingsTabs.length === 4 && ['常规', '图片', '快捷键', '高级'].every((name) => settingsTabs.includes(name)))
 await L.shotTo('03-设置弹窗-常规.png')
 
 // 7. 主题切换
@@ -76,10 +78,11 @@ const saveKey = await L.txt('.shortcut-row') ? await js(`(() => { const row=[...
 C.check('默认 Ctrl+S 存在', saveKey === 'Ctrl+S')
 // 录制新快捷键
 const settingsKey = await js(`(() => { const row=[...document.querySelectorAll('.shortcut-row')].find(r=>(r.textContent||'').includes('打开设置')); if(row){ row.querySelector('.keybtn').click(); return true } return false })()`)
-await L.waitMs(300)
+await L.waitFor(() => L.vis('.keycapture'), 1500)
+await js(`document.querySelector('.keycapture')?.focus()`)
 await L.press('Alt+Shift+P')
-await L.waitMs(300)
-const recordedKey = await js(`(() => { const row=[...document.querySelectorAll('.shortcut-row')].find(r=>(r.textContent||'').includes('打开设置')); return row?row.querySelector('.keybtn').textContent.trim():'' })()`)
+await L.waitFor(async () => !(await L.vis('.keycapture')), 1500)
+const recordedKey = await js(`(() => { const row=[...document.querySelectorAll('.shortcut-row')].find(r=>(r.textContent||'').includes('打开设置')); return row?.querySelector('.keybtn')?.textContent?.trim() || '' })()`)
 C.check('快捷键已录制', recordedKey === 'Alt+Shift+P')
 await L.shotTo('04-设置弹窗-快捷键.png')
 
@@ -103,14 +106,14 @@ C.check('Ctrl+B 展开', !(await js(`document.querySelector('.content-col').clas
 
 // 11. Alt+ArrowDown 下一个文件
 await L.press('Alt+ArrowDown')
-await L.waitMs(2000)
+await L.exactWaitMs(2000)
 C.check('Alt+↓ 打开新标签', (await L.q('.tab')) === 3)
 
 // 12. 固定侧边栏
 if (await L.q('.content-col.collapsed')) { await L.clickEl('.icon-col .icon-btn', 0); await L.waitMs(300) }
 await L.clickEl('.sidebar-head .pin', 0, { label: '固定' })
 await L.waitMs(300)
-await L.clickEl('.workspace', 0, { dx: 320, dy: 200 })
+await L.clickEl('.editor-pane', 0, { label: '点击编辑区' })
 await L.waitMs(400)
 C.check('固定后点击编辑区不收纳', !(await js(`document.querySelector('.content-col').classList.contains('collapsed')`)))
 await L.clickEl('.sidebar-head .pin', 0, { label: '取消固定' })
@@ -128,7 +131,7 @@ try {
   await L.waitMs(300)
   await L.fill('.tree .rename-input', '新布局文件.md')
   await L.press('Enter')
-  await L.waitMs(1500)
+  await L.exactWaitMs(1500)
   C.check('新建文件自动打开', (await L.q('.tab')) === 4)
   C.check('新建文件在树中', (await L.has('.tree .name', '新布局文件.md')))
 } catch (e) {

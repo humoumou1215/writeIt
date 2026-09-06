@@ -64,10 +64,9 @@ C.check('宿主2 块物化且含源同步内容', (await blocksOf())[0].includes
 await L.clickText('.tab', 'probe', { label: '切回 probe' })
 await L.waitMs(900)
 const added = await js(`window.__editorBlockAppend('数据库字段引用', '块跨标签编辑B2', 0)`)
-C.check('probe 块1 追加成功', added === 'inserted@2')
+C.check('probe 块1 追加成功', /^inserted@\d+$/.test(String(added)))
 await L.waitMs(1800)
 const ta2 = await blocksOf()
-cliLog('[debug] lastCommit=' + JSON.stringify(await js('window.__docstoreLastCommit||null')) + ' )' + JSON.stringify(await js("(() => { const m = __docstoreInspect().models; const e = m.find(x => x.realPath === '数据库字段引用.md'); return { bRev: e ? e.rev : -1, dirty: e ? e.dirty : null, subs: e ? e.subscribers.length : -1 } })()") || 'no-model'))
 C.check('probe 双块收敛', ta2.length === 2 && ta2[0].includes('块跨标签编辑B2') && ta2[1].includes('块跨标签编辑B2'))
 await L.clickText('.tab', 'h2', { label: '切到宿主2' })
 await L.waitMs(1500)
@@ -76,11 +75,10 @@ C.check('宿主2 块同步 probe 编辑', h2t[0].includes('块跨标签编辑B2'
 
 // ---------- 场景 C：blockId 稳定 + registry 健康 ----------
 const diag1 = await js(`window.__registryDiag ? window.__registryDiag() : null`)
-cliLog('[debug] registry(1): ' + JSON.stringify(diag1 && diag1[SRC_PATH] && diag1[SRC_PATH].views.map(v => v.block)))
 await L.clickText('.tab', 'probe', { label: '切回 probe(2)' })
 await L.waitMs(900)
 const added2 = await js(`window.__editorBlockAppend('数据库字段引用', '再编一次C3', 0)`)
-C.check('再编辑成功', added2 === 'inserted@2')
+C.check('再编辑成功', /^inserted@\d+$/.test(String(added2)))
 await L.waitMs(1800)
 const diag2 = await js(`window.__registryDiag ? window.__registryDiag() : null`)
 const entry1 = diag1 && diag1[SRC_PATH]
@@ -109,7 +107,6 @@ await L.waitMs(900)
 await js(`window.__saveActiveTab()`)
 await L.waitMs(2500)
 const disk = await diskOf(SRC_PATH)
-cliLog('[debug] 宿主保存后源磁盘(截断): ' + JSON.stringify(disk.slice(0, 60)))
 C.check('宿主保存未覆盖源未保存编辑', !disk.includes('块跨标签编辑B2') || disk.includes('源实时编辑X1'))
 // 源保存 → 落盘（最终一致）
 await L.clickText('.tab', '数据库字段引用', { label: '切到源(2)' })

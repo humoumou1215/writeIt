@@ -333,7 +333,7 @@ export const mermaidRefMenuExtension = ViewPlugin.fromClass(
       const range = this.nodeQuoteRange()
       if (range && range.needQuote) {
         changes.push({ from: range.l + 1, to: range.l + 1, insert: '"' })
-        changes.push({ from: range.r, to: range.r, insert: '"' })
+        changes.push({ from: range.r, to: range.r, insert: range.close ? '"' : `${range.closeQuote}"${range.closeChar}` })
         quoteShift = 1 // 左引号位于触发词之前 → 插入点后移 1
       }
       changes.push({ from: triggerFrom, to: triggerTo, insert: text })
@@ -346,7 +346,7 @@ export const mermaidRefMenuExtension = ViewPlugin.fromClass(
 
     /** 光标所在 mermaid 节点/边标签边界：优先节点左括号 [ / {（排除 [[ 的第二位），
      *  其次边标签 |...|。节点文本未以引号开头 → needQuote（插入 [[ 前自动补引号包裹）。 */
-    private nodeQuoteRange(): { l: number; r: number; needQuote: boolean } | null {
+    private nodeQuoteRange(): { l: number; r: number; needQuote: boolean; close: boolean; closeQuote: string; closeChar: string } | null {
       const view = this.view
       const line = view.state.doc.lineAt(this.state.triggerTo)
       const text = view.state.doc.sliceString(line.from, line.to)
@@ -366,7 +366,12 @@ export const mermaidRefMenuExtension = ViewPlugin.fromClass(
         const R = text.indexOf(closeCh, L + 1)
         if (R >= 0) {
           const alreadyQuoted = text[L + 1] === '"'
-          return { l: line.from + L, r: line.from + R, needQuote: !alreadyQuoted }
+          return { l: line.from + L, r: line.from + R, needQuote: !alreadyQuoted, close: true, closeQuote: '', closeChar: '' }
+        }
+        // 用户可能在尚未输入节点右括号时就触发联想。补齐引号和
+        // Mermaid 节点闭合符，保证插入引用后仍可解析。
+        if (!text.slice(L + 1).includes('"')) {
+          return { l: line.from + L, r: line.to, needQuote: true, close: false, closeQuote: '', closeChar: text[L] === '{' ? '}' : ']' }
         }
       }
       // 2) 边标签 |...|（光标前最近未闭合 |，配对其后的 |）
@@ -381,7 +386,7 @@ export const mermaidRefMenuExtension = ViewPlugin.fromClass(
         const R2 = text.indexOf('|', P + 1)
         if (R2 >= 0) {
           const alreadyQuoted = text[P + 1] === '"'
-          return { l: line.from + P, r: line.from + R2, needQuote: !alreadyQuoted }
+          return { l: line.from + P, r: line.from + R2, needQuote: !alreadyQuoted, close: true, closeQuote: '', closeChar: '' }
         }
       }
       return null

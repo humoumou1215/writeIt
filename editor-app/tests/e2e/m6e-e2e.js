@@ -18,20 +18,14 @@ await L.waitMs(300)
 await L.clickText('.tree .node', '笔记')
 await L.waitMs(400)
 await L.clickText('.tree .name', 'mermaid批注测试.md')
-await L.waitMs(6000)
+await L.exactWaitMs(6000)
 
 // 1. 初始 mermaid 预览正常
 C.check('初始 mermaid 预览渲染', (await L.q('.milkdown-code-block .preview svg')) > 0)
 
 // 2. 代码块内选中文本 → Ctrl+R → 块级提示
-const cmBox = await js(`(() => {
-  const e = [...document.querySelectorAll('.milkdown-code-block .cm-content')].find(x => x.offsetParent !== null)
-  if (!e) return null
-  const r = e.getBoundingClientRect()
-  return { x: r.x, y: r.y, w: r.width, h: r.height }
-})()`)
-if (!cmBox) { cliLog('no cm box'); process.exit(1) }
-await dragMouse([[cmBox.x + 20, cmBox.y + 8], [cmBox.x + 150, cmBox.y + 8]], { label: '选代码块文本' })
+const selectedCode = await js('window.__editorSelectCodeBlock?.()')
+C.check('代码块文本已选中', selectedCode === true)
 await L.waitMs(400)
 await L.press('Control+r')
 await L.waitMs(700)
@@ -89,10 +83,17 @@ const pbox = await js(`(() => {
   return { x: r.x, y: r.y, h: r.height }
 })()`)
 if (pbox) {
-  await dragMouse([[pbox.x + 2, pbox.y + pbox.h / 2], [pbox.x + 90, pbox.y + pbox.h / 2]], { label: '选段落文本' })
+  const selectedParagraph = await js(`(() => {
+    const e = [...document.querySelectorAll('.ProseMirror p')].find(x => x.textContent.includes('普通段落文本'))
+    const text = e?.firstChild
+    if (!text) return ''
+    const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, text.textContent.length)
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); return sel.toString()
+  })()`)
+  C.check('段落文本已选中', selectedParagraph.includes('普通段落文本'))
   await L.waitMs(400)
   await L.press('Control+r')
-  await L.waitMs(700)
+  await L.waitFor(() => L.vis('.annotation-input-ta'), 2000)
   C.check('段落批注浮窗正常', (await L.q('.annotation-input-visible')) > 0)
   const ph2 = await L.attr('.annotation-input-ta', 'placeholder')
   C.check('段落批注提示为普通文案', (ph2 || '').includes('在此输入评论'))

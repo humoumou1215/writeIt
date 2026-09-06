@@ -20,6 +20,7 @@ import {
   type Comment,
 } from '../annotations/service'
 import { LEVEL_COLOR } from '../annotations/card-color'
+import type { Editor } from '@milkdown/kit/core'
 
 // ---------- 状态 ----------
 // 批注栏默认展开策略（设置面板可配）：
@@ -72,7 +73,13 @@ watch(
   }
 )
 const width = ref(Math.max(50, Math.min(480, settings.annotationDrawerWidth)))
-const anns = ref<Annotation[]>([])
+type DrawerAnnotation = Annotation & {
+  editor?: Editor
+  root?: HTMLElement
+  projectionId?: string
+  sourcePath?: string
+}
+const anns = ref<DrawerAnnotation[]>([])
 const activeId = ref<string | null>(null)
 const draft = ref<Record<string, string>>({}) // 卡 id → 回复草稿
 // v6：当前展开的人工批注卡 id——默认全部收起，只有点击卡片时才展开（点击其他卡/外部收起）
@@ -100,7 +107,7 @@ async function refresh() {
     activeId.value = getActiveAnnotationId()
     return
   }
-  const { getActiveInstance } = await import('../editor/manager')
+  const { getActiveInstance, getEmbedAnnotations } = await import('../editor/manager')
   const inst = getActiveInstance()
   if (!inst) {
     // 新标签编辑器还在挂载 → 稍后重刷（避免抽屉残留上一个标签的批注）
@@ -115,7 +122,10 @@ async function refresh() {
   const { editorViewCtx } = await import('@milkdown/kit/core')
   inst.crepe.editor.action((ctx) => {
     const doc = ctx.get(editorViewCtx).state.doc
-    anns.value = getAllAnnotations(doc, tabId)
+    const main = getAllAnnotations(doc, tabId)
+    const mainIds = new Set(main.map((a) => a.id))
+    const embedded = getEmbedAnnotations(tabId).filter((a) => !mainIds.has(a.id))
+    anns.value = [...main, ...embedded]
     activeId.value = getActiveAnnotationId()
   })
 }
@@ -194,32 +204,38 @@ onMounted(async () => {
 })
 
 // ---------- 操作 ----------
-async function reply(ann: Annotation) {
+async function reply(ann: DrawerAnnotation) {
   const text = (draft.value[ann.id] || '').trim()
   if (!text) return
   const { getActiveInstance } = await import('../editor/manager')
   const inst = getActiveInstance()
-  if (!inst) return
-  if (!inst) return
+  const editor = ann.editor ?? inst?.crepe.editor
+  if (!editor) return
   if (ann.persist) {
     // v8：人工批注按逻辑批注 id（mark attrs.id）定位，不依赖 pos
-    addComment(inst.crepe.editor, ann.id, text, userName.value)
+    addComment(editor, ann.id, text, userName.value)
   }
   draft.value[ann.id] = ''
 }
 
-async function toggleResolved(ann: Annotation, c: Comment) {
+async function toggleResolved(ann: DrawerAnnotation, c: Comment) {
   const { getActiveInstance } = await import('../editor/manager')
   const inst = getActiveInstance()
-  if (!inst) return
-  setCommentResolved(inst.crepe.editor as never, ann.id, c.id, !c.resolved, userName.value)
+  const editor = ann.editor ?? inst?.crepe.editor
+  if (!editor) return
+  setCommentResolved(editor as never, ann.id, c.id, !c.resolved, userName.value)
 }
 
 /** 点击批注卡 = 定位 + 激活（显示该卡连线）+ 展开/折叠 */
-async function locate(ann: Annotation) {
+async function locate(ann: DrawerAnnotation) {
   const tabId = state.activeTabId
   const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
-  if (tab?.viewMode === 'diff') {
+  const embedded = ann.projectionId ? ann : null
+  if (embedded?.projectionId) {
+    if (tabId) setActiveAnnotation(tabId, ann.id)
+    const m = await import('../editor/manager')
+    m.locateEmbedAnnotation(embedded.projectionId, ann.from)
+  } else if (tab?.viewMode === 'diff') {
     // M14：diff 模式 → 渲染 Crepe doc 定位（滚动 .render-main + 激活）
     if (tabId) setActiveAnnotation(tabId, ann.id)
     if (ann.from >= 0) await locateDiff(ann)
@@ -502,6 +518,29 @@ function drawConnector() {
       const rect = ta ? sourceMarkRect(ta, active) : null
       if (rect) drawConnectorPath(rect, drawer, active)
       else svg.style.display = 'none'
+      return
+    }
+    const embedded = active as DrawerAnnotation
+    if (embedded.projectionId && embedded.root && embedded.editor) {
+      // 必须按批注 id 命中。此前第二个泛匹配会在 id 未命中时取嵌入块的第一个 mark，
+      // 使如「333」这类后续评论卡的连线指向错误锚点。
+      const mark = embedded.root.querySelector(
+        `mark[data-a="${CSS.escape(active.id)}"]`
+      ) as HTMLElement | null
+      if (mark && mark.getBoundingClientRect().width > 0) {
+        drawConnectorPath(mark.getBoundingClientRect(), drawer, active)
+        return
+      }
+      try {
+        const { editorViewCtx } = await import('@milkdown/kit/core')
+        embedded.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const c = view.coordsAtPos(Math.min(active.from, view.state.doc.content.size))
+          drawConnectorPath({ left: c.left, right: c.right, top: c.top, bottom: c.bottom, height: c.bottom - c.top }, drawer, active)
+        })
+      } catch {
+        svg.style.display = 'none'
+      }
       return
     }
     // M14：diff 模式下用渲染 Crepe（doc = 预填充快照）；M18：先按 data-dnote 身份定位（§4.3），

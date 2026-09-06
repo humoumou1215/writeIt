@@ -17,7 +17,7 @@ await L.reloadApp(2500)
 await L.clickText('.tree .node', '笔记')
 await L.waitMs(400)
 await L.clickText('.tree .name', '周报.md')
-await L.waitMs(6000)
+await L.waitFor(async () => (await L.q('.ad-toggle.expand')) > 0 && (await L.q('.ad-card')) === 2, 6000)
 
 // 1. 抽屉默认收纳（打开文件不展开）+ 批注卡（1 人工 + 1 校验违规）
 C.check('抽屉默认收纳（不展开）', (await L.q('.annotation-drawer.open')) === 0)

@@ -1,7 +1,7 @@
 // 单套件运行器（ego-lite，禁 playwright）
 // 用法：node tests/e2e/_run-one.js <suite-name>     例如 node tests/e2e/_run-one.js ref-e2e
 // 等价于 run-all.js 跑单个套件；需先启动 dev server :5173。
-// 注：套件正常/异常退出都会自动回收；父进程关闭时再做一次兜底清理。
+// 注：固定复用单测 lane，不删除 task space，避免 ego-lite 原生确认框。
 const { spawn } = require('node:child_process')
 const { readFileSync, existsSync } = require('node:fs')
 const { join } = require('node:path')
@@ -20,19 +20,10 @@ if (!existsSync(file)) {
 }
 
 const EGO = process.env.EGO_BROWSER_BIN || join(homedir(), '.local/bin/ego-browser')
-function cleanupSpaces() {
-  try {
-    const { spawnSync } = require('node:child_process')
-    const script = readFileSync(join(here, '_cleanup-spaces.ego.js'), 'utf8')
-    spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'ignore', 'ignore'] })
-  } catch (e) { /* 清理失败交给测试结果报告 */ }
-}
-
-// 先回收历史遗留，防止单套件反复重试时继承前几次运行的内存压力。
-cleanupSpaces()
 // 拼接：注入 __EGO_DIR → _egolite-lib.js 源码 → 用例源码
 const body =
   `const __EGO_DIR = ${JSON.stringify(here)}\n` +
+  `const __EGO_LANE = 'single'\n` +
   readFileSync(join(here, '_egolite-lib.js'), 'utf8') + '\n' +
   readFileSync(file, 'utf8')
 const p = spawn(EGO, ['nodejs'], {
@@ -40,6 +31,5 @@ const p = spawn(EGO, ['nodejs'], {
 })
 p.stdin.end(body)
 p.on('close', (code) => {
-  cleanupSpaces()
   process.exit(code ?? 1)
 })

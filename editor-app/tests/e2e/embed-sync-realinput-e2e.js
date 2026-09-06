@@ -7,7 +7,7 @@ await L.freshApp('http://localhost:5173/?backend=mock')
 const AP = '.editor-pane:not([style*="display: none"])'
 const MK = 'milkdown-note-mock-fs-v2'
 const blockTexts = () => js(
-  `[...document.querySelectorAll('${AP} .ref-file-block:not(.readonly) .ref-file-block-content')].map(e => e.textContent || '')`
+  `[...document.querySelectorAll('${AP} .ref-file-block:not(.readonly) .ref-file-block-content')].map(e => e.querySelector('.embed-shared-editor .ProseMirror')?.textContent || e.textContent || '')`
 )
 const selDetail = () => js(`(() => {
   const s = window.getSelection()
@@ -24,8 +24,10 @@ await js(`(() => {
   localStorage.setItem(${L.J(MK)}, JSON.stringify(fs))
 })()`)
 await L.reloadApp(2500)
+await L.waitFor(() => L.has('.tree .name', 'probe.md'), 5000)
 await L.clickText('.tree .name', 'probe.md', { label: '打开 probe' })
 await L.waitMs(6000)
+await L.waitFor(async () => { const t = await blockTexts(); return t.length === 2 && t[0] === t[1] }, 8000)
 
 // ---- 问题2：点击块1 → 光标在块内 ----
 await L.clickEl(`${AP} .ref-file-block:not(.readonly) .ref-file-block-content`, 0, { label: '点块1' })

@@ -7,7 +7,10 @@ await js(`window.__editorOpenPath('数据库/loan/loan_apply.md')`)
 await L.waitMs(4500)
 
 const tableInfo = () => js(`(() => {
-  const t = [...document.querySelectorAll('.milkdown table')].find(x => x.rows?.[0]?.querySelector('th'))
+  const t = [...document.querySelectorAll('.milkdown table')].find(x => {
+    const r = x.getBoundingClientRect()
+    return x.rows?.[0]?.querySelector('th') && r.width > 0 && r.height > 0 && getComputedStyle(x).display !== 'none'
+  })
   if (!t) return null
   const cell = t.rows[0].cells[0]
   const r = cell.getBoundingClientRect()
@@ -24,9 +27,19 @@ if (before) {
   }
   const stable = await tableInfo()
   C.check('表格边界不产生自建重复 resize handle', stable && stable.custom === 0)
+  const sameWidths = stable && before.widths.length === stable.widths.length && before.widths.every((w, i) => Math.abs(w - stable.widths[i]) < 2)
+  C.check('悬停列边界时实际列宽保持不变', sameWidths)
+
+  // 点击边界本身不能先把表格恢复成等宽；这是用户现场报告的跳跃路径。
+  await click([stable.x, stable.y], { label: 'click column boundary' })
+  await L.waitMs(250)
+  const afterClick = await tableInfo()
+  const clickStable = afterClick && stable.widths.every((w, i) => Math.abs(w - afterClick.widths[i]) < 2)
+  C.check('点击列边界后实际列宽保持不变', clickStable)
 
   // GFM/prosemirror-tables 的官方列宽句柄应接管拖拽。
-  await dragMouse([[before.x, before.y], [before.x + 60, before.y]], { label: 'drag column boundary' })
+  await hover([afterClick.x, afterClick.y], { label: 'activate column handle' })
+  await dragMouse([[afterClick.x, afterClick.y], [afterClick.x + 60, afterClick.y]], { label: 'drag column boundary' })
   await L.waitMs(800)
   const after = await tableInfo()
   C.check('拖拽列边界后实际列宽发生变化', !!after && after.widths.length === before.widths.length && after.widths[0] > before.widths[0] + 8)

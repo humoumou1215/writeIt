@@ -7,6 +7,7 @@
 // 嵌入：mountEditor 里 crepe.editor.use(...tableEnhancePlugin)，
 //       并在 crepe.editor.config((ctx) => ctx.set(tableConfigCtx.key, cfg)) 注入可配置快捷键。
 import type { MilkdownPlugin } from '@milkdown/kit/ctx'
+import { columnResizingPlugin } from '@milkdown/kit/preset/gfm'
 import { tableConfigCtx, DEFAULT_TABLE_CONFIG, toMilkdownCombo } from './config'
 import { tableEnhanceKeymap } from './keymap'
 import { tableClipboardPlugin } from './clipboard'
@@ -38,6 +39,8 @@ export const tableEnhancePlugin: MilkdownPlugin[] = [
   addRowBelowCommand,
   tableEnhanceKeymap,
   tableClipboardPlugin,
+  // Crepe 的 GFM preset 未把 columnResizingPlugin 放进默认 gfm 组合，需显式启用。
+  columnResizingPlugin,
   tableColumnWidthPlugin,
 ]
 

@@ -4,4 +4,9 @@ const K='milkdown-note-mock-fs-v2',S='life-src.md',H='life-host.md',set=(p,v)=>j
 await set(S,'生命周期基线');await set(H,'# H\n\n![[life-src]]\n\n![[life-src]]');await L.reloadApp(2200);await js(`window.__editorOpenPath('${H}')`);await waitFor(()=>js(`document.querySelectorAll('.ref-file-block-content').length===2`));let m=await inspect();C.check('初始两块订阅',!!m&&m.subscribers.filter(x=>x.kind==='block').length===2)
 await js(`window.__editorOpenPath('${S}')`);await L.waitMs(800);await js(`window.__editorOpenPath('${H}')`);await L.waitMs(800);m=await inspect();C.check('切 tab 后仍恰好两块订阅',!!m&&m.subscribers.filter(x=>x.kind==='block').length===2);C.check('切 tab 后无 stale',!!m&&m.subscribers.filter(x=>x.kind==='block').every(x=>!x.stale))
 await L.reloadApp(2400);await js(`window.__editorOpenPath('${H}')`);await waitFor(()=>js(`document.querySelectorAll('.ref-file-block-content').length===2`));m=await inspect();C.check('重载后订阅重新建立且 rev 对齐',!!m&&m.subscribers.filter(x=>x.kind==='block').length===2&&m.subscribers.filter(x=>x.kind==='block').every(x=>x.rev===m.rev&&!x.stale));C.check('重载后无旧 ghost block',await js(`document.querySelectorAll('.ref-file-block-content').length===2`))
+// 首个编辑器曾被 DocStore 缓存为 parser/serializer ctx；关闭它再重开时，旧实现会因
+// serializer 读取已销毁的 editorViewCtx 而让所有引用显示“引用内容加载失败”。
+await js(`document.querySelector('.tab.active .close')?.click()`);await waitFor(()=>js(`document.querySelectorAll('.tab').length===0`));await js(`window.__editorOpenPath('${H}')`)
+const reopened=await waitFor(()=>js(`document.querySelectorAll('.ref-embedded-root').length===2&&!document.body.innerText.includes('引用内容加载失败')`),15000);C.check('关闭首个管线宿主后重开仍能加载两处引用',reopened)
+const ctxErrors=await L.errors();C.check('重开未触发 editorViewCtx 销毁错误',!ctxErrors.some(e=>e.includes('editorView')&&e.includes('not found')))
 cliLog(C.summary());await completeTaskSpace(task.id,{keep:false});process.exit(C.fail?1:0)

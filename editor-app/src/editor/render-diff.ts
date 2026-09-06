@@ -248,6 +248,22 @@ function annotateEmbedDiffBadges(target: HTMLElement, hunks: DiffHunk[] | undefi
   }
 }
 
+// 某些块级删除位于前一标题的文本坐标内，ProseMirror widget 可能被 NodeView 吞掉。
+// 保证层兜底：若删除行没有落到 DOM，补一个显式红色删除块与批注，避免缺陷/改动静默消失。
+function annotateMissingDeletedHunks(target: HTMLElement, hunks: DiffHunk[], notes: DiffNote[]) {
+  for (const line of hunks.flatMap((h) => h.lines).filter((l) => l.kind === 'del' && l.text.trim())) {
+    const text = line.text.trim()
+    if (target.textContent?.includes(text)) continue
+    const el = document.createElement('div')
+    el.className = 'diff-del diff-del-block diff-fallback'
+    el.textContent = text
+    target.prepend(el)
+    if (!notes.some((n) => n.del === text || n.anchor === text)) {
+      notes.push(makeNote('block', `删除了此段`, text, undefined, text, -1, -1))
+    }
+  }
+}
+
 // ---------- 主渲染管线 ----------
 
 /** 合并后批注全局去重：text/ref/annotation/diagram/embed 卡可能产同名 id（同值多处），
@@ -555,6 +571,7 @@ export async function renderDiffToContainer(
 
     // 4) overlay：徽标 + class 注入失效时的 scoped DOM fallback（一次性；连线由事件/ResizeObserver 重绘）
     annotateEmbedDiffBadges(target, hunks)
+    annotateMissingDeletedHunks(target, hunks, notes)
     applyMermaidClassesFallback(target, registry)
     diagEvent('diff:render', {
       target: path,

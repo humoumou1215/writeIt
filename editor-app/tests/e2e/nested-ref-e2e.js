@@ -8,6 +8,7 @@
 //  ⑤ 自嵌 A 嵌 A → 折叠 ⑥ 11 层链：第 10 层渲染、第 11 层折叠（深度=嵌入链深，与结构解耦）
 //  ⑦ 兄弟重复 A 嵌 B ×2 → 两处正常渲染（不是环） ⑧ 环解除后重开 → 重新判定
 //  ⑨ 结构深度干扰：12 层嵌套列表后再嵌 C（链深 2）→ 正常渲染（N3 回归）
+//  ⑩ 中间层自嵌：H 嵌 P、P 再嵌 P → 必须在 P 层折叠，不能因 NodeView 离线构造丢父链而卡死
 // 运行：node tests/e2e/_run-one.js nested-ref-e2e
 
 const task = await L.acquireTaskSpace('nested-ref-e2e')
@@ -65,6 +66,9 @@ const seedNested = `(() => {
   for (let i = 1; i <= 12; i++) { list.push(pad + '- l' + i); pad += '  ' }
   data.files['结构/B.md'] = '# B\\n\\n' + list.join('\\n') + '\\n\\n![[结构/C]]\\n'
   data.files['结构/C.md'] = '# C\\n\\nC 结构干扰内容——必须渲染\\n'
+  data.files['中间自嵌/H.md'] = '# H 中间自嵌宿主\\n\\n![[中间自嵌/P]]\\n'
+  data.files['中间自嵌/P.md'] = '# P 中间层\\n\\n![[中间自嵌/P]]\\n\\n![[中间自嵌/叶]]\\n'
+  data.files['中间自嵌/叶.md'] = '# 叶\\n\\n中间自嵌后的叶内容\\n'
   data.seeded = true
   data.seededVersion = data.seededVersion || 0
   localStorage.setItem('${KEY}', JSON.stringify(data))
@@ -189,6 +193,20 @@ await js(`window.__editorOpenPath('结构/H.md')`)
 await L.waitMs(3500)
 C.check('结构深度不计入：深层列表后嵌 C 仍渲染', (await activeBlocks()).some((t) => t.includes('C 结构干扰内容')))
 C.check('结构用例无折叠卡', !(await activeBlocks()).some((t) => t.includes('已折叠')))
+
+// ===== ⑩ 中间文件自嵌：构造期也必须从 EditorView 找回完整父链 =====
+// README 实际卡死链即属于此类：宿主 → probe → probe。旧实现仅从尚未挂 DOM 的
+// NodeView.content.closest() 找上下文，失败后每层都重置为 [宿主]，会无限创建 Crepe。
+await js(`window.__editorOpenPath('中间自嵌/H.md')`)
+await L.waitMs(3500)
+const blocks10 = await activeBlocks()
+C.check('中间层自嵌及时收敛（P + 折叠 P + 叶，共 3 卡）', blocks10.length === 3)
+C.check('中间层 P 自嵌仅折叠一次', (await foldCnt()) === 1 && blocks10.filter((t) => t.includes('循环引用')).length >= 1)
+C.check('折叠链保留中间父级 H›P›P', (await js(`(() => {
+  const p = [...document.querySelectorAll('.editor-pane')].find(e => e.getClientRects().length > 0)
+  return p?.querySelector('.ref-file-block[data-collapsed]')?.getAttribute('data-chain') || ''
+})()`)).includes('中间自嵌/H.md|中间自嵌/P.md|中间自嵌/P.md'))
+C.check('自嵌折叠后兄弟叶内容仍正常渲染', blocks10.some((t) => t.includes('中间自嵌后的叶内容')))
 
 const errs = await L.errors()
 cliLog('\n== 错误 ==')

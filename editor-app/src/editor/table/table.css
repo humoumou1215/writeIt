@@ -11,6 +11,10 @@
 .milkdown table:has(> colgroup) col {
   transition: width 0.35s ease;
 }
+/* 拖拽期间由 columnResizingPlugin 直接控制 px 宽度，禁止过渡动画与自动列宽重绘抢占。 */
+.milkdown table:has(.column-resize-dragging) col {
+  transition: none;
+}
 
 /* 悬浮「自动调整列宽」按钮（表右上角，hover 出现） */
 .tb-auto-width {

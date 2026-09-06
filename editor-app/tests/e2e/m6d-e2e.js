@@ -23,7 +23,19 @@ await L.waitMs(6000)
 C.check('嵌入块已物化（.ref-file-block）', (await L.q('.ref-file-block')) > 0)
 
 // 2. 在嵌入块内选中文字（待办清单第一条）
-await L.selectText('.ref-file-block-content li', '支持自动保存', 45, 145)
+await L.clickEl('.ref-file-block-content li', 0, { label: '激活嵌入编辑器' })
+await L.waitFor(() => L.vis('.embed-shared-editor .ProseMirror'), 4000)
+const selectedTodo = await js(`(() => {
+  const li = [...document.querySelectorAll('.embed-shared-editor li')].find((e) => e.textContent.includes('支持自动保存'))
+  const walker = li && document.createTreeWalker(li, NodeFilter.SHOW_TEXT)
+  let node = walker?.nextNode(); while (node && !node.textContent.includes('支持自动保存')) node = walker.nextNode()
+  if (!node) return ''
+  const start = node.textContent.indexOf('支持自动保存')
+  const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + '支持自动保存'.length)
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); document.dispatchEvent(new Event('selectionchange'))
+  return sel.toString()
+})()`)
+C.check('嵌入块内选中待办文本', selectedTodo.includes('支持自动保存'))
 await L.waitMs(800)
 
 // 3. Toolbar → 添加批注「评2」
@@ -31,7 +43,9 @@ const addBtnCount = await L.q('[data-toolbar-item="add-annotation"]')
 C.check('toolbar 含添加批注按钮', addBtnCount > 0)
 if (addBtnCount > 0) {
   await L.clickEl('[data-toolbar-item="add-annotation"]', 0, { label: '点添加批注' })
-  await L.waitMs(600)
+  const annotationOpened = await L.waitFor(() => L.vis('.annotation-input-ta'), 2000)
+  C.check('嵌入块批注输入浮窗打开', annotationOpened)
+  if (!annotationOpened) process.exit(1)
   await L.fill('.annotation-input-ta', '评2')
   const inputBox = await L.box('.annotation-input')
   C.check('批注浮窗完整在视口内（底部上翻定位）', !!inputBox && inputBox.y >= 0 && inputBox.y + inputBox.h <= 750)
@@ -46,7 +60,6 @@ if (addBtnCount > 0) {
     const fs = JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}')
     return fs.files['笔记/待办清单.md'] || ''
   })()`)
-  cliLog('[debug] 源文件内容: ' + JSON.stringify(source))
   C.check('写回：源文件含 <mark data-note', source.includes('<mark data-note='))
   C.check('写回：单引号属性 + JSON 双引号原样（评2）', /data-note='[^']*"c":"评2"/.test(source))
   C.check('写回：无 HTML 实体转义（不含 &quot;）', !source.includes('&quot;'))
@@ -78,7 +91,6 @@ if (addBtnCount > 0) {
     const content = c.querySelector('.ad-comment-content') ? c.querySelector('.ad-comment-content').textContent : ''
     return { author, content }
   })()`)
-  cliLog('[debug] 抽屉卡: ' + JSON.stringify(card))
   C.check('批注作者显示正确（我）', card && card.author === '我')
   C.check('批注内容正确（评2）', card && card.content.includes('评2'))
   C.check('内容非原始转义 JSON', card && !card.content.includes('&quot;'))

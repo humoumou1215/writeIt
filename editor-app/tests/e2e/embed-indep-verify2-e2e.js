@@ -12,7 +12,7 @@ await L.freshApp('http://localhost:5173/?backend=mock')
 
 const AP = '.editor-pane:not([style*="display: none"])'
 const ED = `${AP} .ref-file-block:not(.readonly):not(.is-collapsed) .ref-file-block-content`
-const blockTexts = () => js(`[...document.querySelectorAll('${ED}')].map(e => e.textContent || '')`)
+const blockTexts = () => js(`[...document.querySelectorAll('${ED}')].map(e => e.querySelector('.embed-shared-editor .ProseMirror')?.textContent || e.textContent || '')`)
 const diskOf = (p) => js(
   `(JSON.parse(localStorage.getItem('milkdown-note-mock-fs-v2') || '{}').files[${L.J(p)}] ?? null)`
 )

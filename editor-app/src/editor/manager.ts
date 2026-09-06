@@ -10,6 +10,7 @@ import { replaceAll, $prose } from '@milkdown/kit/utils'
 import { inlineCodeKeymap } from '@milkdown/kit/preset/commonmark'
 
 import { TextSelection, AllSelection, Plugin } from '@milkdown/kit/prose/state'
+import { wrapIn, setBlockType } from '@milkdown/kit/prose/commands'
 
 import { fs, useRealDirFs, writeFileSafely } from '../fs'
 import { contentHash } from '../git/hash'
@@ -42,7 +43,7 @@ import {
   registerDocShadow,
 } from './docstore/bridge'
 import { docStore, DocStoreConflictError, setDocStoreDispatcher } from './docstore/store'
-import { canonicalOf } from './docstore/serialize'
+import { canonicalOf, type DocPipeline } from './docstore/serialize'
 
 import {
   collectBlockSizes,
@@ -63,7 +64,7 @@ import type { Tab, ViewMode } from '../state/store'
 import { diag, diagEvent } from '../diagnostics/logger'
 // D2.5：渲染计数（markdownUpdated 节奏，探针取数）——直接依赖 monitor，避免 index↔manager 循环
 import { markEditorRender } from '../diagnostics/monitor'
-import { git, type DiffBase, isDiffEditable } from '../git'
+import { git, type DiffBase, isDiffEditable, isMockGit } from '../git'
 import { featureConfigs } from './features'
 import {
   tableEnhancePlugin,
@@ -80,8 +81,8 @@ import {
 import { validatePlugin, validateConfigCtx, clearValidationTimer } from '../validate/plugin'
 import { annotationPlugin, annotationConfigCtx } from '../annotations'
 import { initAnnotationCard, setAnnotationCardContext } from '../annotations/card'
-import { getRuntimeAnnotations, clearAnnotations } from '../annotations/service'
-import { outlinePlugin, outlineStore, clearOutline } from './outline'
+import { getRuntimeAnnotations, getPersistedAnnotations, clearAnnotations, type Annotation } from '../annotations/service'
+import { outlinePlugin, setMainOutline, setEmbedOutline, clearOutline, type OutlineItem } from './outline'
 import {
   searchHighlightPlugin,
   setSearchHighlights,
@@ -104,6 +105,31 @@ interface Instance {
 }
 
 const instances = new Map<string, Instance>()
+
+/**
+ * DocStore 的 parser/serializer 不能直接缓存某个 Milkdown ctx 里的函数。
+ * commonmark serializer 的部分 runner 会在调用时读取该 ctx 的 editorViewCtx；
+ * 首个标签关闭后，缓存函数就会指向已销毁的 ctx，随后所有嵌入投影都会报
+ * `Context "editorView" not found`。这里每次都从仍存活的主编辑器取当前 ctx。
+ */
+function livePipelineInstance(): Instance | null {
+  const active = state.activeTabId ? instances.get(state.activeTabId) : null
+  return active ?? instances.values().next().value ?? null
+}
+
+const liveDocstorePipeline: DocPipeline = {
+  parse(md) {
+    const inst = livePipelineInstance()
+    if (!inst) return null
+    return inst.crepe.editor.action((ctx) => ctx.get(parserCtx)(md))
+  },
+  serialize(doc) {
+    const inst = livePipelineInstance()
+    if (!inst) throw new Error('DocStore 序列化失败：没有存活的编辑器上下文')
+    return inst.crepe.editor.action((ctx) => ctx.get(serializerCtx)(doc))
+  },
+}
+
 /** 同一标签的异步模型投影必须串行，避免旧刷新晚于新刷新完成而回退视图。 */
 const tabRefreshQueues = new Map<string, Promise<void>>()
 /** 块编辑提交不能 fire-and-forget：保存/关闭前必须等待本标签已发起的提交。 */
@@ -771,8 +797,24 @@ export async function openGitDiff(path: string, base: DiffBase): Promise<void> {
  *  优先 DocStore 模型快照（有未保存编辑也正确）；模型未加载 → 回退 readWorktreeFile（行为等价）。
  *  注意：staged/range 基准的 new 侧是 index blob / commit 内容，与工作区模型无关 → 不走这里。 */
 async function newWorktreeContent(path: string): Promise<string> {
-  const snap = docStore.snapshot(path)
-  if (snap && snap.canonical != null) return snap.canonical
+  // 已打开标签可能含未保存编辑，模型内容优先于 Git；未打开时直接取 Git
+  // worktree，避免通用 mock FS 的基线快照遮蔽真实工作区改动。
+  // 浏览器 mock 后端的 worktree 是独立于编辑器快照的演示数据；若优先读取已开
+  // 标签，会把 HEAD 内容误当工作区内容，导致会议纪要/需求表 diff 偶发消失。
+  // Tauri/dev 下则保留未保存编辑优先语义。
+  if (!isMockGit()) {
+    const openTabContent = getTabMarkdownByPath(path)
+    if (openTabContent != null) return openTabContent
+    const snap = docStore.snapshot(path)
+    if (snap && snap.canonical != null && state.tabs.some((t) => t.path === path)) return snap.canonical
+  }
+  // Git diff 直接打开文件时可能尚未建立编辑器模型；优先读取 Git worktree，
+  // 避免 mock/tauri 下通用 FS 快照与 Git 工作区版本不一致。
+  try {
+    return await git.showFile(path, 'WORKTREE')
+  } catch {
+    /* 非 Git/后端不支持 WORKTREE 时回退通用 FS */
+  }
   return readWorktreeFile(path)
 }
 
@@ -1645,6 +1687,27 @@ export function getTabMarkdownByPath(path: string): string | null {
     view.dispatch(tr.scrollIntoView())
   })
 }
+;(window as unknown as { __editorSelectCodeBlock?: unknown }).__editorSelectCodeBlock = () => {
+  const inst = state.activeTabId ? instances.get(state.activeTabId) : null
+  if (!inst) return false
+  let selected = false
+  inst.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    let pos = -1
+    let size = 0
+    view.state.doc.descendants((node, p) => {
+      if (node.type.name === 'code_block' && node.attrs.language === 'mermaid') {
+        pos = p; size = node.nodeSize; return false
+      }
+      return true
+    })
+    if (pos < 0) return
+    // 选取代码块正文；findCodeBlockInSelection 会通过端点父节点识别其所属 code_block。
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 1, pos + Math.max(2, size - 1))))
+    view.focus(); selected = true
+  })
+  return selected
+}
 
 // M2：光标处插入文本（调试/CLI 模拟块外输入；真实输入路径走 dispatchTransaction 拦截器）
 ;(window as unknown as { __editorInsertTextAtCursor?: unknown }).__editorInsertTextAtCursor = (text: string) => {
@@ -2119,6 +2182,7 @@ export async function openTab(path: string, contentOverride?: string, kind: 'edi
   const prevId = state.activeTabId
   // 打开新标签前保存旧标签滚动（DOM 未变，scrollTop 有效）
   if (prevId) saveTabScroll(prevId)
+  if (prevId && activeEmbedProjection?.tabId === prevId) leaveActiveEmbedProjection()
 
   diagEvent('tab:open', { target: path })
   diag('info', 'tab', `打开 ${path}`)
@@ -2144,6 +2208,7 @@ export function activateTab(id: string) {
   // 切换前保存旧标签的滚动位置（DOM 尚未变化，scrollTop 仍有效；display:none 会把它清 0）
   const prevId = state.activeTabId
   if (prevId && prevId !== id) saveTabScroll(prevId)
+  if (prevId && prevId !== id && activeEmbedProjection?.tabId === prevId) leaveActiveEmbedProjection()
   state.activeTabId = id
   if (prevId && prevId !== id) {
     const t = state.tabs.find((x) => x.id === id)
@@ -2274,7 +2339,8 @@ function restoreDiffScroll(tabId: string, saved: number): void {
 // ---------- M16：顶部栏槽位（Crepe topbar 横贯整行，大纲/正文都在其下） ----------
 let topbarSlot: HTMLElement | null = null
 /** 当前在槽位中的 topbar（来自某活动标签的编辑器） */
-let slotBar: { inst: Instance; el: HTMLElement; host: HTMLElement } | null = null
+type TopbarOwner = { topbar: { el: HTMLElement; parent: HTMLElement; next: Node | null } | null }
+let slotBar: { owner: TopbarOwner; el: HTMLElement; host: HTMLElement; hideOnRestore: boolean } | null = null
 
 // ---------- 原生 topbar 按钮：大纲收纳开关（注入 crepe top-bar-inner，成为真正的 top-bar-item） ----------
 /** 在 topbar 的 .top-bar-inner 最前面注入原生 `.top-bar-item` 按钮（存量样式/悬停/active 自动生效） */
@@ -2310,6 +2376,72 @@ function toggleOutlineFromTopbar(): void {
   saveSettings()
 }
 
+/** 将主顶栏常用格式动作路由到当前嵌入投影，绝不让其误写宿主文档。 */
+function runProjectionTopbarAction(projection: EmbedProjection, index: number): void {
+  const view = projection.view
+  const { state } = view
+  const markName = ({ 1: 'strong', 2: 'emphasis', 3: 'strikethrough', 4: 'inline_code' } as Record<number, string>)[index]
+  if (markName) {
+    const type = state.schema.marks[markName]
+    if (!type) return
+    const { from, to, empty, $from } = state.selection
+    const marks = state.storedMarks ?? $from.marks()
+    const active = empty ? !!type.isInSet(marks) : state.doc.rangeHasMark(from, to, type)
+    view.dispatch(empty
+      ? (active ? state.tr.removeStoredMark(type) : state.tr.addStoredMark(type.create()))
+      : (active ? state.tr.removeMark(from, to, type) : state.tr.addMark(from, to, type.create())))
+    return
+  }
+  if (index === 10) {
+    const table = state.schema.nodes.table?.createAndFill()
+    if (table) view.dispatch(state.tr.replaceSelectionWith(table))
+    return
+  }
+  if (index === 14) {
+    const hr = state.schema.nodes.hr
+    if (hr) view.dispatch(state.tr.replaceSelectionWith(hr.create()))
+    return
+  }
+  const nodeName = ({ 5: 'bullet_list', 6: 'ordered_list', 7: 'list_item', 11: 'code_block', 12: 'code_block', 13: 'blockquote' } as Record<number, string>)[index]
+  const type = nodeName ? state.schema.nodes[nodeName] : null
+  if (!type) return
+  if (index === 5 || index === 6 || index === 7 || index === 13) wrapIn(type)(state, view.dispatch)
+  else setBlockType(type, index === 12 ? { language: 'LaTeX' } : undefined)(state, view.dispatch)
+}
+
+function runProjectionHeading(projection: EmbedProjection, label: string): void {
+  const match = /Heading (\d)/.exec(label)
+  const type = match ? projection.view.state.schema.nodes.heading : projection.view.state.schema.nodes.paragraph
+  if (!type) return
+  setBlockType(type, match ? { level: Number(match[1]) } : undefined)(projection.view.state, projection.view.dispatch)
+}
+
+/** 捕获阶段拦截会改文档的主顶栏按钮；下拉展开本身仍由 Crepe 原逻辑处理。 */
+function ensureProjectionTopbarProxy(bar: HTMLElement): void {
+  if (bar.dataset.embedProxyBound) return
+  bar.dataset.embedProxyBound = ''
+  bar.addEventListener('pointerdown', (event) => {
+    const projection = activeEmbedProjection
+    if (!projection) return
+    const target = event.target as HTMLElement
+    const option = target.closest<HTMLElement>('.top-bar-heading-option')
+    if (option) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      runProjectionHeading(projection, option.textContent ?? '')
+      return
+    }
+    const button = target.closest<HTMLElement>('.top-bar-item')
+    if (!button) return
+    const index = [...bar.querySelectorAll<HTMLElement>('.top-bar-item')].indexOf(button)
+    // 0 是 WriteIt 大纲开关，继续走其原始监听器。
+    if (index <= 0) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    runProjectionTopbarAction(projection, index)
+  }, true)
+}
+
 // 其他入口（面板边缘按钮等）改了 outlineOpen → 同步 topbar 按钮状态
 watch(
   () => settings.outlineOpen,
@@ -2334,37 +2466,46 @@ export function syncActiveTopbar(): void {
     const prev = slotBar
     slotBar = null
     prev.host.remove()
-    if (prev.inst.topbar?.parent) {
-      prev.inst.topbar.parent.insertBefore(prev.el, prev.inst.topbar.next)
+    if (prev.owner.topbar?.parent) {
+      prev.owner.topbar.parent.insertBefore(prev.el, prev.owner.topbar.next)
+      prev.el.style.display = prev.hideOnRestore ? 'none' : ''
     }
   }
-  // ② 当前活动标签的 topbar 进槽位（仅所见即所得模式）
+  // ② 当前活动标签或正在编辑的嵌入投影的 topbar 进槽位（仅所见即所得模式）
   const tabId = state.activeTabId
   const tab = tabId ? state.tabs.find((t) => t.id === tabId) : null
   const inst = tabId ? instances.get(tabId) : undefined
-  if (!tab || !inst?.topbar?.parent || tab.viewMode !== 'wysiwyg') {
+  // 顶栏 Vue 组件只能在主 Crepe 中稳定挂载；嵌入激活时保留该可见顶栏，
+  // 由 projection proxy 把格式命令定向到当前投影 editor。
+  const projection = activeEmbedProjection?.tabId === tabId ? activeEmbedProjection : null
+  const owner: TopbarOwner | null = inst ?? null
+  const bar = owner?.topbar
+  if (!tab || !bar?.parent || tab.viewMode !== 'wysiwyg') {
     slot.style.display = 'none'
     return
   }
   // 用带 milkdown 类的宿主包裹：让 crepe 主题的 `.milkdown ...` 后代选择器与 CSS 变量继续生效
   const host = document.createElement('div')
   host.className = 'ws-topbar-host milkdown'
-  host.appendChild(inst.topbar.el)
+  bar.el.style.display = ''
+  host.appendChild(bar.el)
   slot.style.display = 'flex'
   slot.appendChild(host)
-  slotBar = { inst, el: inst.topbar.el, host }
+  slotBar = { owner, el: bar.el, host, hideOnRestore: false }
   // ③ 原生注入大纲收纳按钮（作为 topbar 第一个 .top-bar-item）
-  ensureOutlineToggle(inst.topbar.el)
+  ensureOutlineToggle(bar.el)
+  ensureProjectionTopbarProxy(bar.el)
 }
 
 /** 销毁前把仍在槽位中的 topbar 归还（避免随容器移除而丢失） */
 function releaseSlotBar(tabId: string): void {
-  if (slotBar && slotBar.inst && instances.get(tabId) === slotBar.inst) {
+  if (slotBar && instances.get(tabId) === slotBar.owner) {
     const prev = slotBar
     slotBar = null
     prev.host.remove()
-    if (prev.inst.topbar?.parent) {
-      prev.inst.topbar.parent.insertBefore(prev.el, prev.inst.topbar.next)
+    if (prev.owner.topbar?.parent) {
+      prev.owner.topbar.parent.insertBefore(prev.el, prev.owner.topbar.next)
+      prev.el.style.display = prev.hideOnRestore ? 'none' : ''
     }
   }
 }
@@ -2409,148 +2550,541 @@ const refsFooterTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // 每个投影容器只接受最后一次刷新结果，避免旧的异步 load 在新内容之后回写。
 const projectionGenerations = new WeakMap<HTMLElement, number>()
 
-/** 全局唯一的活动嵌入编辑器：一个 Crepe/EditorView，在不同投影卡之间复用。 */
-let activeEmbedCrepe: Crepe | null = null
-let activeEmbedRoot: HTMLElement | null = null
-let activeEmbedBody: HTMLElement | null = null
-let activeEmbedPath: string | null = null
-let activeEmbedCfg: RefConfig | null = null
-let activeEmbedView: import('prosemirror-view').EditorView | null = null
-let activeEmbedCreating: Promise<void> | null = null
-let pendingEmbedInput: { body: HTMLElement; reqPath: string; hostPath: string; cfg: RefConfig; view: import('prosemirror-view').EditorView; text: string; timer: ReturnType<typeof setTimeout> | null } | null = null
-
-function extractInsertedText(before: string, after: string): string {
-  let left = 0
-  while (left < before.length && left < after.length && before[left] === after[left]) left++
-  let right = 0
-  while (right < before.length - left && right < after.length - left && before[before.length - 1 - right] === after[after.length - 1 - right]) right++
-  return after.slice(left, after.length - right)
+/**
+ * 嵌入投影统一使用 Crepe 渲染。
+ *
+ * 旧实现的只读态是 DOMSerializer，而编辑态是另一棵 Crepe 树：表格 NodeView、
+ * Mermaid 预览和批注 mark 在两套树中的表现不同，点击时必然出现布局跳变。现在每个
+ * 投影卡片保留自己的 Crepe 实例，初始只读，点击后在原地切换 editable，DOM/CSS/
+ * ProseMirror 文档坐标都不变。嵌套 file_block 通过同一回调递归创建投影实例。
+ */
+interface EmbedProjection {
+  id: string
+  tabId: string
+  realPath: string
+  hostPath: string
+  chain: string[]
+  root: HTMLDivElement
+  content: HTMLElement
+  crepe: Crepe
+  view: import('prosemirror-view').EditorView
+  readonly: boolean
+  active: boolean
+  snapshot: boolean
+  /** 投影自己的 Crepe 顶栏：激活时移动到工作区全局顶栏槽位。 */
+  topbar: { el: HTMLElement; parent: HTMLElement; next: Node | null } | null
 }
 
-async function ensureActiveEmbedEditor(
-  path: string,
-  body: HTMLElement,
+interface EmbedProjectionContext {
+  root: HTMLElement
+  tabId: string
+  hostPath: string
+  realPath: string
+  chain: string[]
+  readonly: boolean
+  cfg: RefConfig
+}
+
+const embedProjections = new Set<EmbedProjection>()
+const embedProjectionByContent = new WeakMap<HTMLElement, EmbedProjection>()
+const embedProjectionContextByRoot = new WeakMap<HTMLElement, EmbedProjectionContext>()
+const embedProjectionPending = new WeakMap<HTMLElement, { realPath: string; promise: Promise<EmbedProjection | null> }>()
+// Mermaid/CodeMirror/Table NodeView 的初始化都可能触发较重的同步布局。
+// 嵌入树不能在同一帧并发创建几十棵 Crepe，否则 README 这类菱形引用会
+// 把主线程占满。按队列逐棵创建，宿主先显示，后续嵌套卡片再自然补齐。
+let embedProjectionCreateQueue: Promise<void> = Promise.resolve()
+let activeEmbedProjection: EmbedProjection | null = null
+let embedProjectionSeq = 0
+
+function enqueueEmbedProjection<T>(job: () => Promise<T>): Promise<T> {
+  const run = embedProjectionCreateQueue.then(job, job)
+  embedProjectionCreateQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
+function projectionContextOf(
+  content: HTMLElement,
+  view?: import('prosemirror-view').EditorView,
+): EmbedProjectionContext | null {
+  // NodeView 构造时自己的 DOM 仍可能处于离线 DocumentFragment，content.closest()
+  // 因而看不到外层投影 root。EditorView.dom 已挂在该 root 下，必须作为主兜底；
+  // 否则父链会退化成 [宿主]，中间文件自嵌时环/深度治理全部失效。
+  const roots = [
+    content.closest('.ref-embedded-root') as HTMLElement | null,
+    view?.dom.closest('.ref-embedded-root') as HTMLElement | null,
+  ].filter((root, index, all): root is HTMLElement => Boolean(root) && all.indexOf(root) === index)
+  for (const root of roots) {
+    const mapped = embedProjectionContextByRoot.get(root)
+    if (mapped) return mapped
+  }
+  // Crepe 创建完成后可按精确 EditorView 命中；DOM contains 仅作末级兜底。
+  const owner = [...embedProjections].find((p) =>
+    p.view === view || roots.some((root) => p.root === root || p.root.contains(root)) || p.root.contains(content)
+  )
+  return owner
+    ? {
+        root: owner.root,
+        tabId: owner.tabId,
+        hostPath: owner.realPath,
+        realPath: owner.realPath,
+        chain: owner.chain,
+        readonly: owner.snapshot || owner.readonly,
+        cfg: owner.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key)),
+      }
+    : null
+}
+
+function editorViewMatches(editor: Crepe, view: import('prosemirror-view').EditorView): boolean {
+  try {
+    return editor.action((ctx) => ctx.get(editorViewCtx) === view)
+  } catch {
+    return false
+  }
+}
+
+function hostEditorOf(view: import('prosemirror-view').EditorView): { tabId: string; inst: Instance } | null {
+  const insideProjection = Boolean(view.dom.closest('.ref-embedded-root'))
+  for (const [tabId, inst] of instances) {
+    // inst.el 也包含全部嵌套投影 DOM，不能把 contains() 单独当作宿主身份；
+    // 否则投影创建窗口内会错误重置 chain。存活 EditorView 优先精确匹配。
+    if (editorViewMatches(inst.crepe, view) || (!insideProjection && inst.el.contains(view.dom))) return { tabId, inst }
+  }
+  return null
+}
+
+function projectionEditorOf(view: import('prosemirror-view').EditorView): EmbedProjection | null {
+  for (const p of embedProjections) if (p.view === view) return p
+  return null
+}
+
+function setProjectionReadonly(projection: EmbedProjection, readonly: boolean): void {
+  projection.readonly = readonly
+  projection.crepe.setReadonly(readonly)
+  // Crepe 的 setReadonly 仅 setProps，不会触发 TopBar 的 plugin update。若强行派发
+  // 空事务，TopBar 会按只读态把 Vue 按钮树卸载，之后激活时只剩空容器。保留已创建
+  // 的按钮树，仅切换容器可见性；真实编辑事务仍会正常刷新 active 状态。
+  if (projection.topbar) {
+    projection.topbar.el.style.display = readonly ? 'none' : ''
+    if (!readonly) projection.topbar.el.style.visibility = ''
+  }
+  projection.content.classList.toggle('is-active-editor', !readonly)
+  if (readonly) delete projection.content.dataset.activeEditor
+  else projection.content.dataset.activeEditor = ''
+}
+
+function restoreMainAnnotationContext(tabId: string): void {
+  const inst = instances.get(tabId)
+  if (inst) setAnnotationCardContext(tabId, inst.crepe.editor)
+}
+
+function leaveActiveEmbedProjection(): void {
+  const current = activeEmbedProjection
+  if (!current) return
+  current.active = false
+  setProjectionReadonly(current, true)
+  activeEmbedProjection = null
+  restoreMainAnnotationContext(current.tabId)
+  syncActiveTopbar()
+}
+
+function enterEmbedProjection(projection: EmbedProjection, event?: MouseEvent): void {
+  if (projection.snapshot) return
+  if (activeEmbedProjection && activeEmbedProjection !== projection) leaveActiveEmbedProjection()
+  activeEmbedProjection = projection
+  projection.active = true
+  setProjectionReadonly(projection, false)
+  setAnnotationCardContext(`embed:${projection.id}`, projection.crepe.editor)
+  syncActiveTopbar()
+  requestAnimationFrame(syncActiveTopbar)
+  const pm = projection.root.querySelector<HTMLElement>('.ProseMirror[contenteditable="true"]')
+  if (event && pm) {
+    const pos = projection.view.posAtCoords({ left: event.clientX, top: event.clientY })
+    if (pos) {
+      try {
+        projection.view.dispatch(projection.view.state.tr.setSelection(
+          TextSelection.near(projection.view.state.doc.resolve(pos.pos))
+        ))
+      } catch {
+        /* 坐标落在表格手柄/图表 SVG 上时，保留 PM 当前选区 */
+      }
+    }
+    projection.view.focus()
+  } else {
+    pm?.focus({ preventScroll: true })
+  }
+}
+
+function projectionMarkdown(projection: EmbedProjection): string {
+  const md = projection.crepe.getMarkdown()
+  return pipelineOfCache() ? canonicalOf(pipelineOfCache()!, md) : md
+}
+
+function syncProjectionFromModel(projection: EmbedProjection, canonical: string): void {
+  if (projection.active || projection.snapshot) return
+  projection.crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    const parser = ctx.get(parserCtx)
+    const next = parser(canonical)
+    if (next) {
+      view.dispatch(view.state.tr
+        .replaceWith(0, view.state.doc.content.size, next.content)
+        .setMeta('docstoreExternal', true))
+    }
+  })
+}
+
+function bindProjectionInteractions(projection: EmbedProjection): void {
+  projection.root.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement | null
+    const nearestRoot = target?.closest('.ref-embedded-root')
+    if (nearestRoot !== projection.root) return
+    if (target?.closest('mark.annotation, mark[data-a], [data-note]')) {
+      // 批注卡片的事件处理器使用全局编辑器上下文；只读投影也必须把
+      // 上下文切到自己的 Crepe，否则点击卡片会把回复写进宿主文档。
+      setAnnotationCardContext(`embed:${projection.id}`, projection.crepe.editor)
+    }
+    if (!projection.readonly || projection.snapshot) return
+    event.preventDefault()
+    event.stopPropagation()
+    enterEmbedProjection(projection, event)
+  }, true)
+  projection.root.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || activeEmbedProjection !== projection) return
+    event.preventDefault()
+    leaveActiveEmbedProjection()
+  }, true)
+  projection.root.addEventListener('input', () => {
+    if (!projection.readonly) docStore.markUserDirty(projection.realPath)
+  })
+}
+
+async function createEmbedProjection(
+  realPath: string,
+  content: HTMLElement,
   cfg: RefConfig,
-  hostView: import('prosemirror-view').EditorView,
+  context: EmbedProjectionContext,
+  canonical: string,
+): Promise<EmbedProjection | null> {
+  const id = `projection-${++embedProjectionSeq}`
+  const root = document.createElement('div')
+  root.className = 'embed-shared-editor ref-embedded-root'
+  root.dataset.embedReadonly = context.readonly ? '1' : '0'
+  root.dataset.embedPath = realPath
+  root.dataset.embedChain = JSON.stringify(context.chain)
+  content.replaceChildren(root)
+  embedProjectionContextByRoot.set(root, context)
+
+  const projectionTabId = `embed:${id}`
+  const projectionCfg: RefConfig = {
+    ...cfg,
+    hostPath: realPath,
+    tabId: projectionTabId,
+  }
+  const crepe = new Crepe({
+    root,
+    defaultValue: canonical,
+    // 顶栏只保留主编辑器一份；激活投影时由全局顶栏代理命令到该投影，
+    // 避免 Crepe 在只读投影中挂出空的 TopBar Vue 容器。
+    features: { [CrepeFeature.TopBar]: false },
+    featureConfigs: featureConfigs(),
+  })
+  crepe.editor.config((ctx) => {
+    ctx.set(refConfigCtx.key, projectionCfg)
+    ctx.set(annotationConfigCtx.key, { tabId: projectionTabId, getRuntimeAnnotations })
+    ctx.set(tableConfigCtx.key, buildTableConfig(settings.shortcuts['tableAddRowBelow']))
+    registerRefStringify(ctx)
+  })
+  crepe.editor.use(refPlugin)
+  crepe.editor.use(annotationPlugin)
+  crepe.editor.use(tableEnhancePlugin)
+  crepe.editor.use(outlinePlugin((snap) => {
+    // 给投影标题留 DOM 身份，供大纲滚动定位；投影坐标不能交给宿主 view.nodeDOM。
+    try {
+      crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        for (const item of snap.items) {
+          const el = view.nodeDOM(Math.max(item.pos - 1, 0)) as HTMLElement | null
+          if (el) el.dataset.writeitOutlinePos = String(item.pos)
+        }
+      })
+    } catch {
+      /* 初始化早于 editor ready 时，下次事务会补标记 */
+    }
+    const hostPos = Number(content.closest<HTMLElement>('.ref-file-block')?.dataset.outlineHostPos)
+    setEmbedOutline(context.tabId, id, Number.isFinite(hostPos) ? hostPos : Number.MAX_SAFE_INTEGER, snap)
+  }))
+  try {
+    await crepe.create()
+    // TopBar 的 Vue 首次渲染在 create 后的微任务中完成；只读切换延后到下一帧，
+    // 避免它从未构建按钮，同时不阻塞多个嵌入投影的创建队列。
+    const view = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
+    view.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'heading') {
+        const el = view.nodeDOM(pos) as HTMLElement | null
+        if (el) el.dataset.writeitOutlinePos = String(pos + 1)
+      }
+      return true
+    })
+    const projection: EmbedProjection = {
+      id,
+      tabId: context.tabId,
+      realPath,
+      hostPath: context.hostPath,
+      chain: context.chain,
+      root,
+      content,
+      crepe,
+      view,
+      readonly: true,
+      active: false,
+      snapshot: context.readonly,
+      topbar: null,
+    }
+    const topbarEl = root.querySelector('.milkdown-top-bar') as HTMLElement | null
+    projection.topbar = topbarEl?.parentElement
+      ? { el: topbarEl, parent: topbarEl.parentElement, next: topbarEl.nextSibling }
+      : null
+    embedProjections.add(projection)
+    embedProjectionByContent.set(content, projection)
+    bindProjectionInteractions(projection)
+    const dispatch = view.dispatch.bind(view)
+    view.dispatch = (tr) => {
+      dispatch(tr)
+      if (!tr.docChanged || tr.getMeta('docstoreExternal') || projection.readonly) return
+      const current = docStore.getModel(realPath)
+      const stable = projectionMarkdown(projection)
+      try {
+        docStore.replaceFromCanonical(realPath, stable, `embed:${id}`, current?.rev)
+        docStore.markUserDirty(realPath)
+      } catch (e) {
+        if (e instanceof DocStoreConflictError) projectionCfg.toast(`嵌入源「${realPath}」发生外部变化，未覆盖新内容`, 'error')
+        else console.warn('[docstore] embed projection dispatch failed:', e)
+      }
+    }
+    setProjectionReadonly(projection, true)
+    return projection
+  } catch (e) {
+    console.warn('[embed] 投影 Crepe 创建失败:', realPath, e)
+    root.remove()
+    await crepe.destroy().catch(() => undefined)
+    return null
+  }
+}
+
+async function renderProjectionEditor(
+  realPath: string,
+  content: HTMLElement,
+  view: import('prosemirror-view').EditorView,
+  cfg: RefConfig,
+  context: EmbedProjectionContext,
+  generation: number,
 ): Promise<void> {
-  if (activeEmbedBody === body && activeEmbedCrepe) return
-  if (activeEmbedBody) {
-    const oldBody = activeEmbedBody
-    const oldPath = activeEmbedPath
-    activeEmbedRoot?.remove()
-    oldBody.classList.remove('is-active-editor')
-    activeEmbedBody = null
-    if (oldPath) {
-      const gen = (projectionGenerations.get(oldBody) ?? 0) + 1
-      projectionGenerations.set(oldBody, gen)
-      void renderStaticProjection(oldPath, oldBody, hostView, cfg, [oldPath], gen)
+  if (projectionGenerations.get(content) !== generation) return
+  if (!content.isConnected) return
+  const existing = embedProjectionByContent.get(content)
+  if (existing && existing.realPath === realPath) {
+    if (!existing.snapshot && !existing.active) {
+      const model = docStore.getModel(realPath)
+      const canonical = model?.doc && pipelineOfCache()
+        ? pipelineOfCache()!.serialize(model.doc)
+        : docStore.snapshot(realPath)?.canonical
+      if (canonical != null) syncProjectionFromModel(existing, canonical)
+    }
+    return
+  }
+  const pending = embedProjectionPending.get(content)
+  if (pending?.realPath === realPath) {
+    await pending.promise
+    // 同一节点在 Crepe 创建期间可能被模型刷新再次触发 render。旧一轮
+    // 若因 generation 过期而自清理，当前这一轮必须接着补建，不能留下空卡。
+    if (projectionGenerations.get(content) === generation && !embedProjectionByContent.get(content)) {
+      await renderProjectionEditor(realPath, content, view, cfg, context, generation)
+    }
+    return
+  }
+  if (existing) {
+    await destroyEmbedProjection(existing)
+  }
+  const promise = (async () => {
+    let model = docStore.getModel(realPath)
+    if (!model?.doc) {
+      await docStore.load(realPath)
+      model = docStore.getModel(realPath)
+    }
+    if (projectionGenerations.get(content) !== generation) return null
+    let canonical = model?.doc && pipelineOfCache()
+      ? pipelineOfCache()!.serialize(model.doc)
+      : docStore.snapshot(realPath)?.canonical ?? null
+    // DocStore 可能在主编辑器的解析管线完成前先创建了空模型；投影不能
+    // 把这个降级空模型当成真实正文，直接从当前 RefConfig 读取一次原文。
+    if (!canonical) {
+      const raw = await cfg.fs.readFile(realPath)
+      canonical = pipelineOfCache() ? canonicalOf(pipelineOfCache()!, raw) : raw
+    }
+    const childContext: EmbedProjectionContext = {
+      root: content,
+      tabId: context.tabId,
+      hostPath: realPath,
+      realPath,
+      chain: [...context.chain, realPath],
+      readonly: context.readonly,
+      cfg,
+    }
+    const projection = await enqueueEmbedProjection(() => {
+      // 标签关闭/replaceAll 后，旧任务可能仍排在全局创建队列里。执行前再次确认，
+      // 避免在已脱离文档的容器中创建 Crepe，并阻塞新标签的有效投影。
+      if (projectionGenerations.get(content) !== generation || !content.isConnected) return Promise.resolve(null)
+      return createEmbedProjection(realPath, content, cfg, childContext, canonical)
+    })
+    if (!projection) return null
+    if (projectionGenerations.get(content) !== generation) {
+      await destroyEmbedProjection(projection)
+      return null
+    }
+    content.dataset.embedRealPath = realPath
+    if (!context.readonly) content.dataset.embedInputBound = ''
+    notifyEditorMounted(context.tabId)
+    return projection
+  })()
+  embedProjectionPending.set(content, { realPath, promise })
+  try {
+    await promise
+  } finally {
+    if (embedProjectionPending.get(content)?.promise === promise) embedProjectionPending.delete(content)
+  }
+  void view
+}
+
+function renderProjectionCollapse(content: HTMLElement, path: string, collapsed: { reason: 'cycle' | 'depth'; chain: string[] }): void {
+  const card = content.closest<HTMLElement>('.ref-file-block')
+  if (card) {
+    card.classList.add('is-collapsed')
+    card.dataset.collapsed = ''
+    card.dataset.projectionCollapsed = ''
+    card.dataset.chain = collapsed.chain.join('|')
+  }
+  content.replaceChildren()
+  const hint = document.createElement('div')
+  hint.className = 'ref-file-block-collapsed'
+  const line = document.createElement('div')
+  line.className = 'ref-hint-line'
+  line.textContent = collapsed.reason === 'cycle'
+    ? `↻ 循环引用：${path} 已在上级层级出现`
+    : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
+  hint.append(line)
+  const chain = document.createElement('div')
+  chain.className = 'ref-hint-chain'
+  for (const item of collapsed.chain) {
+    if (chain.childNodes.length) chain.append(' › ')
+    const a = document.createElement('a')
+    a.className = 'ref-file'
+    a.dataset.path = item
+    a.textContent = item
+    chain.append(a)
+  }
+  hint.append(chain)
+  content.append(hint)
+}
+
+/** 各投影的批注暴露给抽屉，保证只读嵌入也像正文一样可查看和定位。 */
+export interface EmbedAnnotation extends Annotation {
+  editor: import('@milkdown/kit/core').Editor
+  root: HTMLElement
+  projectionId: string
+  sourcePath: string
+}
+
+export function getEmbedAnnotations(tabId: string): EmbedAnnotation[] {
+  const out: EmbedAnnotation[] = []
+  const seen = new Set<string>()
+  for (const projection of embedProjections) {
+    if (projection.tabId !== tabId || !projection.root.isConnected) continue
+    let list: Annotation[] = []
+    try {
+      list = projection.crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx)
+        return getPersistedAnnotations(view.state.doc)
+      })
+    } catch {
+      continue
+    }
+    for (const annotation of list) {
+      if (seen.has(annotation.id)) continue
+      seen.add(annotation.id)
+      out.push({ ...annotation, editor: projection.crepe.editor, root: projection.root, projectionId: projection.id, sourcePath: projection.realPath })
     }
   }
-  // 已加载模型必须走完全同步路径；`a ?? await b` 即使 a 有值也会
-  // 产生一次 microtask，让点击后的首个 Input.insertText 抢在编辑器挂载前执行。
-  let model = docStore.getModel(path)
-  if (!model) model = await docStore.load(path)
-  const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : (docStore.snapshot(path)?.canonical ?? '')
-  activeEmbedPath = path
-  if (activeEmbedCfg) Object.assign(activeEmbedCfg, { ...cfg, hostPath: path, tabId: `embed:${path}` })
-  else activeEmbedCfg = { ...cfg, hostPath: path, tabId: `embed:${path}` }
-  activeEmbedBody = body
-  body.classList.add('is-active-editor')
-  body.dataset.activeEditor = ''
-  if (!activeEmbedCrepe) {
-    const root = document.createElement('div')
-    root.className = 'embed-shared-editor'
-    activeEmbedRoot = root
-    activeEmbedCreating = (async () => {
-      const crepe = new Crepe({ root, defaultValue: canonical, features: { [CrepeFeature.TopBar]: false }, featureConfigs: featureConfigs() })
-      crepe.editor.config((ctx) => {
-        ctx.set(refConfigCtx.key, activeEmbedCfg!)
-        registerRefStringify(ctx)
-      })
-      crepe.editor.use(refPlugin)
-      await crepe.create()
-      activeEmbedCrepe = crepe
-      activeEmbedView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
-      // file_block NodeViews may have been constructed while Crepe.create() was
-      // still completing; now that the shared view is identifiable, render their
-      // recursive projections once more with the active-editor context.
-      refreshFileBlockProjections()
-      const view = activeEmbedView
-      const dispatch = view.dispatch.bind(view)
-      view.dispatch = (tr) => {
-        dispatch(tr)
-        if (!tr.docChanged || tr.getMeta('docstoreExternal') || !activeEmbedPath || !activeEmbedCrepe) return
-        const current = docStore.getModel(activeEmbedPath)
-        const md = activeEmbedCrepe.getMarkdown()
-        const stable = pipelineOfCache() ? canonicalOf(pipelineOfCache()!, md) : md
-        try {
-          docStore.replaceFromCanonical(activeEmbedPath, stable, 'embed-shared', current?.rev)
-          docStore.markUserDirty(activeEmbedPath)
-        } catch (e) {
-          if (e instanceof DocStoreConflictError) activeEmbedCfg?.toast(`嵌入源「${activeEmbedPath}」发生外部变化，未覆盖新内容`, 'error')
-          else console.warn('[docstore] shared embed dispatch failed:', e)
-        }
-      }
-    })()
-    await activeEmbedCreating
-    activeEmbedCreating = null
-  } else if (activeEmbedCreating) {
-    await activeEmbedCreating
-    activeEmbedCreating = null
-  } else {
-    activeEmbedCrepe.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      const parser = ctx.get(parserCtx)
-      const next = parser(canonical)
-      if (next) view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, next.content).setMeta('docstoreExternal', true))
-    })
-  }
-  if (activeEmbedRoot && activeEmbedRoot.parentElement !== body) body.replaceChildren(activeEmbedRoot)
-  activeEmbedView?.focus()
-  // EditorView 在 root 从预热容器移动到真实卡片后，focus() 偶尔只把焦点
-  // 退回 body；直接聚焦其 contenteditable DOM，保证紧随点击的输入有目标。
-  activeEmbedRoot?.querySelector<HTMLElement>('.ProseMirror[contenteditable="true"]')?.focus({ preventScroll: true })
-  void hostView
+  return out
 }
 
-function leaveActiveEmbedEditor(): void {
-  activeEmbedRoot?.remove()
-  activeEmbedBody?.classList.remove('is-active-editor')
-  if (activeEmbedBody) delete activeEmbedBody.dataset.activeEditor
-  activeEmbedBody = null
-  activeEmbedPath = null
-  // Crepe 仍存活时必须保留其 ctx 配置对象和 EditorView；后续复用需要
-  // 原对象做 in-place 更新并立即 focus。只有 dispose 才真正清空。
-}
-
-async function disposeActiveEmbedEditor(): Promise<void> {
-  leaveActiveEmbedEditor()
-  const crepe = activeEmbedCrepe
-  activeEmbedCrepe = null
-  activeEmbedRoot = null
-  activeEmbedCreating = null
-  activeEmbedCfg = null
-  activeEmbedView = null
-  if (crepe) await crepe.destroy().catch(() => undefined)
-}
-
-/** 首次出现可编辑嵌入时后台创建共享编辑器，避免用户点击后输入落在创建窗口内。 */
-async function prewarmActiveEmbedEditor(
-  path: string,
-  cfg: RefConfig,
-  hostView: import('prosemirror-view').EditorView,
-): Promise<void> {
-  if (activeEmbedCrepe || activeEmbedCreating) return
-  const warmBody = document.createElement('div')
-  warmBody.className = 'embed-shared-editor-prewarm'
-  warmBody.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none'
-  document.body.append(warmBody)
+export function locateEmbedAnnotation(projectionId: string, pos: number): void {
+  const projection = [...embedProjections].find((p) => p.id === projectionId)
+  if (!projection) return
   try {
-    await ensureActiveEmbedEditor(path, warmBody, cfg, hostView)
-    // 保留 Crepe 实例，移除预热挂载点；真正点击时会同步复用它。
-    leaveActiveEmbedEditor()
-  } finally {
-    warmBody.remove()
+    projection.crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const dom = view.domAtPos(Math.min(pos, view.state.doc.content.size))
+      const target = (dom.node as HTMLElement)?.parentElement ?? projection.root
+      scrollEmbedTarget(projection, target)
+    })
+  } catch {
+    /* 投影可能刚被源文档刷新销毁 */
+  }
+}
+
+function scrollEmbedTarget(projection: EmbedProjection, target: HTMLElement): void {
+  const pane = projection.root.closest('.editor-pane') as HTMLElement | null
+  if (!pane) return
+  const pr = pane.getBoundingClientRect()
+  const tr = target.getBoundingClientRect()
+  pane.scrollTo({ top: Math.max(0, pane.scrollTop + tr.top - pr.top - 10), behavior: 'smooth' })
+}
+
+/** 大纲面板的标题 DOM：主文档和嵌入投影使用各自的 ProseMirror view。 */
+export function getOutlineItemElement(tabId: string, item: OutlineItem): HTMLElement | null {
+  try {
+    if (item.projectionId) {
+      const projection = [...embedProjections].find((p) => p.id === item.projectionId && p.tabId === tabId)
+      const byPos = projection?.view.nodeDOM(Math.max(item.pos - 1, 0)) as HTMLElement | null | undefined
+      return byPos ?? projection?.root.querySelector<HTMLElement>(
+        `[data-writeit-outline-pos="${CSS.escape(String(item.pos))}"]`
+      ) ?? null
+    }
+    const inst = instances.get(tabId)
+    return inst?.crepe.editor.action((ctx) =>
+      ctx.get(editorViewCtx).nodeDOM(Math.max(item.pos - 1, 0)) as HTMLElement | null
+    ) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** 大纲点击定位，嵌入标题不再误用宿主文档坐标。 */
+export async function scrollToOutlineItem(tabId: string, item: OutlineItem): Promise<void> {
+  if (!item.projectionId) return scrollToPos(tabId, item.pos)
+  const projection = [...embedProjections].find((p) => p.id === item.projectionId && p.tabId === tabId)
+  if (!projection) return
+  const target = getOutlineItemElement(tabId, item)
+  if (target) scrollEmbedTarget(projection, target)
+}
+
+async function destroyEmbedProjection(projection: EmbedProjection): Promise<void> {
+  const targets = [...embedProjections].filter((p) =>
+    p === projection || projection.root.contains(p.root) || projection.root.contains(p.content)
+  )
+  for (const target of targets) {
+    if (activeEmbedProjection === target) leaveActiveEmbedProjection()
+    setEmbedOutline(target.tabId, target.id, 0, null)
+    embedProjections.delete(target)
+    embedProjectionByContent.delete(target.content)
+  }
+  for (const target of targets) await target.crepe.destroy().catch(() => undefined)
+}
+
+async function disposeEmbedProjections(tabId?: string): Promise<void> {
+  const targets = [...embedProjections].filter((p) => !tabId || p.tabId === tabId)
+  for (const projection of targets) {
+    if (embedProjections.has(projection)) await destroyEmbedProjection(projection)
   }
 }
 function scheduleRefsFooterRefresh(tabId: string): void {
@@ -2575,261 +3109,142 @@ function syncRefsFooterVisibility(tabId: string): void {
 
 // ---------- 挂载 / 销毁（由 EditorPane.vue 调用） ----------
 
-/** 静态递归投影：把 DocStore 文档渲染到 file_block NodeView 的普通 DOM。
- * 这里故意不向宿主 PM 文档注入目标节点；嵌套 C/D 由同一递归渲染器继续展开。 */
-async function renderStaticProjection(
-  realPath: string,
-  container: HTMLElement,
-  view: import('prosemirror-view').EditorView,
-  cfg: RefConfig,
-  chain: string[],
-  generation?: number,
-  editable = true,
-): Promise<void> {
-  const isCurrent = () => generation === undefined || projectionGenerations.get(container) === generation
-  if (!isCurrent()) return
-  let model = docStore.getModel(realPath)
-  if (!model?.doc) {
-    await docStore.load(realPath)
-    model = docStore.getModel(realPath)
-  }
-  if (container === activeEmbedBody) return
-  container.dataset.embedRealPath = realPath
-  if (editable && container.dataset.embedInputBound === undefined) {
-    container.dataset.embedInputBound = ''
-    container.addEventListener('click', (e) => {
-      const ownerCard = container.parentElement?.closest('.ref-file-block')
-      const targetCard = (e.target as HTMLElement).closest('.ref-file-block')
-      if (targetCard && ownerCard && targetCard !== ownerCard) return
-      // 点击后立即接管焦点；共享 Crepe 尚在创建时，暂存输入，避免首个字符
-      // 落到宿主编辑器或直接丢失。
-      container.contentEditable = 'true'
-      container.setAttribute('role', 'textbox')
-      container.focus()
-      const pending: string[] = []
-      const onBeforeInput = (ev: Event) => {
-        const input = ev as InputEvent
-        if (input.data) {
-          input.preventDefault()
-          pending.push(input.data)
-        }
-      }
-      container.addEventListener('beforeinput', onBeforeInput)
-      void ensureActiveEmbedEditor(realPath, container, cfg, view).then(() => {
-        container.removeEventListener('beforeinput', onBeforeInput)
-        container.removeAttribute('contenteditable')
-        container.removeAttribute('role')
-        activeEmbedRoot?.querySelector<HTMLElement>('.ProseMirror[contenteditable="true"]')?.focus({ preventScroll: true })
-        if (pending.length && activeEmbedView && activeEmbedPath === realPath) {
-          const schema = activeEmbedView.state.schema
-          for (const text of pending) {
-            const tr = activeEmbedView.state.tr.replaceSelectionWith(schema.text(text))
-            activeEmbedView.dispatch(tr)
-          }
-        }
-      })
-    })
-    container.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && container === activeEmbedBody) {
-        e.preventDefault()
-        leaveActiveEmbedEditor()
-        const gen = (projectionGenerations.get(container) ?? 0) + 1
-        projectionGenerations.set(container, gen)
-        void renderStaticProjection(realPath, container, view, cfg, [realPath], gen)
-      }
-    })
-  }
-  if (!model?.doc) {
-    if (isCurrent()) container.textContent = '引用内容暂时不可用'
-    return
-  }
-  const serializer = DOMSerializer.fromSchema(view.state.schema)
-  const frag = serializer.serializeFragment(model.doc.content, { document })
-  if (!isCurrent()) return
-  container.replaceChildren(frag)
-  const blockEls = [...container.querySelectorAll<HTMLElement>('[data-file-block]')]
-  let i = 0
-  const nested = [] as Array<{ node: import('@milkdown/kit/prose/model').Node; el: HTMLElement }>
-  model.doc.descendants((n) => {
-    if (n.type.name === 'file_block' && blockEls[i]) nested.push({ node: n, el: blockEls[i++] })
-    return true
-  })
-  await Promise.all(nested.map(async ({ node, el }) => {
-    if (!isCurrent()) return
-    const path = String(node.attrs.path ?? '')
-    const readonly = Boolean(node.attrs.readonly)
-    const childReal = await probeRealPath(cfg, path, realPath)
-    if (!isCurrent()) return
-    el.className = 'ref-file-block static-projection' + (readonly ? ' readonly' : '')
-    el.replaceChildren()
-    const header = document.createElement('div')
-    header.className = 'ref-file-block-header'
-    const badge = document.createElement('span')
-    badge.className = 'ref-file-block-badge'
-    badge.textContent = readonly ? '🔒 只读引用' : '📄 引用'
-    const label = document.createElement('span')
-    label.className = 'ref-file-block-path'
-    label.textContent = path
-    header.append(badge, label)
-    if (!readonly) {
-      const edit = document.createElement('button')
-      edit.type = 'button'
-      edit.className = 'ref-file-block-edit'
-      edit.textContent = '编辑源文件'
-      edit.addEventListener('click', (e) => {
-        e.preventDefault()
-        if (childReal) void openTab(childReal)
-      })
-      header.append(edit)
-    }
-    const body = document.createElement('div')
-    body.className = 'ref-file-block-content'
-    body.dataset.embedRealPath = childReal ?? ''
-    el.append(header, body)
-    if (!childReal) {
-      body.textContent = `引用失败：找不到文件「${path}」`
-      return
-    }
-    const verdict = classifyEmbed(chain, childReal)
-    if (verdict.kind !== 'ok') {
-      el.classList.add('is-collapsed')
-      el.dataset.collapsed = ''
-      body.textContent = verdict.kind === 'cycle'
-        ? `↻ 循环引用：${path} 已在上级层级出现`
-        : `⤓ 嵌套层级超过 ${MAX_EMBED_DEPTH} 层，已折叠`
-      el.dataset.chain = buildCollapseChain(chain, childReal).join('|')
-      return
-    }
-    // 子容器属于本次生成的 DOM；若外层被替换，旧子树已脱离文档，继续写入也不会影响当前视图。
-    await renderStaticProjection(childReal, body, view, cfg, [...chain, childReal], undefined, !readonly)
-  }))
-}
-
 function installStaticProjectionCallbacks(): void {
   setFileBlockProjectionCallbacks({
     render: (node, content, view) => {
-      // 活动共享编辑器就是这个投影容器的当前真实内容；模型广播时不能
-      // 先写“加载中”再重绘，否则每次按键都会销毁编辑器并丢焦点。
-      if (content === activeEmbedBody && activeEmbedRoot?.parentElement === content) return
       const generation = (projectionGenerations.get(content) ?? 0) + 1
       projectionGenerations.set(content, generation)
-      const isCurrent = () => projectionGenerations.get(content) === generation
-      const owner = [...instances.entries()].find(([, inst]) => {
-        let same = false
-        try {
-          inst.crepe.editor.action((ctx) => { same = ctx.get(editorViewCtx) === view })
-        } catch { /* editor may be destroying */ }
-        return same
-      })
-      const shared = activeEmbedView === view && activeEmbedPath && activeEmbedCfg
-      const tab = owner ? state.tabs.find((t) => t.id === owner[0]) : shared ? { path: activeEmbedPath } as Tab : null
-      const inst = owner?.[1]
-      const cfg = inst ? inst.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key)) : shared ? activeEmbedCfg : null
+      const parent = projectionContextOf(content, view)
+      const owningProjectionRoot = view.dom.closest('.ref-embedded-root') as HTMLElement | null
+      const parentRoot = (content.closest('.ref-embedded-root') as HTMLElement | null) ?? owningProjectionRoot
+      const card = content.closest<HTMLElement>('.ref-file-block')
+      if (card?.dataset.projectionCollapsed !== undefined) {
+        card.classList.remove('is-collapsed')
+        delete card.dataset.collapsed
+        delete card.dataset.projectionCollapsed
+        delete card.dataset.chain
+      }
+      const parentReadonly = parent?.readonly ?? (
+        parentRoot?.dataset.embedReadonly === '1' ||
+        owningProjectionRoot?.dataset.embedReadonly === '1'
+      )
+      // 一旦 content 位于任意嵌入根内，它就不属于宿主 EditorView；
+      // 主编辑器容器包含所有嵌套 DOM，不能用 contains(view.dom) 误认宿主。
+      const owner = parent ? null : hostEditorOf(view)
+      const tabId = owner?.tabId ?? parent?.tabId ?? ''
+      const tab = state.tabs.find((t) => t.id === tabId)
+      const inst = owner?.inst
+      const cfg = inst
+        ? inst.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key))
+        : parent?.cfg ?? null
       if (!cfg || !tab) {
-        // Diff 编辑器是独立的只读 Crepe，不登记在 instances；它的 doc 已在
-        // mount 前由 prefillDoc 展开，因此这里必须保留节点内容，不能留下空卡。
+        // Git diff 使用独立的只读 Crepe，内容在 mount 前已由 prefillDoc 物化。
+        // 它没有应用层 RefConfig，不能再发起异步投影，否则会覆盖 diff 装饰。
         try {
-          const frag = DOMSerializer.fromSchema(view.state.schema)
-            .serializeFragment(node.content, { document })
-          content.replaceChildren(frag)
-          content.querySelectorAll<HTMLElement>('[data-file-block]').forEach((el) => {
-            el.classList.add('ref-file-block', 'static-projection', 'readonly')
-          })
+          if (!content.childNodes.length && node.content.childCount) {
+            const frag = DOMSerializer.fromSchema(view.state.schema).serializeFragment(node.content, { document })
+            content.replaceChildren(frag)
+          }
         } catch (e) {
           console.warn('[diff] 嵌入兜底渲染失败:', e)
-          content.textContent = '引用内容暂时不可用'
         }
         return
       }
-      // 先绑定点击入口，再异步探测/加载正文；卡片 DOM 出现后用户即可点击，
-      // 不必等待 renderStaticProjection 完成。
-      if (!Boolean(node.attrs.readonly) && content.dataset.embedInputBound === undefined) {
-        content.dataset.embedInputBound = ''
-        content.addEventListener('click', (e) => {
-          const targetCard = (e.target as HTMLElement).closest?.('.ref-file-block')
-          const ownerCard = content.parentElement?.closest('.ref-file-block')
-          if (targetCard && ownerCard && targetCard !== ownerCard) return
-          content.contentEditable = 'true'
-          content.tabIndex = 0
-          content.setAttribute('role', 'textbox')
-          content.focus()
-          const pending: string[] = []
-          let beforeInputSeen = false
-          const onBeforeInput = (ev: Event) => {
-            const input = ev as InputEvent
-            if (input.data) { input.preventDefault(); pending.push(input.data) }
-            beforeInputSeen = true
+      const reqPath = String(node.attrs.path ?? '')
+      const hostPath = parent?.realPath ?? tab.path
+      const chain = parent?.chain ?? [tab.path]
+      const readonly = Boolean(parentReadonly || node.attrs.readonly)
+      const load = () => {
+        void probeRealPath(cfg, reqPath, hostPath).then(async (real) => {
+          if (projectionGenerations.get(content) !== generation || !content.isConnected) return
+          if (!real) {
+            content.textContent = `引用失败：找不到文件「${reqPath}」`
+            return
           }
-          const onInput = (ev: Event) => {
-            // 部分 CDP/IME 路径只派发 input，不派发 beforeinput；此时 DOM
-            // 已经被浏览器改写，记录 data，随后由共享编辑器重放并重新渲染。
-            const input = ev as InputEvent
-            if (!beforeInputSeen && input.data) pending.push(input.data)
-          }
-          content.addEventListener('beforeinput', onBeforeInput)
-          content.addEventListener('input', onInput)
-          if (pendingEmbedInput?.timer) clearTimeout(pendingEmbedInput.timer)
-          pendingEmbedInput = {
-            body: content,
-            reqPath: String(node.attrs.path ?? ''),
-            hostPath: tab.path,
-            cfg,
-            view,
-            text: '',
-            timer: setTimeout(() => { pendingEmbedInput = null }, 1500),
-          }
-          void probeRealPath(cfg, String(node.attrs.path ?? ''), tab.path).then((real) => {
-            if (!real) return
-            return ensureActiveEmbedEditor(real, content, cfg, view).then(() => {
-              content.removeEventListener('beforeinput', onBeforeInput)
-              content.removeEventListener('input', onInput)
-              content.removeAttribute('contenteditable')
-              content.removeAttribute('tabindex')
-              content.removeAttribute('role')
-              activeEmbedRoot?.querySelector<HTMLElement>('.ProseMirror[contenteditable="true"]')?.focus({ preventScroll: true })
-              if (pending.length && activeEmbedView && activeEmbedPath === real) {
-                const schema = activeEmbedView.state.schema
-                for (const text of pending) activeEmbedView.dispatch(activeEmbedView.state.tr.replaceSelectionWith(schema.text(text)))
-              }
-              if (pendingEmbedInput?.body === content) {
-                pendingEmbedInput = null
-              }
+          const verdict = classifyEmbed(chain, real)
+          if (verdict.kind !== 'ok') {
+            content.replaceChildren()
+            renderProjectionCollapse(content, reqPath, {
+              reason: verdict.kind === 'cycle' ? 'cycle' : 'depth',
+              chain: buildCollapseChain(chain, real),
             })
-          }).catch(() => {
-            content.removeEventListener('beforeinput', onBeforeInput)
-            content.removeAttribute('contenteditable')
-            content.removeAttribute('tabindex')
-            content.removeAttribute('role')
-          })
-        }, true)
+            return
+          }
+          const context: EmbedProjectionContext = {
+            root: content,
+            tabId,
+            hostPath,
+            realPath: real,
+            chain,
+            readonly,
+            cfg,
+          }
+          await renderProjectionEditor(real, content, view, cfg, context, generation)
+        }).catch((error) => {
+          console.warn('[embed] 投影加载失败:', reqPath, error)
+          if (projectionGenerations.get(content) === generation) content.textContent = '引用内容加载失败'
+        })
       }
-      content.textContent = '加载引用内容…'
-      void (async () => {
-        const real = await probeRealPath(cfg, String(node.attrs.path ?? ''), tab.path)
-        if (!isCurrent()) return
-        if (!real) {
-          content.textContent = `引用失败：找不到文件「${String(node.attrs.path ?? '')}」`
+      // 只读投影内部的嵌套引用延迟到进入视口后再展开。直接的只读源文档
+      // 仍由当前 Crepe 完整渲染；这既保留递归语义，也避免自引用聚合文档
+      // 在首屏递归创建整棵编辑器树。
+      if (parentReadonly && typeof IntersectionObserver !== 'undefined') {
+        content.textContent = '滚动到此处后加载嵌套引用…'
+        const pane = content.closest('.editor-pane') as HTMLElement | null
+        const observer = new IntersectionObserver((entries) => {
+          if (!entries.some((entry) => entry.isIntersecting)) return
+          observer.disconnect()
+          if (projectionGenerations.get(content) === generation) load()
+        }, { root: pane, rootMargin: '160px' })
+        observer.observe(content)
+        return
+      }
+      // 只读引用可能位于当前滚动窗口之外（README 等聚合文档尤其常见）。
+      // 先保留占位，滚入可视范围后再创建重型 Crepe；这不会改变可见内容的
+      // 渲染语义，却避免后台深层引用把用户当前编辑卡顿住。
+      if (readonly) {
+        const pane = content.closest('.editor-pane') as HTMLElement | null
+        const box = content.getBoundingClientRect()
+        const viewport = pane?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight)
+        const nearViewport = box.bottom >= viewport.top - 160 && box.top <= viewport.bottom + 160
+        // 只读嵌套卡片即使当前刚好在视口边缘也延迟一帧交给观察器；
+        // 这样一个聚合文档不会在打开瞬间递归启动整棵引用树。
+        if ((parent?.readonly || !nearViewport) && typeof IntersectionObserver !== 'undefined') {
+          content.textContent = '滚动到此处后加载引用内容…'
+          const observer = new IntersectionObserver((entries) => {
+            if (!entries.some((entry) => entry.isIntersecting)) return
+            observer.disconnect()
+            if (projectionGenerations.get(content) === generation) load()
+          }, { root: pane, rootMargin: '160px' })
+          observer.observe(content)
           return
         }
-        await renderStaticProjection(real, content, view, cfg, [tab.path, real], generation, !Boolean(node.attrs.readonly))
-        if (!Boolean(node.attrs.readonly)) void prewarmActiveEmbedEditor(real, cfg, view)
-      })().catch(() => { if (isCurrent()) content.textContent = '引用内容加载失败' })
+        // 即使是当前可见的只读卡，也不要在宿主打开文件的同一调用栈里
+        // 启动第二棵编辑器；让首屏和用户点击先完成，再异步补齐内容。
+        content.textContent = '加载引用内容…'
+        setTimeout(() => {
+          if (projectionGenerations.get(content) === generation) load()
+        }, 0)
+        return
+      }
+      load()
     },
     edit: (node, view) => {
-      const owner = [...instances.entries()].find(([, inst]) => {
-        let same = false
-        try { inst.crepe.editor.action((ctx) => { same = ctx.get(editorViewCtx) === view }) } catch { /* noop */ }
-        return same
-      })
-      const cfg = owner?.[1].crepe.editor.action((ctx) => ctx.get(refConfigCtx.key)) ?? activeEmbedCfg
+      const projection = projectionEditorOf(view)
+      const owner = hostEditorOf(view)
+      const parent = projection
+        ? { tabId: projection.tabId, hostPath: projection.realPath, cfg: projection.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key)) }
+        : null
+      const cfg = owner?.inst.crepe.editor.action((ctx) => ctx.get(refConfigCtx.key)) ?? parent?.cfg ?? null
       if (!cfg) return
-      const hostPath = owner?.[0] ? state.tabs.find((t) => t.id === owner[0])?.path : activeEmbedPath
+      const tabId = owner?.tabId ?? parent?.tabId ?? ''
+      const hostPath = parent?.hostPath ?? state.tabs.find((t) => t.id === tabId)?.path ?? null
       void probeRealPath(cfg, String(node.attrs.path ?? ''), hostPath)
         .then((real) => {
           if (!real) return
-          const body = [...document.querySelectorAll<HTMLElement>('.ref-file-block-content[data-embed-real-path]')]
-            .find((el) => el.dataset.embedRealPath === real && view.dom.contains(el))
-          if (body) void ensureActiveEmbedEditor(real, body, cfg, view)
+          const target = [...embedProjections].find((p) => p.tabId === tabId && p.realPath === real && p.view === view)
+            ?? [...embedProjections].find((p) => p.tabId === tabId && p.realPath === real)
+          if (target && !target.snapshot) enterEmbedProjection(target)
           else void openTab(real)
         })
     },
@@ -2960,8 +3375,7 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // 大纲：提取标题 + 光标小节实时追踪 → outlineStore(tabId)
   crepe.editor.use(
     outlinePlugin((snap) => {
-      outlineStore.tabs[tabId] = snap
-      outlineStore.version++
+      setMainOutline(tabId, snap)
     })
   )
   // 搜索结果高亮（跳转定位后高亮命中词；编辑自动清除）
@@ -2978,16 +3392,20 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
     })
   })
   await crepe.create()
-  // M1：docstore 影子桥——解析管线（幂等取首个编辑器）与 IO 注入
-  //  parser/serializer 取自编辑器 ctx（纯函数，不绑定视图），影子一致性断言靠它
+  // mount 期间标签可能已被关闭；不得把脱离 DOM 的编辑器登记成存活实例。
+  if (!container.isConnected || !state.tabs.some((t) => t.id === tabId) || instances.has(tabId)) {
+    await crepe.destroy().catch(() => undefined)
+    return
+  }
+  const inst: Instance = { crepe, el: container, m3aSuppressed: false, srcTa: null, topbar: null, refsFooter: null, scrollTop: 0 }
+  instances.set(tabId, inst)
+
+  // M1：DocStore 管线使用动态存活 ctx，不能缓存首个编辑器中绑定 ctx 的函数；
+  // commonmark serializer 在运行时会读取 editorViewCtx，标签关闭后旧 ctx 已失效。
   if (!docstorePipelineConfigured) {
     try {
-      const p = crepe.editor.action((ctx) => ({
-        parse: ctx.get(parserCtx) as (md: string) => import('@milkdown/kit/prose/model').Node | null,
-        serialize: ctx.get(serializerCtx) as (doc: import('@milkdown/kit/prose/model').Node) => string,
-      }))
-      configureDocStorePipeline(p)
-      setDocstorePipelineCache(p)
+      configureDocStorePipeline(liveDocstorePipeline)
+      setDocstorePipelineCache(liveDocstorePipeline)
       docstorePipelineConfigured = true
     } catch (err) {
       const msg = `docstore pipeline 初始化失败: ${err instanceof Error ? err.message : String(err)}`
@@ -3016,17 +3434,9 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
   // M6：批注卡上下文（tabId + 编辑器引用）
   setAnnotationCardContext(tabId, crepe.editor)
 
-  const inst: Instance = { crepe, el: container, m3aSuppressed: false, srcTa: null, topbar: null, refsFooter: null, scrollTop: 0 }
-  instances.set(tabId, inst)
   // NodeView 可能在 crepe.create() 内先于 instances.set 构造，首次回调会走
   // Diff 只读兜底；注册实例后立即重绘，补齐主编辑器的点击/编辑入口。
   refreshFileBlockProjections()
-  // 生命周期级预热：不要等某个嵌入投影的异步 load 完成，直接用当前文档
-  // 作为初始内容创建隐藏共享 Crepe；后续点击嵌入只需同步切换内容。
-  try {
-    const warmView = crepe.editor.action((ctx) => ctx.get(editorViewCtx))
-    void prewarmActiveEmbedEditor(tab.path, refCfg, warmView)
-  } catch { /* 创建失败时仍可按需懒创建 */ }
 
   // M2：doc 视图事务拦截器——块外正文编辑即时提交模型（spec §5.3/§9.4 M2）。
   // 规则：外部事务（docstoreExternal meta）不提交（防回环）；用户编辑（无 meta）且 docChanged 才提交，
@@ -3047,29 +3457,6 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       // 导致 origDispatch 被跳过 → 编辑器半死）；全部走 view.state.doc 纯数据遍历。
       const oldDoc = view.state.doc
       const hostBlocks = collectBlockSizes(oldDoc)
-      // 点击嵌入后的极短竞态窗口：若输入事务仍落到宿主 PM，先拦截并提取
-      // 新增文本，待共享编辑器接管后重放，绝不污染宿主 A 的模型。
-      if (pendingEmbedInput?.view === view && !tr.getMeta('docstoreExternal') && tr.docChanged) {
-        const pipe = pipelineOfCache()
-        if (pipe) {
-          const inserted = extractInsertedText(pipe.serialize(oldDoc), pipe.serialize(tr.doc))
-          if (inserted) pendingEmbedInput.text += inserted
-          if (pendingEmbedInput.text) {
-            const target = pendingEmbedInput
-            void probeRealPath(target.cfg, target.reqPath, target.hostPath).then((real) => {
-              if (!real) return
-              return ensureActiveEmbedEditor(real, target.body, target.cfg, target.view).then(() => {
-                if (activeEmbedView && activeEmbedPath === real && target.text) {
-                  const schema = activeEmbedView.state.schema
-                  for (const text of [target.text]) activeEmbedView.dispatch(activeEmbedView.state.tr.replaceSelectionWith(schema.text(text)))
-                }
-                if (pendingEmbedInput === target) pendingEmbedInput = null
-              })
-            })
-            return
-          }
-        }
-      }
       origDispatch(tr)
       // M4：外部事务（dispatcher 分发 / 物化 / 程序化对齐）以 docstoreExternal meta 标记，
       // 拦截器跳过——不回流模型（防回环）。用户编辑（无 meta）照常提交。
@@ -3146,15 +3533,6 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
       const w2 = window as unknown as Record<string, unknown>
       // V2：全量同步核心——模型 canonical 作为唯一事实源，整块对齐所有块视图
       const canonical = model.doc && pipelineOfCache() ? pipelineOfCache()!.serialize(model.doc) : null
-      if (canonical != null && activeEmbedPath === realPath && activeEmbedCrepe && originKey !== 'embed-shared') {
-        activeEmbedCrepe.editor.action((ctx) => {
-          const next = (ctx.get(parserCtx) as (md: string) => import('@milkdown/kit/prose/model').Node | null)(canonical)
-          const sharedView = ctx.get(editorViewCtx)
-          if (next) sharedView.dispatch(sharedView.state.tr
-            .replaceWith(0, sharedView.state.doc.content.size, next.content)
-            .setMeta('docstoreExternal', true))
-        })
-      }
       for (const sub of model.subscribers.values()) {
         if (sub.source.kind !== 'block') continue
         if (sub.stale) continue
@@ -3311,13 +3689,14 @@ export async function mountEditor(tabId: string, container: HTMLDivElement): Pro
 export function unmountEditor(tabId: string) {
   const inst = instances.get(tabId)
   if (!inst) return
-  if (activeEmbedBody && inst.el.contains(activeEmbedBody)) void disposeActiveEmbedEditor()
+  void disposeEmbedProjections(tabId)
   // M16：若该标签的 topbar 仍占用顶行槽位，先归还原处再销毁
   releaseSlotBar(tabId)
   inst.refsFooter?.dispose()
+  // 先从存活表移除，再销毁 ctx；DocStore 动态管线不能选中正在 teardown 的实例。
+  instances.delete(tabId)
   inst.crepe.destroy().catch(() => undefined)
   inst.el.remove()
-  instances.delete(tabId)
   // M1：影子桥——docstore 订阅清理
   onTabClosed(tabId)
   clearOutline(tabId)
@@ -3499,9 +3878,12 @@ function publishDocToSubscribers(tabId: string, md: string): void {
   if (!tab) return
   const model = docStore.getModel(tab.path)
   if (!model) return
-  // 无订阅者（没被嵌入 / 折叠块不订阅）→ 无需发布
+  // 静态递归投影不登记块订阅；但只要 DOM 中存在该模型的嵌套投影，源编辑
+  // 仍须进入 DocStore，dispatcher 才能重绘整棵链（A→B→C）。
   const hasBlockSub = [...model.subscribers.values()].some((s) => s.source.kind === 'block')
-  if (!hasBlockSub) return
+  const hasNestedProjection = [...document.querySelectorAll<HTMLElement>('.ref-file-block-content[data-embed-real-path]')]
+    .some((el) => el.dataset.embedRealPath === tab.path)
+  if (!hasBlockSub && !hasNestedProjection) return
   try {
     docStore.replaceFromCanonical(tab.path, md, `doc:${tabId}`)
   } catch (e) {
@@ -3621,6 +4003,9 @@ async function saveTabImpl(tabId: string): Promise<boolean> {
     return false
   }
   docStore.markDiskSynced(tab.path, md)
+  // 源码解析/序列化会规范化空行；保存成功后 textarea 必须追平真正落盘的 canonical，
+  // 否则 syncTabDirty 会把已保存标签继续判为脏。
+  if (tab.viewMode === 'source' && inst.srcTa) inst.srcTa.value = md
   syncTabDirty(tab, inst)
   tab.lastModified = Date.now()
   // M4（spec §7.2）：保存后对“打开的源标签”（另外标签同路径）做快照对齐 + 脏灭。

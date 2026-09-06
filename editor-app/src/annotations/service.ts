@@ -320,6 +320,17 @@ export function findCodeBlockInSelection(
   to: number
 ): { pos: number; node: Node } | null {
   let found: { pos: number; node: Node } | null = null
+  // 文本选区起止点通常落在 code_block 内容内部，nodesBetween(from,to) 不会回访父节点；
+  // 先检查端点父节点，避免“代码块内选择”被误判为普通段落批注。
+  for (const p of [from, Math.max(from, to - 1)]) {
+    try {
+      const $p = doc.resolve(Math.min(Math.max(p, 0), doc.content.size))
+      if ($p.parent.type.name === 'code_block') {
+        found = { pos: $p.before($p.depth), node: $p.parent }
+        return found
+      }
+    } catch { /* 越界位置交给 nodesBetween 兜底 */ }
+  }
   doc.nodesBetween(from, to, (n, pos) => {
     if (n.type.name === 'code_block') {
       found = { pos, node: n }

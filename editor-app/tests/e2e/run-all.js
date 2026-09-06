@@ -11,20 +11,6 @@ const { homedir } = require('node:os')
 const here = __dirname
 // ego-browser 可执行文件：优先环境变量，其次 ~/.local/bin（ego lite 安装默认位置），最后 PATH
 const EGO = process.env.EGO_BROWSER_BIN || join(homedir(), '.local/bin/ego-browser')
-// 释放所有遗留 task space（防内存堆积；每个测试遗留的未关闭空间）。
-// 这项清理会连接浏览器并可能等待服务端，不能在每个成功套件后重复执行。
-function cleanupSpaces() {
-  const started = Date.now()
-  try {
-    const { spawnSync } = require('node:child_process')
-    const script = readFileSync(join(here, '_cleanup-spaces.ego.js'), 'utf8')
-    const r = spawnSync(EGO, ['nodejs'], { input: script, encoding: 'utf8', timeout: 60000, stdio: ['pipe', 'ignore', 'ignore'] })
-    return { ms: Date.now() - started, timedOut: r.error?.code === 'ETIMEDOUT', code: r.status }
-  } catch (e) {
-    return { ms: Date.now() - started, timedOut: false, code: null, error: e?.message || String(e) }
-  }
-}
-
 const SUITES = [
   'ref-e2e',      // M1 引用语法与节点
   'nested-ref-e2e', // 多层块嵌入回归（递归物化 + 保存不写空）
@@ -62,6 +48,7 @@ const SUITES = [
   'embed-sync-p1-e2e',      // 嵌入同步回归①：last-wins 止血 / 双块对称 / 写回守卫（真实输入补强）
   'embed-sync-p2-e2e',      // 嵌入同步回归②：registry 单一事实来源 / blockId / 跨标签
   'embed-sync-caret-regress-e2e', // 嵌入同步：NodeView 不重建（光标/输入落点回归）
+  'embed-topbar-e2e',             // 嵌入激活后：全局顶栏真实格式化投影，不能误写宿主
   'embed-sync-realinput-e2e',     // 用户 4 问题全链路（真实键盘输入：重复/光标/保存消失/回流）
   'embed-sync-composite-e2e',     // registry 复合 + 边界（多宿主/链式/环/只读/并发/写回）
   'embed-indep-verify-e2e', // 嵌入同步独立重验证：registry 严格断言（磁盘/块全等、并发分叉、只读、跨宿主）
@@ -89,91 +76,144 @@ if (unknownSuites.length) {
   process.exit()
 }
 const suitesToRun = requestedSuites || SUITES
-const workers = Math.max(1, Number.parseInt(process.env.E2E_WORKERS || '2', 10) || 1)
-// 仅这些已验证不共享页面状态、跨标签或输出文件的套件进入 worker 池。
-// 其余套件显式串行：包括嵌入同步/保存竞态、导出、Git、诊断和综合套件。
-const SERIAL_SUITES = new Set([
-  'export-e2e', 'git-m11a-e2e', 'git-m18-fixture-e2e', 'git-m11a-smoke',
-  'diagnostics-e2e', 'app-e2e',
-  ...SUITES.filter((name) => name.startsWith('embed-')),
-])
-const PARALLEL_SAFE_SUITES = new Set([
-  'ref-e2e', 'm3-e2e', 'm4-e2e', 'm4b-e2e', 'm4c-e2e',
-  'drag-e2e', 'm7-apidoc-e2e', 'xxljob-e2e', 'm8-db-e2e', 'm9-placeholder-e2e',
-  'scroll-e2e', 'refs-footer-e2e', 'paste-ref-e2e',
-  'table-enhance-e2e', 'table-width-e2e', 'table-clipboard-e2e', 'tabbar-overflow-e2e',
-])
+// task space 数量严格等于 worker 数；每个 Node 进程只承载一个有界微批。
+const workers = Math.min(5, Math.max(1, Number.parseInt(process.env.E2E_WORKERS || '5', 10) || 1))
+const batchTimeoutMs = Math.max(60000, Number.parseInt(process.env.E2E_BATCH_TIMEOUT_MS || '150000', 10) || 150000)
+const batchWeightMs = Math.max(20000, Number.parseInt(process.env.E2E_BATCH_WEIGHT_MS || '70000', 10) || 70000)
+const batchMaxSuites = Math.max(1, Math.min(8, Number.parseInt(process.env.E2E_BATCH_MAX_SUITES || '5', 10) || 5))
+const ISOLATED_SUITES = new Set(['ref-e2e', 'export-e2e'])
 
-function run(name) {
+function suiteWeight(name) {
+  const source = readFileSync(join(here, `${name}.js`), 'utf8')
+  let weight = 3000
+  for (const re of [/L\.waitMs\((\d+)\)/g, /L\.(?:freshApp|reloadApp|resetMockFs|openApp)\([^\n]*?,\s*(\d+)\)/g]) {
+    let match
+    while ((match = re.exec(source))) weight += Number(match[1])
+  }
+  // 实测渲染/嵌入套件包含异步 Mermaid/Crepe settle，源码中的固定等待会低估成本；
+  // 用保守权重先调度重套件，避免它们集中在末尾形成长尾。
+  const measured = {
+    'git-m11a-smoke': 90000,
+    'git-m11a-e2e': 85000,
+    'embed-indep-verify-e2e': 70000,
+    'nested-ref-e2e': 60000,
+    'mermaid-ref-e2e': 55000,
+    'embed-sync-composite-e2e': 50000,
+    'drag-e2e': 45000,
+  }[name]
+  return measured ?? weight
+}
+
+function packSuites(names) {
+  const jobs = []
+  for (const name of [...names].sort((a, b) => suiteWeight(b) - suiteWeight(a))) {
+    if (ISOLATED_SUITES.has(name)) {
+      jobs.push({ weight: suiteWeight(name), names: [name], isolated: true })
+      continue
+    }
+    const weight = suiteWeight(name)
+    let target = jobs.find((job) => !job.isolated && job.names.length < batchMaxSuites && job.weight + weight <= batchWeightMs)
+    if (!target) {
+      target = { weight: 0, names: [] }
+      jobs.push(target)
+    }
+    target.names.push(name)
+    target.weight += weight
+  }
+  return jobs
+}
+
+function wrapSuite(name) {
+  return `\nawait __runE2ESuite(${JSON.stringify(name)}, async () => {\n${readFileSync(join(here, `${name}.js`), 'utf8')}\n})\n`
+}
+
+function runBatch(names, lane) {
   return new Promise((resolve) => {
-    // 拼接：注入 __EGO_DIR → _egolite-lib.js 源码 → 用例源码
+    // 一个 lane 只启动一次 ego-browser Node；每个用例包进独立 async 作用域。
     const body =
       `const __EGO_DIR = ${JSON.stringify(here)}\n` +
+      `const __EGO_LANE = ${JSON.stringify(`lane-${lane}`)}\n` +
+      `const __EGO_BATCH = true\n` +
       readFileSync(join(here, '_egolite-lib.js'), 'utf8') + '\n' +
-      readFileSync(join(here, `${name}.js`), 'utf8')
+      `const __e2eBatchResults = []\n` +
+      `const __runE2ESuite = async (name, fn) => {\n` +
+      `  const started = Date.now(); let code = 0; let summary = null; const failures = []\n` +
+      `  const priorLog = globalThis.cliLog\n` +
+      `  globalThis.cliLog = (...args) => { const line = args.map(String).join(' '); const m = /结果: (\\d+) 通过 \\/ (\\d+) 失败/.exec(line); if (m) summary = { pass: Number(m[1]), fail: Number(m[2]) }; if (line.startsWith('❌')) failures.push(line); return priorLog(...args) }\n` +
+      `  for (let attempt = 0; attempt < 2; attempt++) { try { await fn(); code = 0; break } catch (e) { if (e?.__e2eSuiteExit) { code = e.code; if (code === 0) break } else { code = 1; if (attempt === 1) priorLog('❌ ' + name + ' 未捕获异常: ' + (e?.stack || e)) } } }\n` +
+      `  globalThis.cliLog = priorLog\n` +
+      `  __e2eBatchResults.push({ name, code, summary, failures, ms: Date.now() - started })\n` +
+      `}\n` +
+      names.map(wrapSuite).join('') +
+      `\ncliLog('__E2E_BATCH_RESULTS__' + JSON.stringify(__e2eBatchResults))\n` +
+      `realProcessExit(__e2eBatchResults.some(r => r.code !== 0) ? 1 : 0)\n`
     const p = spawn(EGO, ['nodejs'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     let out = ''
     const started = Date.now()
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      p.kill('SIGTERM')
+      setTimeout(() => p.kill('SIGKILL'), 5000).unref()
+    }, batchTimeoutMs)
     const heartbeat = setInterval(() => {
-      process.stdout.write(`\n  … ${name} 已运行 ${Math.round((Date.now() - started) / 1000)}s`)
+      process.stdout.write(`\n  … lane-${lane}（${names.length} 套件）已运行 ${Math.round((Date.now() - started) / 1000)}s`)
     }, 15000)
     p.stdout.on('data', (d) => (out += d))
     p.stderr.on('data', (d) => (out += d))
     p.stdin.end(body)
     p.on('close', (code, signal) => {
       clearInterval(heartbeat)
-      resolve({ name, code, signal, out, ms: Date.now() - started })
+      clearTimeout(timeout)
+      const marker = /__E2E_BATCH_RESULTS__(\[[^\n]+\])/.exec(out)
+      let suites = []
+      if (marker) {
+        try { suites = JSON.parse(marker[1]) } catch { /* 统一按批次失败报告 */ }
+      }
+      resolve({ lane, names, code, signal, timedOut, out, suites, ms: Date.now() - started })
     })
   })
 }
 
 const results = []
-async function runOne(name) {
-  process.stdout.write(`▶ ${name} … `)
-  const r = await run(name)
-  const m = /结果: (\d+) 通过 \/ (\d+) 失败/.exec(r.out)
-  const summary = m
-    ? Number(m[2]) === 0
-      ? `✅ ${m[1]}/${m[2]}`
-      : `❌ ${m[1]}/${m[2]}`
-    : r.code === 0
-      ? '✅ done'
-      : `❌ code=${r.code}`
-  process.stdout.write(`${summary} (${(r.ms / 1000).toFixed(1)}s${r.signal ? `, ${r.signal}` : ''})\n`)
-  if (!m && r.code !== 0) {
-    console.log(r.out.split('\n').slice(-8).join('\n'))
+async function collectBatch(batch) {
+  process.stdout.write(`▶ lane-${batch.lane}: ${batch.names.join(', ')}\n`)
+  const run = await runBatch(batch.names, batch.lane)
+  if (run.suites.length !== batch.names.length) {
+    const summary = run.timedOut ? `❌ timeout>${Math.round(batchTimeoutMs / 1000)}s` : `❌ batch code=${run.code}`
+    for (const name of batch.names) results.push({ name, ms: run.ms, summary, out: run.out })
+    console.log(run.out.split('\n').slice(-16).join('\n'))
+    return
   }
-  return { ...r, summary }
+  for (const suite of run.suites) {
+    const s = suite.summary
+    const summary = s ? (suite.code === 0 && s.fail === 0 ? `✅ ${s.pass}/${s.fail}` : `❌ ${s.pass}/${s.fail}`) : suite.code === 0 ? '✅ done' : `❌ code=${suite.code}`
+    results.push({ ...suite, summary, out: run.out })
+    process.stdout.write(`  ${summary} ${suite.name} (${(suite.ms / 1000).toFixed(1)}s)\n`)
+    if (!summary.startsWith('✅') && suite.failures?.length) console.log(suite.failures.slice(-12).join('\n'))
+  }
 }
 
-async function runBatch(names) {
-  const batch = await Promise.all(names.map(runOne))
-  results.push(...batch)
-  if (batch.some((r) => r.code !== 0 || r.signal || /❌/.test(r.summary))) {
-    const recovery = cleanupSpaces()
-    console.log(`  批次异常后清理：${(recovery.ms / 1000).toFixed(1)}s${recovery.timedOut ? '（超时）' : ''}`)
+async function runLane(lane, queue) {
+  while (queue.length) {
+    const job = queue.shift()
+    if (!job) return
+    await collectBatch({ lane, names: job.names })
   }
 }
 
 async function main() {
 const runStarted = Date.now()
 console.log(`E2E 回归：${suitesToRun.length}/${SUITES.length} 个套件，workers=${workers}`)
-// 清除上一次异常中断留下的测试空间，再开始本轮回归。
-const initialCleanup = cleanupSpaces()
-console.log(`清理历史 task space：${(initialCleanup.ms / 1000).toFixed(1)}s${initialCleanup.timedOut ? '（超时）' : ''}`)
-for (let i = 0; i < suitesToRun.length;) {
-  if (workers === 1 || !PARALLEL_SAFE_SUITES.has(suitesToRun[i])) {
-    await runBatch([suitesToRun[i++]])
-    continue
-  }
-  const batch = []
-  while (i < suitesToRun.length && batch.length < workers && PARALLEL_SAFE_SUITES.has(suitesToRun[i])) {
-    batch.push(suitesToRun[i++])
-  }
-  await runBatch(batch)
-}
+// app-e2e 会清空共享截图目录，必须最后独占运行；其余套件在隔离 lane 中动态分配。
+const exclusive = suitesToRun.filter((name) => name === 'app-e2e')
+const regular = suitesToRun.filter((name) => name !== 'app-e2e')
+const jobs = packSuites(regular)
+console.log(`调度：${jobs.length} 个微批，batch≤${batchMaxSuites} suites / weight≤${batchWeightMs}ms`)
+await Promise.all(Array.from({ length: Math.min(workers, jobs.length) }, (_, i) => runLane(i + 1, jobs)))
+if (exclusive.length) await collectBatch({ lane: 1, names: exclusive })
 
 console.log('\n===== E2E 汇总 =====')
 let fail = 0
@@ -186,9 +226,7 @@ console.log(fail === 0 ? '\n全部通过 🎉' : `\n${fail} 个套件未通过 �
 const totalMs = Date.now() - runStarted
 const slow = [...results].sort((a, b) => b.ms - a.ms).slice(0, 5)
 console.log(`总耗时：${(totalMs / 1000).toFixed(1)}s；最慢套件：${slow.map((r) => `${r.name} ${(r.ms / 1000).toFixed(1)}s`).join('，')}`)
-console.log('\n释放遗留 task space…')
-const finalCleanup = cleanupSpaces()
-console.log(`最终清理：${(finalCleanup.ms / 1000).toFixed(1)}s${finalCleanup.timedOut ? '（超时）' : ''}`)
+console.log(`保留 ${workers} 个固定 E2E lane 供下轮复用（不触发空间删除弹窗）`)
 process.exit(fail === 0 ? 0 : 1)
 }
 void main()

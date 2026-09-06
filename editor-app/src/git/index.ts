@@ -167,6 +167,14 @@ function isTauri(): boolean {
 
 let backend: GitBackend | null = isTauri() ? tauriBackend : isDevRepoMode() ? devGit : mockGit
 
+// E2E/开发诊断：Tauri IPC mock 可能在模块加载后才注入（ego-lite 当前页注入路径），
+// 允许显式重新选择一次后端；生产调用不会触发该钩子。
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__gitRefreshBackend = () => {
+    backend = isTauri() ? tauriBackend : isDevRepoMode() ? devGit : mockGit
+  }
+}
+
 /** 当前 git 后端类型：'tauri' | 'mock' | 'dev' | null（不可用） */
 export function gitBackendKind(): 'tauri' | 'mock' | 'dev' | null {
   if (backend === tauriBackend) return 'tauri'

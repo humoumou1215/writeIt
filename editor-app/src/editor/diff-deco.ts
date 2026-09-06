@@ -394,12 +394,20 @@ export function buildDiffDecorations(oldDoc: Node, newDoc: Node, opts?: BuildDif
     for (const d of group) lines.push(oldDoc.textBetween(d.fromA, d.toA, '\n', '\n').trim())
     const text = lines.filter(Boolean).join('\n')
     const vis = text.split('\n').filter((l) => l.trim())
-    const note = makeNote('block', `删除了此段${vis.length > 1 ? `（${vis.length} 行）` : ''}`, text, undefined, SNAP(vis[0] || ''), posB + off, Math.min(posB + 1, newDoc.content.size) + off)
+    // ChangeSet 对整块删除有时把 posB 映射到前一个标题/段落的文本内部；
+    // widget 落在 textblock 内会被 NodeView 吞掉。提升到该块末尾的合法边界，
+    // 确保纯删除内容仍可见且批注锚点稳定。
+    let widgetPos = posB
+    try {
+      const $p = newDoc.resolve(Math.min(Math.max(posB, 0), newDoc.content.size))
+      if ($p.parent.isTextblock) widgetPos = $p.after($p.depth)
+    } catch { /* 位置已由上游裁剪 */ }
+    const note = makeNote('block', `删除了此段${vis.length > 1 ? `（${vis.length} 行）` : ''}`, text, undefined, SNAP(vis[0] || ''), widgetPos + off, Math.min(widgetPos + 1, newDoc.content.size) + off)
     notes.push(note)
     const el = document.createElement('span')
-    el.className = isInlineWidgetPos(newDoc, posB) ? 'diff-del' : 'diff-del diff-del-block'
+    el.className = isInlineWidgetPos(newDoc, widgetPos) ? 'diff-del' : 'diff-del diff-del-block'
     el.textContent = text || '（已删除）'
-    decorations.push(Decoration.widget(posB + off, el, { side: -1, key: `diff-del-block-${group[0].fromA}`, ...dnote(note.id) }))
+    decorations.push(Decoration.widget(widgetPos + off, el, { side: -1, key: `diff-del-block-${group[0].fromA}`, ...dnote(note.id) }))
   }
 
   // ---- 结构实体级：引用（file_ref/object_ref）增删改 + 批注（annotation）增删改（§4.9 接入渲染） ----

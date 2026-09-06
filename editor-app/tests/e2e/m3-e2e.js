@@ -27,7 +27,7 @@ const switchToDemo = async () => {
 const waitMenu = async (open, timeout = 4000) => {
   const start = Date.now()
   while (Date.now() - start < timeout) {
-    const n = await js(`document.querySelectorAll('[data-ref-menu] .menu-group li').length`)
+    const n = await js(`([...document.querySelectorAll('[data-ref-menu] .menu-group li')].filter(e => e.getClientRects().length > 0)).length`)
     if (open && n > 0) return true
     if (!open && n === 0) return true
     await L.waitMs(100)
@@ -73,21 +73,25 @@ await L.waitMs(800)
 
 // ===== 2. 断链（先引用 Mermaid → 删除 → 断链 → 替换）=====
 // 注：工作区演进后含多条 mermaid 文件，「[[Mermaid」会匹配到 git-diff 验收文件；
-// 用完整名「[[Mermaid 图表集」使其唯一命中；且当前应用文件级 Enter=直接插入链接（旧版需两次 Enter 下钻）。
+// 用完整名「[[Mermaid 图表集」使其唯一命中；文件级首项需先进入实体菜单再确认。
 await switchToDemo()
 await freshPara()
 await L.type('[[Mermaid 图表集')
 await waitMenu(true)
+await L.focusEditor()
 await L.press('Enter')
-await L.waitMs(800)
-C.check('已引用 Mermaid 图表集', (await md()).includes('[[Mermaid 图表集]]'))
+await L.waitFor(async () => (await L.qText('[data-ref-menu] h6', 'Mermaid 图表集')) > 0, 3000)
+await L.press('Enter') // 实体级首项“文件本身”
+await L.waitFor(async () => (await md()).includes('[[Mermaid 图表集'), 3000)
+const mermaidLinkInserted = await md()
+C.check('已引用 Mermaid 图表集', mermaidLinkInserted.includes('[[Mermaid 图表集'))
 
 await ensureSidebar()
-await openCtx('.tree .name', 'Mermaid 图表集.md')
+await L.rightClick('.tree [data-path="Mermaid 图表集.md"]', 0)
+await L.waitFor(async () => (await L.q('.menu-item')) > 0, 2000)
 await L.clickText('.menu-item.danger', '删除')
 await L.waitMs(400)
 await L.clickText('.modal .danger', '删除')
-await L.waitMs(1000)
 C.check('删除后引用变断链', (await waitBroken()) >= 1)
 
 // 断链重选（树导航替换）
@@ -96,7 +100,7 @@ C.check('删除后引用变断链', (await waitBroken()) >= 1)
 const robustBrokenClick = async () => {
   for (let t = 0; t < 5; t++) {
     const p = await js(`(() => {
-      const els = [...document.querySelectorAll('a.ref-file.ref-broken')]
+      const els = [...document.querySelectorAll('a.ref-file.ref-broken')].filter((e) => (e.textContent || '').includes('Mermaid 图表集'))
       if (!els.length) return null
       let target = null
       for (const e of els) { const r = e.getBoundingClientRect(); if (r.width>0 && r.bottom>0 && r.top<innerHeight && r.right>0 && r.left<innerWidth) { target = e; break } }
@@ -111,7 +115,7 @@ const robustBrokenClick = async () => {
     if (p && p.ok) { await click([p.cx, p.cy], { label: '点断链' }); return true }
     await L.waitMs(300)
   }
-  await L.clickEl('a.ref-file.ref-broken', 0, { label: '点断链 fallback' })
+  await js(`(() => { const e=[...document.querySelectorAll('a.ref-file.ref-broken')].find(x=>(x.textContent||'').includes('Mermaid 图表集')); if(e){e.scrollIntoView({block:'center'}); e.click();} })()`)
   return false
 }
 await robustBrokenClick()
@@ -121,13 +125,11 @@ await L.focusEditor()
 await L.waitMs(200)
 const rootLabels = await entryLabels()
 const noteIdx = rootLabels.findIndex(t => t === '笔记')
-for (let i = 0; i < noteIdx; i++) await L.press('ArrowDown')
-await L.press('Enter')
+if (noteIdx >= 0) await L.clickText('[data-ref-menu] .menu-group li', '笔记')
 await L.waitMs(400)
 const noteLabels = await entryLabels()
 const todoIdx = noteLabels.findIndex(t => t.includes('待办清单'))
-for (let i = 0; i < todoIdx; i++) await L.press('ArrowDown')
-await L.press('Enter')
+if (todoIdx >= 0) await L.clickText('[data-ref-menu] .menu-group li', '待办清单')
 await L.waitMs(1000)
 C.check('替换后 Mermaid 引用被替换（用户输入的断链已消除）', !(await md()).includes('Mermaid 图表集'))
 const md2 = await md()

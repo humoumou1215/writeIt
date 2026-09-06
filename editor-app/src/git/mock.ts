@@ -225,7 +225,8 @@ export const mockGit = {
     const f = state.files[path]
     if (!f) throw new Error(`文件不存在：${path}`)
     if (rev === 'WORKTREE') return f.worktree
-    if (rev === '') return f.worktree // index blob（演示近似：未暂存时 = worktree）
+    // 空 rev 代表 index：演示仓库以 HEAD(v2) 作为 index 基线；工作区改动由 WORKTREE 提供。
+    if (rev === '') return f.v2
     if (rev === 'HEAD' || rev === DEMO_REPO.headHash) return f.v2
     return f.v1
   },

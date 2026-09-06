@@ -4,13 +4,22 @@
 
 const task = await L.acquireTaskSpace('ref-e2e')
 await L.installErrors()
-await L.openApp('http://localhost:5173/?backend=mock')
+await L.freshApp('http://localhost:5173/?backend=mock')
 
 const C = L.newChecker()
 
 // 打开引用演示.md
 await L.clickText('.tree .name', '引用演示.md', { label: '打开引用演示' })
-await L.waitMs(3000)
+// 多标签初始化时旧标签可能仍保持 active 样式；显式激活新开的标签，确保
+// __editorGetMarkdown 与页面可见内容属于同一编辑器实例。
+await L.waitFor(() => L.q('.tab') > 0, 3000)
+await L.clickText('.tab', '引用演示.md', { label: '激活引用演示标签' })
+await L.waitFor(async () => {
+  const paths = await L.txtAll('.ref-file-block-path')
+  const editable = await L.txt('.ref-file-block:not(.readonly)')
+  const readonly = await L.txt('.ref-file-block.readonly')
+  return (await L.q('a.ref-file')) >= 3 && paths.some((t) => t.includes('待办清单')) && paths.some((t) => t.includes('README')) && editable.includes('待办清单') && readonly.includes('消金业务合作')
+}, 8000)
 
 // 1. doctype 节点（嵌套物化会带出 README/验收场景等文件内的 doctype——
 //    测试注释同文件下方已声明“只读物化会带出嵌套块、数量运行间不稳定（既有物化时序问题）”，
@@ -37,8 +46,8 @@ C.check('只读徽标存在', badges.some((t) => t.includes('只读')))
 // 4. 物化：嵌入内容出现在卡片内
 await L.waitMs(1000)
 C.check('可编辑卡片内含源文件内容(待办清单)', (await L.txt('.ref-file-block:not(.readonly)')).includes('待办清单'))
-const readonlyContent = await L.txt('.ref-file-block.readonly')
-C.check('只读卡片内含 README 内容', readonlyContent.length > 80 && readonlyContent.includes('消金业务合作'))
+const readonlyContents = await L.txtAll('.ref-file-block.readonly')
+C.check('只读卡片内含 README 内容', readonlyContents.some((text) => text.length > 80 && text.includes('消金业务合作')))
 
 // 5. 序列化往返：getMarkdown 只输出标记，不落盘物化内容
 const md = await L.pageMd()

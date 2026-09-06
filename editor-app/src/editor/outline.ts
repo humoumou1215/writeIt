@@ -1,8 +1,4 @@
-// 大纲模块（Outline）：
-//  - 从 ProseMirror doc 提取标题（heading 节点，h1~h6），按文档顺序生成层级列表
-//  - 跟随光标/选区变化，实时标记"当前所在小节"（最后一个起始位置 ≤ 选区起点 的标题）
-//  - 数据写入响应式 outlineStore 供 OutlinePanel.vue 渲染（按 tabId 隔离）
-//  - 编辑器挂载时注册插件（$prose），销毁时清理
+// 大纲模块（Outline）：主文档与静态嵌入投影分别提取标题，再按嵌入块宿主位置合成。
 import { reactive } from 'vue'
 import { $prose } from '@milkdown/kit/utils'
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state'
@@ -10,46 +6,90 @@ import type { EditorState } from '@milkdown/kit/prose/state'
 import type { Node as PMNode } from '@milkdown/kit/prose/model'
 
 export interface OutlineItem {
-  /** 稳定 id（tabId + pos 组合在外层） */
+  /** 稳定 id（主文档为 pos；投影项由 projectionId 进一步限定） */
   id: string
-  /** 标题级别 1-6 */
   level: number
-  /** 标题文本（trim 后） */
   text: string
-  /** 标题节点起始文档位置（供滚动定位） */
+  /** 所在编辑器内的标题节点起始位置 */
   pos: number
+  /** 非空表示该项属于嵌入投影，而非宿主编辑器 */
+  projectionId?: string
 }
 
 export interface OutlineSnapshot {
   items: OutlineItem[]
-  /** 当前所在小节下标（无标题时 -1） */
   activeIndex: number
 }
 
-/** 响应式大纲数据：tabs[tabId] = {items, activeIndex}。 */
-export const outlineStore = reactive<{
-  tabs: Record<string, OutlineSnapshot>
-  /** 递增版本号：面板订阅用（切换标签 / 文档变化时触达） */
-  version: number
-}>({
-  tabs: {},
-  version: 0,
-})
-
-export function clearOutline(tabId: string): void {
-  if (outlineStore.tabs[tabId]) {
-    delete outlineStore.tabs[tabId]
-    outlineStore.version++
-  }
+interface EmbeddedOutline {
+  projectionId: string
+  /** file_block 在其父编辑器中的位置（直接嵌入时即宿主位置） */
+  hostPos: number
+  snap: OutlineSnapshot
 }
 
-/** 提取标题 + 计算当前小节（依据 doc 与选区）。 */
+export const outlineStore = reactive<{
+  tabs: Record<string, OutlineSnapshot>
+  version: number
+}>({ tabs: {}, version: 0 })
+
+const mainSnapshots = new Map<string, OutlineSnapshot>()
+const embeddedSnapshots = new Map<string, Map<string, EmbeddedOutline>>()
+
+function rebuild(tabId: string): void {
+  const main = mainSnapshots.get(tabId) ?? { items: [], activeIndex: -1 }
+  const embedded = [...(embeddedSnapshots.get(tabId)?.values() ?? [])]
+  const ordered = [
+    ...main.items.map((item) => ({ item, order: item.pos, main: true })),
+    ...embedded.flatMap((entry) => entry.snap.items.map((item, index) => ({
+      item: { ...item, id: `${entry.projectionId}:${item.id}`, projectionId: entry.projectionId },
+      // 同一嵌入内保持标题顺序；位于 file_block 后、下一个宿主节点前。
+      order: entry.hostPos + 0.1 + index / 10_000,
+      main: false,
+    }))),
+  ].sort((a, b) => a.order - b.order || Number(b.main) - Number(a.main))
+  const activeMain = main.activeIndex >= 0 ? main.items[main.activeIndex] : null
+  outlineStore.tabs[tabId] = {
+    items: ordered.map((entry) => entry.item),
+    activeIndex: activeMain ? ordered.findIndex((entry) => entry.main && entry.item.id === activeMain.id) : -1,
+  }
+  outlineStore.version++
+}
+
+/** 主编辑器快照更新。 */
+export function setMainOutline(tabId: string, snap: OutlineSnapshot): void {
+  mainSnapshots.set(tabId, snap)
+  rebuild(tabId)
+}
+
+/** 嵌入投影快照更新；投影销毁时传 null 清理。 */
+export function setEmbedOutline(
+  tabId: string,
+  projectionId: string,
+  hostPos: number,
+  snap: OutlineSnapshot | null,
+): void {
+  let entries = embeddedSnapshots.get(tabId)
+  if (!entries && snap) embeddedSnapshots.set(tabId, (entries = new Map()))
+  if (!entries) return
+  if (snap) entries.set(projectionId, { projectionId, hostPos, snap })
+  else entries.delete(projectionId)
+  if (!entries.size) embeddedSnapshots.delete(tabId)
+  rebuild(tabId)
+}
+
+export function clearOutline(tabId: string): void {
+  mainSnapshots.delete(tabId)
+  embeddedSnapshots.delete(tabId)
+  if (outlineStore.tabs[tabId]) delete outlineStore.tabs[tabId]
+  outlineStore.version++
+}
+
 function snapshotFromDoc(doc: PMNode, selFrom: number): OutlineSnapshot {
   const items: OutlineItem[] = []
   doc.descendants((node, pos) => {
     if (node.type.name === 'heading') {
       const text = node.textContent.trim()
-      // 空标题不进入大纲（标题里全空格/图片占位）
       if (text) items.push({ id: `${pos}`, level: node.attrs.level as number, text, pos: pos + 1 })
     }
     return true
@@ -62,26 +102,23 @@ function snapshotFromDoc(doc: PMNode, selFrom: number): OutlineSnapshot {
   return { items, activeIndex }
 }
 
-/** 快照签名：内容/小节变化才对外触发（同小节内光标移动不重算面板） */
 function sigOf(snap: OutlineSnapshot): string {
-  return `${snap.items.length}:${snap.activeIndex}:${snap.items.map((i) => i.level + i.pos).join(',')}`
+  return `${snap.items.length}:${snap.activeIndex}:${snap.items.map((i) => `${i.level}:${i.pos}:${i.text}`).join(',')}`
 }
 
-/** 大纲插件工厂：每标签一个实例。onUpdate 接收最新快照。 */
+/** 每个 Crepe（主编辑器或投影）注册一份。 */
 export function outlinePlugin(onUpdate: (snap: OutlineSnapshot) => void) {
   const key = new PluginKey('WRITEIT_OUTLINE')
   return $prose(() => {
     let lastSig = ''
     let pending: ((s: OutlineSnapshot) => void) | null = null
     let raf = 0
-
     const emit = (snap: OutlineSnapshot) => {
       const sig = sigOf(snap)
       if (sig === lastSig) return
       lastSig = sig
       onUpdate(snap)
     }
-    /** rAF 去重调度（apply 每事务触发，合并同帧多次） */
     const schedule = (snap: OutlineSnapshot) => {
       if (raf) cancelAnimationFrame(raf)
       pending = () => emit(snap)
@@ -93,20 +130,12 @@ export function outlinePlugin(onUpdate: (snap: OutlineSnapshot) => void) {
       })
     }
     const fromState = (s: EditorState) => snapshotFromDoc(s.doc, s.selection.from)
-
     return new Plugin({
       key,
       state: {
-        // 初始：编辑器创建完成即产出大纲（doc 就绪）
-        init: (_config, s) => {
-          emit(fromState(s))
-          return null
-        },
+        init: (_config, s) => { emit(fromState(s)); return null },
         apply: (tr, _prev, oldState, newState) => {
-          // 文档结构或选区变化 → 重算（同帧合并）
-          if (tr.docChanged || !tr.selection.eq(oldState.selection)) {
-            schedule(fromState(newState))
-          }
+          if (tr.docChanged || !tr.selection.eq(oldState.selection)) schedule(fromState(newState))
           return null
         },
       },

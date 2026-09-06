@@ -32,7 +32,7 @@ export class FileBlockView implements NodeView {
   private curNode: ProseNode
   private readonly editorView: EditorView
 
-  constructor(node: ProseNode, editorView: unknown, _getPos: () => number | undefined) {
+  constructor(node: ProseNode, editorView: unknown, getPos: () => number | undefined) {
     this.curNode = node
     this.editorView = editorView as EditorView
     const collapsed = (node.attrs.collapsed as null | CollapsedInfo) ?? null
@@ -40,6 +40,10 @@ export class FileBlockView implements NodeView {
 
     this.dom = document.createElement('div')
     this.dom.className = 'ref-file-block' + (node.attrs.readonly ? ' readonly' : '') + (collapsed ? ' is-collapsed' : '')
+    // 宿主文档坐标供大纲把嵌入标题插回正确顺序；静态投影不在宿主 PM doc 内，
+    // 因而不能事后从投影 root 反推这个位置。
+    const pos = getPos()
+    if (typeof pos === 'number') this.dom.dataset.outlineHostPos = String(pos)
     if (collapsed) {
       this.dom.dataset.collapsed = ''
       this.dom.dataset.chain = collapsed.chain.join('|')

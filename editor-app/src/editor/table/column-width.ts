@@ -121,10 +121,10 @@ function readHeaderWidths(tableEl: HTMLTableElement): number[] | null {
 function renderColgroup(tableEl: HTMLTableElement): void {
   const widths = readHeaderWidths(tableEl)
   let colgroup = tableEl.querySelector(':scope > colgroup') as HTMLTableColElement | null
-  if (!widths || widths.length === 0) {
-    colgroup?.remove()
-    return
-  }
+  // ProseMirror 在 hover/drag 事务中会短暂重建 tbody，期间 rows[0] 可能为空；
+  // 不能因此删掉已有 colgroup，否则下一次鼠标移动会把表格瞬间恢复成等宽。
+  // 没有已有 colgroup 时直接保持无 colgroup 即可。
+  if (!widths || widths.length === 0) return
   if (!colgroup) {
     colgroup = document.createElement('colgroup')
     tableEl.insertBefore(colgroup, tableEl.firstChild)
@@ -157,13 +157,22 @@ function renderColgroup(tableEl: HTMLTableElement): void {
 /** 手动触发自动列宽：按内容重新计算该表各列宽并写回（覆盖手动），供悬浮按钮调用 */
 function autoWidthTable(view: EditorView, tableEl: HTMLTableElement): void {
   try {
-    const p = view.posAtDOM(tableEl, 2)
-    const $p = view.state.doc.resolve(p)
-    let d = $p.depth
-    while (d > 0 && ($p.node(d).type as { name?: string }).name !== 'table') d--
-    const node = d > 0 ? $p.node(d) : null
-    const tablePos = $p.before(d)
-    if (!node || (node.type as { name?: string }).name !== 'table') return
+    // <colgroup> 是渲染层 DOM，不属于 ProseMirror 文档；通过 DOM offset
+    // 反查 table 在有/无 colgroup、NodeView 包装时都不稳定。用 nodeDOM(pos)
+    // 按文档节点反查对应表格，得到的 pos 正好是表格节点前的位置。
+    let tablePos = -1
+    let node: { type: { name?: string } } | null = null
+    view.state.doc.descendants((candidate, pos) => {
+      if ((candidate.type as { name?: string }).name !== 'table') return true
+      const dom = view.nodeDOM(pos)
+      if (dom === tableEl || (dom instanceof HTMLElement && dom.contains(tableEl))) {
+        tablePos = pos
+        node = candidate as never
+        return false
+      }
+      return true
+    })
+    if (tablePos < 0 || !node) return
     const avail = view.dom.clientWidth ? view.dom.clientWidth - 40 : 760
     const widths = computeColWidths(node as never, Math.max(avail, 200))
     if (!widths) return
@@ -216,7 +225,12 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
     }
     /** 渲染所有表格的 colgroup（幂等） */
     const renderAll = (v: EditorView) => {
-      v.dom.querySelectorAll<HTMLTableElement>('table').forEach((t) => renderColgroup(t))
+      v.dom.querySelectorAll<HTMLTableElement>('table').forEach((t) => {
+        // ProseMirror columnResizing 正在拖拽时会用 px 临时更新 colgroup；
+        // 此时不能把它改回百分比，否则两套渲染会互相抢写造成闪烁。
+        if (t.querySelector('.column-resize-dragging')) return
+        renderColgroup(t)
+      })
     }
     let syncPending = false
     const scheduleRender = () => {
@@ -224,7 +238,9 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
       syncPending = true
       requestAnimationFrame(() => {
         syncPending = false
-        if (view) renderAll(view)
+        if (view) {
+          renderAll(view)
+        }
       })
     }
 
@@ -247,7 +263,15 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
         autoBtn.addEventListener('click', (e) => {
           e.preventDefault()
           e.stopPropagation()
-          if (hoveredTable) autoWidthTable(view as EditorView, hoveredTable)
+          // 拖拽列宽会让 ProseMirror 重建 table DOM；按按钮位置找当前表格，
+          // 避免继续使用旧的 hoveredTable（它可能属于 drag-preview）。
+          const br = autoBtn.getBoundingClientRect()
+          const underButton = document.elementFromPoint(br.left - 2, br.top + 12)?.closest('table') as HTMLTableElement | null
+          const target = underButton && dom.contains(underButton) ? underButton : Array.from(dom.querySelectorAll<HTMLTableElement>('table')).find((t) => {
+            const r = t.getBoundingClientRect()
+            return Math.abs(r.right - br.right) < 2 && Math.abs(r.top + 4 - br.top) < 2
+          }) ?? (hoveredTable && hoveredTable.isConnected && dom.contains(hoveredTable) ? hoveredTable : null)
+          if (target) autoWidthTable(view as EditorView, target)
         })
         document.body.appendChild(autoBtn)
         // 只监听当前编辑器内的表格，避免多标签编辑器互相抢按钮。
@@ -265,6 +289,10 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
             hoveredTable = null
             lastTable = null
             return
+          }
+          if (hoveredTable && (!hoveredTable.isConnected || !dom.contains(hoveredTable))) {
+            hoveredTable = null
+            lastTable = null
           }
           const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
           const isOurUI = el && el.closest('.tb-auto-width,.tb-resize-handle')
@@ -286,7 +314,9 @@ export const columnWidthPlugin = (getCfg: (ctx: unknown) => ReturnType<typeof ge
         }
         document.addEventListener('mousemove', onDocMove)
         return {
-          update(v2) {
+          update() {
+            // hover/拖拽状态更新后延后一帧补回 colgroup；renderColgroup 不会在
+            // ProseMirror 短暂空 tbody 时删除已有 colgroup，因此不会把列变等宽。
             scheduleRender()
           },
           destroy() {

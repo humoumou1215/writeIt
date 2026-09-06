@@ -62,27 +62,12 @@ async function rebuild() {
     markers.value = []
     return
   }
-  const { editorViewCtx } = await import('@milkdown/kit/core')
-  let out: { top: number }[] = []
-  try {
-    out = await inst.crepe.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx)
-      const paneRect = p.getBoundingClientRect()
-      const res: { top: number }[] = []
-      for (const it of list) {
-        const el = view.nodeDOM(Math.max(it.pos - 1, 0)) as HTMLElement | null
-        if (el) {
-          const r = el.getBoundingClientRect()
-          res.push({ top: r.top - paneRect.top + p.scrollTop })
-        } else {
-          res.push({ top: -1 })
-        }
-      }
-      return res
-    })
-  } catch {
-    return
-  }
+  const { getOutlineItemElement } = await import('../editor/manager')
+  const paneRect = p.getBoundingClientRect()
+  const out = list.map((it) => {
+    const el = getOutlineItemElement(tabId, it)
+    return el ? { top: el.getBoundingClientRect().top - paneRect.top + p.scrollTop } : { top: -1 }
+  })
   const list2 = [...list]
   markers.value = out.map((o, i) => ({ item: list2[i], docTop: o.top }))
   await scrollListToActive()
@@ -141,8 +126,8 @@ watch(activeIndex, () => void scrollListToActive())
 async function go(item: OutlineItem) {
   const tabId = activeTabId.value
   if (!tabId) return
-  const { scrollToPos } = await import('../editor/manager')
-  await scrollToPos(tabId, item.pos)
+  const { scrollToOutlineItem } = await import('../editor/manager')
+  await scrollToOutlineItem(tabId, item)
 }
 
 // ---------- 自适应宽度（按文字内容，上限 = 编辑器 1/3） ----------

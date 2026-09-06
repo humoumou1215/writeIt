@@ -6,7 +6,8 @@ const task = await L.acquireTaskSpace('menu-e2e')
 await L.installErrors()
 await L.freshApp('http://localhost:5173/?backend=mock')
 
-const menuCount = () => L.q('[data-ref-menu] .menu-group li')
+const ACTIVE_MENU = '[data-ref-menu][data-show="true"]'
+const menuCount = () => L.q(`${ACTIVE_MENU} .menu-group li`)
 const waitMenu = async (open, timeout = 4000) => {
   const start = Date.now()
   while (Date.now() - start < timeout) {
@@ -18,8 +19,8 @@ const waitMenu = async (open, timeout = 4000) => {
   return false
 }
 const menuOpen = async () => (await menuCount()) > 0
-const entryLabels = () => js(`[...document.querySelectorAll('[data-ref-menu] .menu-group li > span:nth-child(2)')].map(s => s.textContent.trim())`)
-const selectedMode = () => L.txt('[data-ref-menu] .tab-group li.selected')
+const entryLabels = () => js(`[...document.querySelectorAll('${ACTIVE_MENU} .menu-group li > span:nth-child(2)')].map(s => s.textContent.trim())`)
+const selectedMode = () => L.txt(`${ACTIVE_MENU} .tab-group li.selected`)
 const freshPara = async () => {
   await L.focusEditor()
   await L.goEnd()
@@ -48,10 +49,8 @@ C.check('根级含文件 README', rootEntries.some(t => t.includes('README')))
 C.check('文件只出现一次', rootEntries.filter(t => t.includes('README')).length === 1)
 
 // ===== 2. 目录逐级发现 =====
-const noteIdx = (await entryLabels()).findIndex(t => t === '笔记')
-for (let i = 0; i < noteIdx; i++) await L.press('ArrowDown')
-await L.press('Enter')
-await L.waitMs(400)
+await L.clickText(`${ACTIVE_MENU} .menu-group li`, '笔记')
+await L.waitFor(async () => (await entryLabels()).some(t => t.includes('会议记录')), 4000)
 const noteChildren = await entryLabels()
 C.check('进入笔记目录后显示子文件', noteChildren.some(t => t.includes('会议记录')) && noteChildren.some(t => t.includes('待办清单')))
 await L.press('Backspace')
@@ -67,7 +66,7 @@ const filtered = await entryLabels()
 C.check('过滤显示 笔记/会议记录（含 Git 演示同名）', filtered.length >= 2 && filtered.some(t => t.includes('笔记/会议记录')) && filtered.some(t => t.includes('Git演示/笔记/会议纪要')))
 await L.press('Backspace')
 await L.waitMs(300)
-const h6AfterBs = await L.txt('[data-ref-menu] .menu-group h6')
+const h6AfterBs = await L.txt(`${ACTIVE_MENU} .menu-group h6`)
 C.check('Backspace 删一个字符细化过滤', h6AfterBs.includes('搜索：会'))
 await L.press('Backspace')
 await L.waitMs(300)
@@ -119,7 +118,7 @@ await L.type(' @')
 const okAt = await waitMenu(true)
 if (!okAt) {
   const st = await js(`(() => ({
-    show: document.querySelector('[data-ref-menu]') ? document.querySelector('[data-ref-menu]').getAttribute('data-show') : null,
+    show: document.querySelector('${ACTIVE_MENU}') ? 'true' : null,
     doc: window.__editorGetMarkdown().slice(-30),
     recent: window.__refMenuState ? window.__refMenuState.recentTyped : null,
     q: window.__refMenuState ? window.__refMenuState.query : null,
@@ -136,9 +135,9 @@ await L.type('前段文字')
 await L.type('![[数据/原始')
 await waitMenu(true)
 const pre = await js(`(() => ({
-  show: document.querySelector('[data-ref-menu]') ? document.querySelector('[data-ref-menu]').getAttribute('data-show') : null,
-  items: Array.from(document.querySelectorAll('[data-ref-menu] .menu-group li')).map(li => li.textContent.trim()).slice(0, 3),
-  hover: document.querySelector('[data-ref-menu] .menu-group li.hover') ? document.querySelector('[data-ref-menu] .menu-group li.hover').textContent.trim() : null,
+  show: document.querySelector('${ACTIVE_MENU}') ? 'true' : null,
+  items: Array.from(document.querySelectorAll('${ACTIVE_MENU} .menu-group li')).map(li => li.textContent.trim()).slice(0, 3),
+  hover: document.querySelector('${ACTIVE_MENU} .menu-group li.hover') ? document.querySelector('${ACTIVE_MENU} .menu-group li.hover').textContent.trim() : null,
 }))()`)
 cliLog('[debug] Enter 前菜单: ' + JSON.stringify(pre))
 await L.press('Enter')

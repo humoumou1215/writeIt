@@ -46,6 +46,9 @@ const BLOB_SRC = `(() => {
         for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
         window.__exportBlobs.push({ name, size: bytes.length, b64: btoa(bin) })
       }).catch(() => {})
+      // E2E 已从 blob 读取并校验字节，不再触发真实浏览器下载。真实下载会打开
+      // ego-lite 权限/确认 UI，造成假“人工接管”并阻塞整个自动化批次。
+      return
     }
     return orig.call(this)
   }
@@ -69,28 +72,34 @@ const takeBlob = async (timeout = 8000) => {
 
 const J = (v) => JSON.stringify(v)
 
-// 套件专用：每个 Node 进程只创建一个可识别的测试空间。
-// 空间名带 run id，避免复用崩溃后遗留的 user-held/非活跃空间；回收由下面的
-// 进程级退出钩子 + 运行器父进程兜底共同保证。
+// 每个 worker 固定复用一个测试空间。ego-lite 的 closeTaskSpace 会弹出原生
+// “删除这个空间？”确认框；大量短套件逐个创建/删除空间会堆积确认框和 renderer。
+// 因此 E2E 只保留有限 lane，套件间用 freshApp 隔离状态，不走空间删除路径。
 let activeTaskSpace = null
 let exitInProgress = false
 const realProcessExit = process.exit.bind(process)
+const nativeCompleteTaskSpace = globalThis.completeTaskSpace
+class E2ESuiteExit extends Error {
+  constructor(code) {
+    super(`E2E suite exit ${code}`)
+    this.code = Number(code) || 0
+    this.__e2eSuiteExit = true
+  }
+}
+
+// 兼容现有套件末尾的 completeTaskSpace(..., { keep:false })：在 E2E lane 内将其
+// 解释为“本套件已完成但保留 lane”。非当前 lane 仍调用 ego-browser 原生实现。
+globalThis.completeTaskSpace = async (nameOrId, options) => {
+  const task = activeTaskSpace
+  if (task && (nameOrId === task.id || nameOrId === task.name || nameOrId === task.taskId)) {
+    return { done: true, preserved: true }
+  }
+  return nativeCompleteTaskSpace(nameOrId, options)
+}
 
 const releaseActiveTaskSpace = async () => {
-  const task = activeTaskSpace
-  if (!task?.id) return
+  // lane 由后续套件复用；进程退出不删除、不关闭最后一个 tab。
   activeTaskSpace = null
-  try {
-    await Promise.race([
-      completeTaskSpace(task.id, { keep: false }),
-      new Promise((resolve) => setTimeout(resolve, 8000)),
-    ])
-  } catch (e) {
-    // 正常用例通常已经显式 complete；重复关闭返回 not found 属于预期状态。
-    if (!String(e?.message || e).toLowerCase().includes('task space not found')) {
-      cliLog(`⚠️ task space 回收失败 (${task.id}): ${e?.message || e}`)
-    }
-  }
 }
 
 const shutdownWithCleanup = async (code) => {
@@ -100,9 +109,11 @@ const shutdownWithCleanup = async (code) => {
   realProcessExit(code)
 }
 
-// 用例普遍在末尾显式 process.exit；重写为“先回收、再退出”，并覆盖异常/信号路径。
-// 这是集中式兜底，避免每个用例都必须手写 try/finally。
-process.exit = (code = 0) => { void shutdownWithCleanup(code) }
+// 批次模式用异常结束当前套件但保留 Node/Chromium 会话；单套件模式正常退出进程。
+process.exit = (code = 0) => {
+  if (typeof __EGO_BATCH !== 'undefined' && __EGO_BATCH) throw new E2ESuiteExit(code)
+  void shutdownWithCleanup(code)
+}
 process.on('uncaughtException', (err) => {
   cliLog(`❌ 未捕获异常: ${err?.stack || err}`)
   void shutdownWithCleanup(1)
@@ -117,8 +128,17 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 
 const acquireTaskSpace = async (name) => {
   if (activeTaskSpace) return activeTaskSpace
-  const runId = `${Date.now()}-${process.pid}`
-  const t = await useOrCreateTaskSpace(`writeIt-e2e:${name}:${runId}`)
+  const lane = typeof __EGO_LANE === 'string' && __EGO_LANE ? __EGO_LANE : `adhoc-${name}`
+  const spaceName = `writeIt-e2e:${lane}`
+  const existing = (await listTaskSpaces()).find((s) => s.name === spaceName || s.taskId === spaceName)
+  let t
+  if (existing?.ownership === 'user') {
+    t = await claimTaskSpace(existing.id)
+  } else {
+    t = await useOrCreateTaskSpace(spaceName)
+    // 本项目全量回归无人操作这些专用 lane；该状态只可能来自 ego-lite 的弹窗误接管。
+    if (existing?.ownership === 'agentDelegatedToUser') await takeOverTaskSpace(existing.id)
+  }
   activeTaskSpace = t
   return t
 }
@@ -131,7 +151,49 @@ const clearDemoShots = () => {
 }
 
 // ---------------- 时间（ego-browser 的 wait 单位是秒） ----------------
-const waitMs = (ms) => wait(ms / 1000)
+const exactWaitMs = (ms) => wait(ms / 1000)
+
+// 长等待以“页面状态连续稳定”为完成条件，原毫秒数只作为上限。保留至少 500ms
+// 观察窗，覆盖 esbuild/Crepe/Mermaid 首次异步初始化；短等待保持精确语义。
+const appStateSignature = () => js(`(() => {
+  const hash = (s) => {
+    let h = 2166136261
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+    return h >>> 0
+  }
+  const body = document.body?.innerText || ''
+  const md = window.__editorGetMarkdown ? String(window.__editorGetMarkdown() || '') : ''
+  const mock = localStorage.getItem('milkdown-note-mock-fs-v2') || ''
+  return [document.readyState, document.querySelectorAll('.ProseMirror').length,
+    document.querySelectorAll('.ref-file-block').length, document.querySelectorAll('[data-ref-menu] .menu-group li').length,
+    document.querySelectorAll('.modal-mask').length, body.length, hash(body), md.length, hash(md), mock.length, hash(mock)].join(':')
+})()`)
+const waitForAppStable = async (timeoutMs, minMs = 250, stableMs = 100) => {
+  const started = Date.now()
+  await exactWaitMs(Math.min(minMs, timeoutMs))
+  let previous = null
+  let stableSince = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const current = await appStateSignature()
+    if (current !== previous) {
+      previous = current
+      stableSince = Date.now()
+    } else if (Date.now() - stableSince >= stableMs) {
+      return true
+    }
+    await exactWaitMs(100)
+  }
+  return false
+}
+const waitFor = async (predicate, timeoutMs = 5000, intervalMs = 100) => {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return true
+    await exactWaitMs(intervalMs)
+  }
+  return false
+}
+const waitMs = (ms) => ms > 1000 ? waitForAppStable(ms) : exactWaitMs(ms)
 
 // Application navigation used to pay a fixed 2.5–3.5s delay on every suite,
 // even when Vite/Milkdown had already finished.  Poll the same observable
@@ -150,7 +212,7 @@ const waitForEditorReady = async (fallbackMs = 2500, timeoutMs = 10000) => {
     } else {
       readySince = 0
     }
-    await waitMs(100)
+    await exactWaitMs(100)
   }
   // Preserve the previous minimum timing contract when the app is genuinely
   // not ready (or a future test page does not expose the editor marker),
@@ -204,7 +266,9 @@ const scrollIntoView = (sel, i = 0) => js(
 )
 // 树节点点击（按 data-path 精确命中，dispatchEvent 单击；绕过遮挡），替代 playwright 树定位
 const treeClick = async (path, waitms = 600) => {
-  await js(`(() => { const el = document.querySelector(${J('.tree [data-path="' + path + '"]')}); if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true })); return !!el })()`)
+  const selector = `.tree [data-path="${path}"]`
+  await waitFor(async () => (await q(selector)) > 0, 5000)
+  await js(`(() => { const el = document.querySelector(${J(selector)}); if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true })); return !!el })()`)
   await waitMs(waitms)
 }
 
@@ -292,7 +356,7 @@ const VK = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ArrowDown:
 // 按键：无修饰符组合直接用 pressKey；含 '+' 的（如 Control+e / Control+Shift+f）→
 // 用 CDP 发真实修饰符+键（pressKey('Control+e') 会被当成单一键名，应用收不到 ctrlKey）
 const press = async (combo) => {
-  if (!combo.includes('+')) return pressKey(combo)
+  if (!combo.includes('+') && !VK[combo]) return pressKey(combo)
   const parts = String(combo).split('+')
   let modifiers = 0, key = ''
   for (const p of parts) {
@@ -300,7 +364,8 @@ const press = async (combo) => {
     key = p
   }
   const isEnter = /^enter$/i.test(key)
-  const baseKey = isEnter ? 'Enter' : key
+  const shiftedLetter = (modifiers & CDP_MOD.Shift) && /^[a-z]$/i.test(key)
+  const baseKey = isEnter ? 'Enter' : shiftedLetter ? key.toUpperCase() : key
   const code = isEnter ? 'Enter' : (VK[key] ? key : 'Key' + key.toUpperCase())
   const vk = VK[key] || key.toUpperCase().charCodeAt(0)
   const opts = { key: baseKey, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers }
@@ -335,7 +400,7 @@ const installErrors = async () => {
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: ERROR_HOOK_SRC }).catch(() => {})
   await js(ERROR_HOOK_SRC).catch(() => {})
 }
-const errors = () => js(`(window.__egErr || []).slice()`)
+const errors = () => js(`(window.__egErr || []).filter((e) => !/ResizeObserver loop completed with undelivered notifications/.test(e))`)
 
 // ---------------- 导航 ----------------
 // 视口兕底：egobrowser 任务空间窗口有时为 0x0（pageInfo w/h=0），坐标点击/截图全部失效。
@@ -346,15 +411,36 @@ const ensureViewport = async () => {
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
   } catch { /* 无该能力时忽略 */ }
 }
+// ego-lite 的 task space 共用浏览器 profile，同源 localStorage 也会互相影响。
+// 每个 lane 使用独立 *.localhost origin，隔离 mock FS 与应用状态，同时仍访问同一 Vite 服务。
+const laneUrl = (rawUrl) => {
+  if (typeof __EGO_LANE !== 'string' || !__EGO_LANE) return rawUrl
+  const u = new URL(rawUrl)
+  if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
+    u.hostname = `${__EGO_LANE.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}.localhost`
+  }
+  return u.href
+}
 const openApp = async (url, settleMs) => {
-  await openOrReuseTab(url, { wait: true, timeout: 60 })
+  const targetUrl = laneUrl(url)
+  await openOrReuseTab(targetUrl, { wait: true, timeout: 60 })
+  // URL 查询串不同会让 openOrReuseTab 新建标签；旧应用标签仍会监听 storage/HMR。
+  // 只保留当前标签，关闭其余标签时当前标签仍存在，不会走“删除最后标签/空间”路径。
+  const current = await currentTab()
+  const tabs = await listTabs()
+  for (const tab of tabs) {
+    const id = tab.targetId ?? tab.id
+    const currentId = current?.targetId ?? current?.id
+    if (id && id !== currentId) await closeTab(id).catch(() => {})
+  }
   await ensureViewport()
   if (settleMs == null) await waitForEditorReady(2500)
   else await waitMs(settleMs)
 }
-// 清空 mock 文件系统并重新加载（防止测试残留新文件/被改文件串扰下一个套件）
+// 清空当前 lane 的全部浏览器状态并重新加载。固定 lane 会跨套件复用，除 mock FS
+// 外，抽屉/快捷键/设置等 localStorage 状态也必须隔离；sessionStorage 同理。
 const resetMockFs = async (settleMs) => {
-  await js(`localStorage.removeItem('milkdown-note-mock-fs-v2'); location.reload()`)
+  await js(`localStorage.clear(); sessionStorage.clear(); location.reload()`)
   if (settleMs == null) await waitForEditorReady(3500)
   else await waitMs(settleMs)
 }
@@ -362,6 +448,8 @@ const resetMockFs = async (settleMs) => {
 const freshApp = async (url, settleMs) => {
   await openApp(url, settleMs)
   await resetMockFs()
+  // reload 后旧 DOM 可能短暂残留；确认新 document 已完成挂载，再交给套件操作。
+  await waitForEditorReady(3500, 15000)
 }
 const reloadApp = async (settleMs) => {
   await js(`location.reload()`)
@@ -406,7 +494,7 @@ const newChecker = () => {
 
 // ---------------- 命名空间（用例统一用 L.xxx 访问） ----------------
 const L = {
-  J, waitMs, waitForEditorReady, acquireTaskSpace, demoShotsDir, clearDemoShots, setupDownloads, latestDownload, headOf, readAllText, installBlobCapture, resetBlobs, takeBlob,
+  J, waitMs, exactWaitMs, waitFor, waitForAppStable, waitForEditorReady, acquireTaskSpace, demoShotsDir, clearDemoShots, setupDownloads, latestDownload, headOf, readAllText, installBlobCapture, resetBlobs, takeBlob,
   q, has, qText, txt, txtAll, attr, vis, box, boxText, val, scrollIntoView, treeClick,
   clickEl, clickText, rightClick, rightClickText, middleClick, middleClickText, dblClickEl, hoverEl, hoverText, selectText,
   press, type, fill,

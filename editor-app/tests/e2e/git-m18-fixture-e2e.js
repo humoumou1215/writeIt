@@ -18,7 +18,9 @@ await L.waitMs(1500)
 await L.clickEl('.icon-col .icon-btn:nth-child(2)', 0, { label: 'Git 面板' })
 await L.waitMs(1200)
 await L.clickText('.scm-file-row, .ws-file', 'README')
-await L.waitMs(8000)
+await L.waitFor(() => L.vis('.render-host'), 8000)
+await js(`document.querySelector('.ad-toggle.expand')?.click()`)
+await L.waitFor(async () => (await L.q('.annotation-drawer .ad-card')) > 0, 8000)
 
 // ---------- 1/2/3/4/5：主路径（README diff：mermaid + 嵌入 + 引用） ----------
 const main = await js(`(() => {
