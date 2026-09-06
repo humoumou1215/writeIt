@@ -1,8 +1,10 @@
 # WriteIt v2 — P1 Foundation Architecture Review
 
-- **Review date:** 2026-09-06
-- **Scope:** P1-01 through P1-05, accepted ADR-0001 through ADR-0006, and readiness for Phase 2
-- **P1 → P2 gate:** **CHANGES REQUIRED / HOLD**
+- **Initial review date:** 2026-09-06
+- **Re-review date (P1-AR2):** 2026-09-07
+- **Scope:** P1-01 through P1-05, P1-R01 through P1-R04, accepted ADR-0001 through ADR-0006, and readiness for Phase 2
+- **Initial P1 → P2 gate:** **CHANGES REQUIRED / HOLD**
+- **Current P1 → P2 gate (P1-AR2):** **PASS for P2-01 entry**
 - **CM6 architecture decision:** remains **GO**; this review does not reopen ADR-0004
 
 ## Executive conclusion
@@ -124,9 +126,9 @@ The current tests preserve several exact strings, but v2 has no permanent golden
 - Encoding/BOM and byte-level filesystem policy still need an explicit source-fidelity decision.
 - `writeit-v2/README.md` and the scaffold UI still report P0; this is documentation/UI drift, not a domain blocker.
 
-## Gate decision and remediation order
+## Initial gate decision and remediation order
 
-**Do not start P2-01 yet.** The Phase 1 functional scope is present, but the P1 → P2 architecture gate remains on hold until the blocker scenarios have regression tests and pass.
+**Initial decision (superseded by P1-AR2): do not start P2-01 yet.** The Phase 1 functional scope was present, but the initial P1 → P2 architecture gate remained on hold until the blocker scenarios had regression tests and passed.
 
 Recommended one-task sequence:
 
@@ -137,3 +139,31 @@ Recommended one-task sequence:
 5. **P1-AR2 — Re-run the P1 architecture gate**
 
 These remediations refine decisions explicitly deferred by ADR-0002/ADR-0003; they do not require a superseding ADR unless implementation proposes a second Markdown authority or changes the accepted projection model.
+
+## P1-AR2 — P1 → P2 Architecture Gate Re-review
+
+- **Re-review date:** 2026-09-07
+- **Gate result:** **PASS for P2-01 entry**
+
+### Remediation evidence accepted
+
+- **P1-R01:** runtime-discriminated id/path locators prevent cross-namespace collisions across lookup, mutation, history, persistence, timeline, subscription, and projection operations.
+- **P1-R02:** timeline and document observer failures are routed to an isolated error sink; document fan-out continues after a failing projection, and re-entrant source notifications are queued FIFO per document.
+- **P1-R03:** generic subscriptions no longer create projection lifecycle state; projection progress requires explicit acknowledgement, rejects revision regression, derives lag as stale, and records apply failure separately as degraded.
+- **P1-R04:** timeline facts omit Markdown and use bounded retention; per-document history has an explicit entry budget; the source-fidelity corpus covers no-edit saves and targeted edits without unrelated rewriting.
+
+### Verification run
+
+```text
+npm run test       PASS — 8 files, 34 tests
+npm run typecheck  PASS
+npm run build      PASS
+```
+
+Additional gate checks passed: no `editor-app` runtime import in `writeit-v2/src`, no Vue/DOM/CM6/Tauri dependency in `src/core`, no timeout/sleep synchronization, and `git diff --check` reported no whitespace errors.
+
+### Decision and remaining conditions
+
+The initial blocker findings P1-AR-02 through P1-AR-05 are covered by regression tests and passed verification. The P1 foundation is accepted as the synchronization boundary for **P2-01**; ADR-0004 remains GO and no superseding ADR is required.
+
+P1-AR-07 remains an explicit follow-up condition before the first source-changing CM6 task: the corpus exists, but automated architecture-boundary checks and the v2 CI path are not established yet. P2-02 must add or be gated by those checks; this residual risk does not block the narrow P2-01 entry.

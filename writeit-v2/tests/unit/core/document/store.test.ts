@@ -81,7 +81,6 @@ describe('DocumentStore', () => {
     const observedDocumentIds = [] as string[]
     const unsubscribe = store.subscribe(
       secondByPath,
-      'path-projection',
       (event) => observedDocumentIds.push(event.document.id),
     )
 

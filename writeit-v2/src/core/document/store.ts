@@ -1,6 +1,11 @@
-import { EventTimeline } from './timeline'
+import {
+  EventTimeline,
+  createTimelineDocumentState,
+} from './timeline'
 import type {
   DocumentTimelineEvent,
+  EventTimelineOptions,
+  ObserverErrorSink,
   ProjectionId,
   TimelineListener,
   TimelineUnsubscribe,
@@ -8,7 +13,6 @@ import type {
 import {
   INITIAL_REVISION,
   createDocumentState,
-  documentById,
   isDocumentId,
   isDocumentLocator,
   isDocumentPath,
@@ -40,6 +44,20 @@ export interface DocumentChangeInput {
   readonly expectedRevision?: Revision
 }
 
+export interface DocumentHistoryOptions {
+  /** Maximum undo and redo entries retained for each document. */
+  readonly maxEntries?: number
+}
+
+export interface DocumentStoreOptions {
+  /** Receives isolated failures from timeline and document observers. */
+  readonly observerErrorSink?: ObserverErrorSink
+  /** Diagnostic fact retention; Markdown is never retained by the timeline. */
+  readonly timeline?: Pick<EventTimelineOptions, 'maxEvents'>
+  /** Per-document source history retention. */
+  readonly history?: DocumentHistoryOptions
+}
+
 /**
  * One source-level edit retained for a document's undo/redo history.
  *
@@ -58,19 +76,32 @@ export interface DocumentHistorySnapshot {
   readonly redo: readonly DocumentHistoryEntry[]
 }
 
+export interface ProjectionState {
+  readonly projectionId: ProjectionId
+  /** Highest revision explicitly acknowledged by the projection. */
+  readonly revision: Revision
+  /** True when explicitly stale or behind the authoritative document revision. */
+  readonly stale: boolean
+  /** True when the projection reported an apply/render failure. */
+  readonly degraded: boolean
+  readonly degradedReason?: string
+}
+
 interface MutableDocumentHistory {
   readonly undo: DocumentHistoryEntry[]
   readonly redo: DocumentHistoryEntry[]
+  readonly maxEntries: number
 }
 
 interface ProjectionRecord {
   readonly id: ProjectionId
   revision: Revision
-  stale: boolean
+  explicitlyStale: boolean
+  degradedReason?: string
 }
 
 interface DocumentSubscription {
-  readonly projectionId: ProjectionId
+  readonly projectionId?: ProjectionId
   readonly listener: DocumentStoreListener
 }
 
@@ -91,6 +122,17 @@ export interface DocumentPersistedEvent {
 export type DocumentStoreEvent = DocumentChangedEvent | DocumentPersistedEvent
 export type DocumentStoreListener = (event: DocumentStoreEvent) => void
 export type Unsubscribe = () => void
+
+/**
+ * Per-document FIFO dispatch state. Source commits remain synchronous, but
+ * notifications created re-entrantly during a commit or fan-out wait until
+ * the current event has reached every subscription.
+ */
+interface DocumentDispatchState {
+  readonly pendingEvents: DocumentStoreEvent[]
+  depth: number
+  dispatching: boolean
+}
 
 export class DocumentNotFoundError extends Error {
   readonly locator: DocumentLocator
@@ -134,6 +176,15 @@ export class ProjectionNotFoundError extends Error {
   }
 }
 
+export class ProjectionRevisionRegressionError extends RangeError {
+  constructor(previous: Revision, next: Revision) {
+    super(
+      `Projection revision cannot move backwards from ${previous} to ${next}`,
+    )
+    this.name = 'ProjectionRevisionRegressionError'
+  }
+}
+
 function requireOrigin(origin: DocumentOrigin): DocumentOrigin {
   if (origin === null || typeof origin !== 'object') {
     throw new TypeError('Document change origin is required')
@@ -171,6 +222,17 @@ function requireMarkdown(markdown: string): void {
   }
 }
 
+const DEFAULT_HISTORY_MAX_ENTRIES = 1_000
+
+function requireHistoryMaxEntries(maxEntries: number): number {
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
+    throw new RangeError(
+      'History maxEntries must be a non-negative safe integer',
+    )
+  }
+  return maxEntries
+}
+
 function requireDocumentLocator(locator: DocumentLocator): DocumentLocator {
   if (!isDocumentLocator(locator)) {
     throw new TypeError(
@@ -202,9 +264,24 @@ export class DocumentStore {
     Map<ProjectionId, ProjectionRecord>
   >()
 
-  private readonly timeline = new EventTimeline()
+  private readonly dispatchStates = new Map<DocumentId, DocumentDispatchState>()
 
-  private nextProjectionNumber = 0
+  private readonly timeline: EventTimeline
+
+  private readonly observerErrorSink: ObserverErrorSink
+
+  private readonly historyMaxEntries: number
+
+  constructor(options: DocumentStoreOptions = {}) {
+    this.observerErrorSink = options.observerErrorSink ?? (() => undefined)
+    this.historyMaxEntries = requireHistoryMaxEntries(
+      options.history?.maxEntries ?? DEFAULT_HISTORY_MAX_ENTRIES,
+    )
+    this.timeline = new EventTimeline({
+      ...options.timeline,
+      observerErrorSink: this.observerErrorSink,
+    })
+  }
 
   load(input: DocumentLoadInput): DocumentState {
     if (!isDocumentId(input.id)) {
@@ -245,12 +322,21 @@ export class DocumentStore {
     this.documents.set(state.id, state)
     this.idsByPath.set(state.path, state.id)
     this.listeners.set(state.id, new Set())
-    this.histories.set(state.id, { undo: [], redo: [] })
+    this.histories.set(state.id, {
+      undo: [],
+      redo: [],
+      maxEntries: this.historyMaxEntries,
+    })
     this.projections.set(state.id, new Map())
+    this.dispatchStates.set(state.id, {
+      pendingEvents: [],
+      depth: 0,
+      dispatching: false,
+    })
     this.timeline.record({
       type: 'DocumentLoaded',
       documentId: state.id,
-      document: state,
+      document: createTimelineDocumentState(state),
     })
     return state
   }
@@ -310,7 +396,7 @@ export class DocumentStore {
     projections.set(id, {
       id,
       revision: displayedRevision,
-      stale: false,
+      explicitlyStale: false,
     })
     this.timeline.record({
       type: 'ProjectionAttached',
@@ -320,7 +406,39 @@ export class DocumentStore {
     })
   }
 
-  updateProjection(
+  getProjection(
+    locator: DocumentLocator,
+    projectionId: ProjectionId,
+  ): ProjectionState {
+    const document = this.requireDocument(locator)
+    return this.toProjectionState(
+      document,
+      this.requireProjection(document.id, projectionId),
+    )
+  }
+
+  getProjectionState(
+    locator: DocumentLocator,
+    projectionId: ProjectionId,
+  ): ProjectionState {
+    return this.getProjection(locator, projectionId)
+  }
+
+  getProjections(locator: DocumentLocator): readonly ProjectionState[] {
+    const document = this.requireDocument(locator)
+    return Object.freeze(
+      [...this.requireProjectionMap(document.id).values()].map((projection) =>
+        this.toProjectionState(document, projection),
+      ),
+    )
+  }
+
+  /**
+   * Records that a projection has actually applied a revision. A callback
+   * returning successfully is not an acknowledgement; projection adapters
+   * must call this after their local apply/render completes.
+   */
+  acknowledgeProjection(
     locator: DocumentLocator,
     projectionId: ProjectionId,
     revision?: Revision,
@@ -332,14 +450,33 @@ export class DocumentStore {
       document.revision,
     )
 
+    if (displayedRevision < projection.revision) {
+      throw new ProjectionRevisionRegressionError(
+        projection.revision,
+        displayedRevision,
+      )
+    }
+
     projection.revision = displayedRevision
-    projection.stale = false
+    projection.explicitlyStale = false
+    if (displayedRevision === document.revision) {
+      projection.degradedReason = undefined
+    }
     this.timeline.record({
       type: 'ProjectionUpdated',
       documentId: document.id,
       projectionId: projection.id,
       revision: displayedRevision,
     })
+  }
+
+  /** Backwards-compatible name for the explicit acknowledgement protocol. */
+  updateProjection(
+    locator: DocumentLocator,
+    projectionId: ProjectionId,
+    revision?: Revision,
+  ): void {
+    this.acknowledgeProjection(locator, projectionId, revision)
   }
 
   detachProjection(
@@ -355,6 +492,12 @@ export class DocumentStore {
     )
 
     this.requireProjectionMap(document.id).delete(projection.id)
+    const documentListeners = this.listeners.get(document.id)
+    documentListeners?.forEach((subscription) => {
+      if (subscription.projectionId === projection.id) {
+        documentListeners.delete(subscription)
+      }
+    })
     this.timeline.record({
       type: 'ProjectionDetached',
       documentId: document.id,
@@ -371,26 +514,36 @@ export class DocumentStore {
   ): void {
     const document = this.requireDocument(locator)
     const projection = this.requireProjection(document.id, projectionId)
-    const revision =
-      typeof revisionOrReason === 'string'
-        ? projection.revision
-        : this.requireProjectionRevision(
-            revisionOrReason ?? projection.revision,
-            document.revision,
-          )
     const reason =
       typeof revisionOrReason === 'string'
         ? revisionOrReason
         : suppliedReason
 
-    projection.revision = revision
-    projection.stale = true
+    // A numeric argument is retained for API compatibility as the reported
+    // source revision, but it never acknowledges an unapplied revision.
+    if (typeof revisionOrReason === 'number') {
+      const reportedRevision = this.requireProjectionRevision(
+        revisionOrReason,
+        document.revision,
+      )
+      if (reportedRevision < projection.revision) {
+        throw new ProjectionRevisionRegressionError(
+          projection.revision,
+          reportedRevision,
+        )
+      }
+    }
+
+    projection.explicitlyStale = true
+    if (reason !== undefined) {
+      projection.degradedReason = reason
+    }
     this.timeline.record({
       type: 'ProjectionStale',
       documentId: document.id,
       projectionId: projection.id,
-      revision,
-      ...(reason === undefined ? {} : { reason }),
+      revision: projection.revision,
+      ...(reason === undefined ? {} : { reason, degradedReason: reason }),
     })
   }
 
@@ -432,6 +585,7 @@ export class DocumentStore {
     if (!entry) return current
 
     history.redo.push(entry)
+    this.trimHistory(history.redo, history.maxEntries)
     return this.commitChange(current, entry.before, normalizedOrigin, false)
   }
 
@@ -448,6 +602,7 @@ export class DocumentStore {
     if (!entry) return current
 
     history.undo.push(entry)
+    this.trimHistory(history.undo, history.maxEntries)
     return this.commitChange(current, entry.after, normalizedOrigin, false)
   }
 
@@ -512,41 +667,52 @@ export class DocumentStore {
     origin: DocumentOrigin,
     recordHistory: boolean,
   ): DocumentState {
-    const next = createDocumentState({
-      id: current.id,
-      path: current.path,
-      markdown,
-      revision: nextRevision(current.revision),
-      persistedRevision: current.persistedRevision,
-    })
+    const dispatchState = this.requireDispatchState(current.id)
+    dispatchState.depth += 1
 
-    const history = this.requireHistoryById(current.id)
-    if (recordHistory) {
-      history.undo.push(
-        Object.freeze({
-          before: current.markdown,
-          after: markdown,
-          origin,
-        }),
-      )
-      history.redo.length = 0
+    try {
+      const next = createDocumentState({
+        id: current.id,
+        path: current.path,
+        markdown,
+        revision: nextRevision(current.revision),
+        persistedRevision: current.persistedRevision,
+      })
+
+      const history = this.requireHistoryById(current.id)
+      if (recordHistory) {
+        history.undo.push(
+          Object.freeze({
+            before: current.markdown,
+            after: markdown,
+            origin,
+          }),
+        )
+        this.trimHistory(history.undo, history.maxEntries)
+        history.redo.length = 0
+      }
+
+      this.documents.set(next.id, next)
+      dispatchState.pendingEvents.push({
+        type: 'changed',
+        previous: current,
+        document: next,
+        origin,
+      })
+      this.timeline.record({
+        type: 'DocumentChanged',
+        documentId: next.id,
+        previous: createTimelineDocumentState(current),
+        document: createTimelineDocumentState(next),
+        origin,
+      })
+      return next
+    } finally {
+      dispatchState.depth -= 1
+      if (dispatchState.depth === 0 && !dispatchState.dispatching) {
+        this.dispatchPendingEvents(current.id)
+      }
     }
-
-    this.documents.set(next.id, next)
-    this.timeline.record({
-      type: 'DocumentChanged',
-      documentId: next.id,
-      previous: current,
-      document: next,
-      origin,
-    })
-    this.emit(next.id, {
-      type: 'changed',
-      previous: current,
-      document: next,
-      origin,
-    })
-    return next
   }
 
   /**
@@ -578,36 +744,54 @@ export class DocumentStore {
       return current
     }
 
-    const next = createDocumentState({
-      id: current.id,
-      path: current.path,
-      markdown: current.markdown,
-      revision: current.revision,
-      persistedRevision: revision,
-    })
+    const dispatchState = this.requireDispatchState(current.id)
+    dispatchState.depth += 1
 
-    this.documents.set(next.id, next)
-    this.timeline.record({
-      type: 'DocumentPersisted',
-      documentId: next.id,
-      previous: current,
-      document: next,
-      origin: normalizedOrigin,
-    })
-    this.emit(next.id, {
-      type: 'persisted',
-      previous: current,
-      document: next,
-      origin: normalizedOrigin,
-    })
-    return next
+    try {
+      const next = createDocumentState({
+        id: current.id,
+        path: current.path,
+        markdown: current.markdown,
+        revision: current.revision,
+        persistedRevision: revision,
+      })
+
+      this.documents.set(next.id, next)
+      dispatchState.pendingEvents.push({
+        type: 'persisted',
+        previous: current,
+        document: next,
+        origin: normalizedOrigin,
+      })
+      this.timeline.record({
+        type: 'DocumentPersisted',
+        documentId: next.id,
+        previous: createTimelineDocumentState(current),
+        document: createTimelineDocumentState(next),
+        origin: normalizedOrigin,
+      })
+      return next
+    } finally {
+      dispatchState.depth -= 1
+      if (dispatchState.depth === 0 && !dispatchState.dispatching) {
+        this.dispatchPendingEvents(current.id)
+      }
+    }
   }
 
+  /**
+   * Subscribes to document facts without creating or mutating projection
+   * lifecycle state. Generic observers must not be mistaken for a view apply.
+   */
   subscribe(
     locator: DocumentLocator,
     listener: DocumentStoreListener,
   ): Unsubscribe
 
+  /**
+   * Compatibility overload; the projection must already be explicitly
+   * attached and this subscription does not detach it on unsubscribe.
+   */
   subscribe(
     locator: DocumentLocator,
     projectionId: ProjectionId,
@@ -620,32 +804,45 @@ export class DocumentStore {
     maybeListener?: DocumentStoreListener,
   ): Unsubscribe {
     const document = this.requireDocument(locator)
-    let projectionId: ProjectionId
-    let listener: DocumentStoreListener
 
     if (typeof projectionOrListener === 'string') {
-      projectionId = requireProjectionId(projectionOrListener)
+      const projectionId = requireProjectionId(projectionOrListener)
       if (typeof maybeListener !== 'function') {
         throw new TypeError('DocumentStore listener must be a function')
       }
-      listener = maybeListener
-    } else {
-      if (typeof projectionOrListener !== 'function') {
-        throw new TypeError('DocumentStore listener must be a function')
-      }
-      listener = projectionOrListener
-      projectionId = this.allocateProjectionId(document.id)
+      this.requireProjection(document.id, projectionId)
+      return this.addSubscription(document.id, projectionId, maybeListener)
     }
 
-    this.attachProjection(
-      documentById(document.id),
-      projectionId,
-      document.revision,
-    )
+    if (typeof projectionOrListener !== 'function') {
+      throw new TypeError('DocumentStore listener must be a function')
+    }
+    return this.addSubscription(document.id, undefined, projectionOrListener)
+  }
 
-    const documentListeners = this.listeners.get(document.id)
+  /** Subscribes a listener to an already-attached projection. */
+  subscribeProjection(
+    locator: DocumentLocator,
+    projectionId: ProjectionId,
+    listener: DocumentStoreListener,
+  ): Unsubscribe {
+    const document = this.requireDocument(locator)
+    const id = requireProjectionId(projectionId)
+    if (typeof listener !== 'function') {
+      throw new TypeError('DocumentStore listener must be a function')
+    }
+    this.requireProjection(document.id, id)
+    return this.addSubscription(document.id, id, listener)
+  }
+
+  private addSubscription(
+    documentId: DocumentId,
+    projectionId: ProjectionId | undefined,
+    listener: DocumentStoreListener,
+  ): Unsubscribe {
+    const documentListeners = this.listeners.get(documentId)
     if (!documentListeners) {
-      throw new Error(`Listener registry missing for document ${document.id}`)
+      throw new Error(`Listener registry missing for document ${documentId}`)
     }
 
     const subscription: DocumentSubscription = { projectionId, listener }
@@ -655,21 +852,7 @@ export class DocumentStore {
       if (!active) return
       active = false
       documentListeners.delete(subscription)
-      if (this.isProjectionAttached(document.id, projectionId)) {
-        this.detachProjection(documentById(document.id), projectionId)
-      }
     }
-  }
-
-  private allocateProjectionId(documentId: DocumentId): ProjectionId {
-    const projections = this.requireProjectionMap(documentId)
-    let projectionId: ProjectionId
-
-    do {
-      projectionId = `projection-${++this.nextProjectionNumber}`
-    } while (projections.has(projectionId))
-
-    return projectionId
   }
 
   private requireProjectionMap(
@@ -694,13 +877,6 @@ export class DocumentStore {
     return projection
   }
 
-  private isProjectionAttached(
-    documentId: DocumentId,
-    projectionId: ProjectionId,
-  ): boolean {
-    return this.requireProjectionMap(documentId).has(projectionId)
-  }
-
   private requireProjectionRevision(
     revision: Revision,
     currentRevision: Revision,
@@ -716,19 +892,19 @@ export class DocumentStore {
     return revision
   }
 
-  private updateProjectionAfterStoreChange(
-    documentId: DocumentId,
-    projectionId: ProjectionId,
-    revision: Revision,
-  ): void {
-    const projection = this.requireProjection(documentId, projectionId)
-    projection.revision = revision
-    projection.stale = false
-    this.timeline.record({
-      type: 'ProjectionUpdated',
-      documentId,
+  private toProjectionState(
+    document: DocumentState,
+    projection: ProjectionRecord,
+  ): ProjectionState {
+    return Object.freeze({
       projectionId: projection.id,
-      revision,
+      revision: projection.revision,
+      stale:
+        projection.explicitlyStale || projection.revision < document.revision,
+      degraded: projection.degradedReason !== undefined,
+      ...(projection.degradedReason === undefined
+        ? {}
+        : { degradedReason: projection.degradedReason }),
     })
   }
 
@@ -740,13 +916,15 @@ export class DocumentStore {
     const projection = this.requireProjectionMap(documentId).get(projectionId)
     if (!projection) return
 
-    projection.stale = true
+    projection.explicitlyStale = true
+    projection.degradedReason = reason
     this.timeline.record({
       type: 'ProjectionStale',
       documentId,
       projectionId: projection.id,
       revision: projection.revision,
       reason,
+      degradedReason: reason,
     })
   }
 
@@ -782,29 +960,77 @@ export class DocumentStore {
     return history
   }
 
-  private emit(id: DocumentId, event: DocumentStoreEvent): void {
-    const documentListeners = this.listeners.get(id)
+  private trimHistory(entries: DocumentHistoryEntry[], maxEntries: number): void {
+    if (entries.length > maxEntries) {
+      entries.splice(0, entries.length - maxEntries)
+    }
+  }
+
+  private requireDispatchState(
+    documentId: DocumentId,
+  ): DocumentDispatchState {
+    const dispatchState = this.dispatchStates.get(documentId)
+    if (!dispatchState) {
+      throw new Error(`Dispatch registry missing for document ${documentId}`)
+    }
+    return dispatchState
+  }
+
+  private dispatchPendingEvents(documentId: DocumentId): void {
+    const dispatchState = this.requireDispatchState(documentId)
+    if (dispatchState.dispatching) return
+
+    dispatchState.dispatching = true
+    try {
+      while (dispatchState.pendingEvents.length > 0) {
+        const event = dispatchState.pendingEvents.shift() as DocumentStoreEvent
+        this.dispatchEvent(documentId, event)
+      }
+    } finally {
+      dispatchState.dispatching = false
+    }
+
+    if (dispatchState.depth === 0 && dispatchState.pendingEvents.length > 0) {
+      this.dispatchPendingEvents(documentId)
+    }
+  }
+
+  private dispatchEvent(
+    documentId: DocumentId,
+    event: DocumentStoreEvent,
+  ): void {
+    const documentListeners = this.listeners.get(documentId)
     if (!documentListeners) return
 
     for (const subscription of [...documentListeners]) {
       try {
         subscription.listener(event)
       } catch (error) {
-        this.markProjectionStaleAfterFailure(
-          id,
-          subscription.projectionId,
-          String(error),
-        )
-        throw error
+        if (subscription.projectionId !== undefined) {
+          this.markProjectionStaleAfterFailure(
+            documentId,
+            subscription.projectionId,
+            String(error),
+          )
+        }
+        this.reportObserverError({
+          source: 'document-store',
+          error,
+          eventType: event.type,
+          documentId,
+          ...(subscription.projectionId === undefined
+            ? {}
+            : { projectionId: subscription.projectionId }),
+        })
       }
+    }
+  }
 
-      if (event.type === 'changed' && this.isProjectionAttached(id, subscription.projectionId)) {
-        this.updateProjectionAfterStoreChange(
-          id,
-          subscription.projectionId,
-          event.document.revision,
-        )
-      }
+  private reportObserverError(context: Parameters<ObserverErrorSink>[0]): void {
+    try {
+      this.observerErrorSink(Object.freeze({ ...context }))
+    } catch {
+      // Diagnostics must not be able to interrupt an authoritative operation.
     }
   }
 }
