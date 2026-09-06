@@ -1,6 +1,6 @@
 # WriteIt CM6 Architecture Spike
 
-这是一个与 `editor-app/` 隔离的架构实验，不导入 Crepe、Milkdown、ProseMirror，也不改变现有 WriteIt 主线。
+这是一个与 `editor-app/` 隔离的架构实验，不导入 Crepe、Milkdown 或 ProseMirror。它为 v2 的 CM6 架构决策提供证据；Spike 代码仍是 `REFERENCE`，不是生产运行时依赖，正式能力需要在 `writeit-v2/` 中重新归属并测试。
 
 ## 运行
 
@@ -40,7 +40,7 @@ npm run dev
 - Save 后磁盘快照只改变 A.md，B.md/C.md 的 `![[...]]` 保持引用文本。
 - 直接 Source 修改后表格重新解析，未知 `:::unknown-syntax` 原样保留。
 - Cell input 会在真实 composition 期间显示高亮，并把 `CompositionStart/Update/End` 写入 Last events；这只方便人工验收，不把合成事件模拟当作中文 IME 通过。
-- 用户局域网验收反馈：中文输入正常，WPS 复制/粘贴正常，大文件滚动体验可接受；仍需第二个真实表格应用来闭合 T04 的“两应用”门槛。
+- 用户局域网验收反馈：中文输入正常，WPS 复制/粘贴正常，大文件滚动体验可接受；第二个及更多真实表格应用保留为 GO 后兼容性覆盖。
 - 循环 `CycleA.md → CycleB.md → CycleA.md` 安全显示 `Circular embed`，不递归爆炸；嵌入内按 Escape 可回到宿主 Projection。
 - 删除 B.md 的 `![[A.md]]` 引用后，A.md 仍存在且 C.md 仍能保持自己的 B Projection；Source probe 与宿主 caret 直接退格都能删除整个 token，恢复引用后 A revision 不受影响。
 - Debug Panel 能显示 Document、Projection、revision、dirty、STALE 和事件序列。
@@ -49,11 +49,12 @@ npm run dev
 - 页面提供 `Open visible stress fixtures`：可见打开 10,000 行 Markdown 与 100×20 表格；编辑区固定为滚动容器，浏览器确认两者均可滚动，10,000 行只保留约 51 个可见 `.cm-line`。
 - 关闭 B.md 后 C→B→A 的 Projection 仍在；重开 B.md 后出现新的 B→A Projection，继续从 C→B→A 输入可使 A.md revision 从 1 到 2。
 
-## 尚待用户验收 / 尚未宣称最终结论
+## GO 后续验证（非阻断）
 
-- 中文 macOS IME 需要你在本机输入法下做最后一次真实 composition 验收；当前 Cell input 不在每个 composition 中间重建。
-- Clipboard MIME 已在内置浏览器验证；Excel / Numbers / WPS 的“实际应用互粘”尚未在本环境逐一打开验证。
-- 10,000 行普通文档、500×20 表格和 10 个可见 Projection 的实际滚动/CPU 体验仍需要人工观察；当前压力探针使用离屏挂载，不能替代肉眼体验。
-- macOS 中文 IME 和 Excel / Numbers / WPS 实际应用互粘仍需要在对应环境中人工完成；系统确实启用了 SCIM ITABC，但当前浏览器控制层的按键探针把 `n`/`i` 直接注入为字符，不能冒充真实 composition 证据。本机也未安装这三个桌面应用，当前仅验证了标准 `text/plain` + `text/html` clipboard 数据和解析逻辑。
+- 用户已完成 macOS 中文输入法和 WPS 互粘实测；后续继续扩大 Excel、Numbers 等真实应用的 clipboard 兼容覆盖。
+- 10,000 行普通文档、500×20 表格和多个可见 Projection 已有自动探针与基础人工反馈；后续继续收集更广的滚动、输入延迟和 CPU 样本。
+- 自动 clipboard、composition 和离屏压力探针不能冒充所有真实环境证据，因此未覆盖项目继续保留为兼容性/性能风险，不标记为 PASS。
 
-当前建议为 CONDITIONAL GO：核心路线和中文 IME、WPS、嵌套 Projection、大文件滚动均有证据；补齐第二个真实表格应用后再决定是否提升为 GO。
+## Final decision
+
+2026-09-06，项目负责人确认 CM6 Architecture Spike 为 **GO**。现有证据足以接受 CM6 主架构；更多办公软件兼容和性能样本作为后续 adapter、widget 与优化工作，不再阻断 v2 实施。只有后续证据表明 source fidelity、单一 Document authority 或 Projection 等核心不变量无法满足时，才通过新 ADR 重新评估架构。

@@ -1,8 +1,10 @@
 # WriteIt CM6 Architecture Spike — 当前验收报告
 
-状态：**用户初验后，倾向 CONDITIONAL GO；等待第二个真实表格应用的互粘结果后定稿**。
+状态：**GO**。
 
-本报告只记录已经有证据的结果。`PENDING` 表示需要用户在真实输入法或真实办公软件中验收，不把间接证据算作通过。
+2026-09-06，项目负责人确认按 GO 推进。第二个及更多真实表格应用的互粘验证，以及更广的大表格性能观察，转为 GO 后的兼容性与优化工作，不再作为架构门槛。
+
+本报告继续如实区分 `PASS`、`PARTIAL` 和 `PENDING`；GO 表示现有证据足以接受 CM6 主架构，不表示所有未来兼容场景都已验证。
 
 ## 1. Executive Summary
 
@@ -12,10 +14,12 @@
 - Table core 可以脱离浏览器测试，并由 CM6 Widget 提供接近电子表格的 cell、二维 selection、clipboard 和局部 Markdown 回写。
 - Editable Embed 的多投影同步、revision、undo、close/reopen、循环保护和生命周期已经有运行时证据。
 
-当前尚未闭合的硬验收门：
+GO 后继续跟踪的非阻断验证：
 
-- Excel / Numbers / WPS 至少第二个真实应用的互粘；
-- 大表格的人工滚动和 CPU 体验仍需单独确认。
+- 在 WPS 之外继续扩大 Excel、Numbers 等真实应用的互粘覆盖；
+- 扩大大表格人工滚动、输入延迟和 CPU 体验样本。
+
+这些结果可以驱动 clipboard adapter、Table Widget 或性能实现的改进；只有证据表明核心架构不变量无法满足时，才需要通过新 ADR 重新评估架构。
 
 ## 2. Table Results
 
@@ -24,7 +28,7 @@
 | T01 Click Cell | PASS | 内置浏览器真实键盘输入只改变目标 cell。 |
 | T02 Keyboard navigation | PASS | Arrow / Tab；AX 显示焦点从 row 2 col 2 移到 row 2 col 3。 |
 | T03 Rectangle selection | PASS | Shift-click 后得到 4 个 `table-selected-cell`。 |
-| T04 Copy | PARTIAL | 用户已实测 WPS 复制/粘贴正常；仍缺第二个真实表格应用，尚未满足至少两个应用的门槛。 |
+| T04 Copy | PARTIAL | 用户已实测 WPS 复制/粘贴正常；第二个及更多真实表格应用的覆盖保留为 GO 后兼容性工作，不再阻断架构决定。 |
 | T05 Paste TSV | PASS | 2×2 TSV 粘贴正确映射。 |
 | T06 Multi-cell Paste | PASS | 以 anchor cell 左上角映射，尺寸不一致时自动扩展。 |
 | T07 Markdown round trip | PASS | table-core + 浏览器局部回写；换行保持。 |
@@ -93,9 +97,11 @@
 | Diagnostics | 略简单 | Store event timeline 能直接解释状态。 |
 | Testing | 明显更简单 | table/document 业务规则脱离 browser；IME/clipboard 仍需 browser。 |
 
-## 8. Current Recommendation
+## 8. Final Architecture Decision
 
-当前 T11 已由用户实测通过，WPS 也已通过；现有证据支持 **CONDITIONAL GO**。若第二个真实表格应用互粘通过，且大表格 CPU/体感没有明显问题，可以把结论提升为 GO；若 clipboard 或大表格体验出现问题，应优先重新评估 Table Widget 的 clipboard/性能边界，而不是直接迁移现有编辑器。
+最终结论为 **GO**。现有证据已经覆盖 Markdown authority、source fidelity、DocumentStore、多 Projection、revision/stale、editable embed、table-core 边界、局部 Markdown 回写、基础 clipboard/IME 和 lifecycle，足以接受 CM6 作为 v2 主编辑器架构。
+
+项目负责人决定把更多办公软件互粘和更广的大表格性能样本作为 GO 后验证。表中的 `PARTIAL` / `PENDING` 状态继续保留，以免把尚未覆盖的兼容范围误写成通过；后续问题应优先在 clipboard adapter、Table Widget 或性能边界内解决。只有问题证明已接受的 source fidelity、单一 authority 或 projection 不变量无法成立时，才通过新的 ADR 重新评估架构。
 
 ## 9. User Acceptance Checklist
 
@@ -107,4 +113,4 @@
 2. 选中一个 2×2 区域复制到两个真实表格应用，再从这两个应用各复制一段二维数据粘贴回 Spike；检查 TSV、HTML、换行和多行映射。
 3. 点击 `Open visible stress fixtures`，分别打开 `visible-10k.md` 与 `visible-table-100x20.md`，观察大文档/大表格的滚动、输入延迟和 CPU；再点击 `Run stress probes` 获取趋势数据。自动探针不能替代这一步的肉眼验收。
 
-验收前页面、文档和 diagnostics 已恢复到 rev=1 的初始基线。当前根据用户反馈，T11 通过、WPS 通过、大文件滚动可接受；最终只需补第二个真实表格应用，并确认大表格 CPU/体感。
+验收前页面、文档和 diagnostics 已恢复到 rev=1 的初始基线。当前根据用户反馈，T11 通过、WPS 通过、大文件滚动可接受；后续优先补充更多真实表格应用和更广性能样本，但这些项目不阻断 GO。

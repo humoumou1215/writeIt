@@ -191,14 +191,57 @@ Phase 0 不实现产品功能，目标是让人和 Pi 清楚区分新世界、�
 
 ### P0-06 — Initial ADRs
 
-Phase 0 建立以下 ADR，状态均为 Accepted：
+#### Goal
 
-1. Markdown Is The Persistent Data Contract
-2. DocumentStore Is Runtime Content Authority
-3. Editor Views Are Projections
-4. CodeMirror 6 Is The Primary Editor Architecture（Spike result: GO）
-5. Markdown Table Uses WriteIt Table Core + CM6 Widget
-6. Diff Guarantee Layer Operates On Markdown Source
+把 Phase 0 已接受的架构方向写成可追溯、可执行、可被后续 ADR 取代但不能被局部实现静默绕过的决策记录。
+
+#### Allowed scope
+
+- `writeit-v2/docs/adr/`
+- `writeit-v2/docs/IMPLEMENTATION_SPEC.md`（仅补全 P0-06 任务合同）
+- 为保持决策证据一致而更新 `experiments/cm6-spike/` 的结论性文档和 `STATUS.md`
+
+不得实现产品代码或开始 P0-07。
+
+#### Read first
+
+- `fromChatgptWeb.md` 中的 ADR Initial Set
+- 本 SPEC 的核心领域原则和对应后续 Phase
+- `experiments/cm6-spike/SPIKE-REPORT.md`（ADR-0004、ADR-0005）
+- `writeit-v2/docs/STATUS.md`
+
+#### Implementation requirements
+
+建立以下 ADR，状态均为 Accepted：
+
+1. [ADR-0001 — Markdown Is The Persistent Data Contract](adr/ADR-0001-markdown-persistent-data-contract.md)
+2. [ADR-0002 — DocumentStore Is Runtime Content Authority](adr/ADR-0002-document-store-runtime-content-authority.md)
+3. [ADR-0003 — Editor Views Are Projections](adr/ADR-0003-editor-views-are-projections.md)
+4. [ADR-0004 — CodeMirror 6 Is The Primary Editor Architecture](adr/ADR-0004-codemirror-6-primary-editor-architecture.md)（Spike result: GO）
+5. [ADR-0005 — Markdown Table Uses WriteIt Table Core + CM6 Widget](adr/ADR-0005-markdown-table-core-and-cm6-widget.md)
+6. [ADR-0006 — Diff Guarantee Layer Operates On Markdown Source](adr/ADR-0006-diff-guarantee-on-markdown-source.md)
+
+每份 ADR 至少记录 status、acceptance date、context、decision、consequences、alternatives、deferred decisions 和 related decisions；引用实验结论的 ADR 必须链接对应 evidence。ADR-0004 的 GO 是最终架构决定；更广的办公软件兼容性和性能观察属于后续非阻断验证。
+
+#### Tests
+
+- 静态检查六份 ADR 均存在且状态为 Accepted。
+- 检查 ADR 相对链接可解析。
+- 检查 SPEC、Spike 结论、ADR 和 STATUS 对 GO/Accepted 的陈述一致。
+- 本任务仅修改文档，不要求运行 v2 产品测试。
+
+#### Acceptance criteria
+
+- 六份 ADR 与上述标题、状态和核心架构不变量一致。
+- 决策证据、已知代价和暂缓细节明确，不把未决定的实现细节伪装成已接受决策。
+- ADR 有索引；后续不兼容决定必须通过 superseding ADR，而不是静默改写历史。
+- `STATUS.md` 真实反映 P0-06 的完成状态和仍存在的非阻断风险。
+
+#### Out of scope
+
+- v2 工程骨架或产品功能。
+- 扩大 CM6 Spike 的办公软件兼容矩阵。
+- 实现 Deferred decisions 中的 API、算法或 UI。
 
 ### P0-07 — Scaffold
 
