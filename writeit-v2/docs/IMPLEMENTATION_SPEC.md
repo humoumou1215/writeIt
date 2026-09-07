@@ -370,6 +370,24 @@ P2 的架构 gate / remediation 仍按 `STATUS.md` 和对应 Architecture Review
 - Live Preview toggle 不产生第二份 Markdown authority，不通过 parse→serialize 切换模式。
 - IME composition 期间不能误提交 trigger 或破坏输入。
 
+#### Phase 2A User Acceptance Remediation Gate
+
+2026-09-07 的用户验收在 baseline `30d56e3` 上发现 popup 滚动/定位、Slash 分组、Reference 模式切换、IME/生命周期、line-ending fidelity 和 keybinding round-trip 缺口。规范化复现证据与完整任务合同见 [P2A User Acceptance Review](./P2A_ACCEPTANCE_REVIEW.md)。
+
+进入 P3 前必须按单 Task 执行并通过：
+
+```text
+P2A-R01 Caret popup positioning and visible selection
+P2A-R02 Slash command group navigation
+P2A-R03 Reference completion mode switching
+P2A-R04 Popup IME, editability, and lifecycle safety
+P2A-R05 Line-ending source fidelity
+P2A-R06 Keybinding recorder round-trip edge cases
+P2A-AR1 Re-run Phase 2A acceptance gate
+```
+
+在 P2A-AR1 得出 PASS 前，P3 保持 HOLD。P2A-00 至 P2A-06 的实现历史仍记为完成，但不能据此宣称 Phase 2A 已通过用户验收。
+
 ## 9. Phase 3 — Workspace + Persistence
 
 建立可工作的最小 WriteIt：打开 workspace → 文件树 → 打开 Markdown → tab → 编辑 → save → close → reopen。优先浏览器/mock backend，Tauri 暂缓。

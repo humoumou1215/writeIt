@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-Current phase: Phase 2A complete
-Current task: None (P2A-06 complete)
+Current phase: Phase 2A user acceptance remediation
+Current task: P2A-R01 — Ready for implementation
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -47,12 +47,19 @@ Current task: None (P2A-06 complete)
 - [x] P2A-04 IME / full-width trigger normalization — exact 1:1 detection normalization for `＠`, `！`, `【`/`［` and closing variants; source-preserving CM6 apply and composition-boundary coverage
 - [x] P2A-05 Raw Source / Live Preview Toggle — one CM6 document switches between source and source-backed decorations/widgets; `Ctrl/Cmd+E`, selection, source revision and Store history remain continuous
 - [x] P2A-06 Keybinding Foundation — DOM-independent command-id mapping, canonical key-stroke normalization, atomic configurable overrides, reset semantics, and pure conflict detection
+- [x] Initial P2A user acceptance review — CHANGES REQUIRED / HOLD P3 ([report and remediation contracts](./P2A_ACCEPTANCE_REVIEW.md))
 
 ## Active
-None (P2A complete; P3 not started)
+- [ ] P2A-R01 Caret popup positioning and visible selection — ready
+- [ ] P2A-R02 Slash command group navigation
+- [ ] P2A-R03 Reference completion mode switching
+- [ ] P2A-R04 Popup IME, editability, and lifecycle safety
+- [ ] P2A-R05 Line-ending source fidelity
+- [ ] P2A-R06 Keybinding recorder round-trip edge cases
+- [ ] P2A-AR1 Re-run Phase 2A acceptance gate
 
 ## Blocked
-None
+- P3 is on HOLD until P2A-R01 through P2A-R06 complete and P2A-AR1 records PASS.
 
 ## Recent decisions
 - CM6 Architecture Spike = GO; broader office-app clipboard compatibility and large-table performance sampling are post-GO validation, not architecture blockers.
@@ -94,6 +101,8 @@ None
 - P2A-04 normalizes supported full-width trigger punctuation only in a same-length detection copy; raw Markdown remains unchanged while the menu is open, and composition guards prevent premature trigger execution.
 - P2A-05 keeps raw source and Live Preview in one CM6 EditorView; mode changes are no-document-change state effects, and Markdown syntax is hidden/enhanced only through source-positioned decorations/widgets.
 - P2A-06 keeps command metadata independent from keybindings; the pure registry accepts defaults and user overrides, rejects conflicting active assignments atomically, and leaves Settings UI/event wiring to P3.
+- Initial user acceptance on baseline `30d56e3` found that implementation completion did not equal UX acceptance: P2A is reopened for the remediation sequence defined in `P2A_ACCEPTANCE_REVIEW.md`, and P3 remains on HOLD.
+- Popup geometry/scrolling is a shared slash/completion concern; reference insertion mode is provider-defined state and must remain separate from trigger detection and Markdown authority.
 
 ## Known risks
 - The AST-backed architecture checker now covers side-effect/re-export/dynamic/CommonJS/Vue imports and resolved layer dependencies; the real-browser gate covers the primary CM6 lifecycle path.
@@ -109,8 +118,9 @@ None
 - The completion surface now covers full-width trigger detection and IME composition boundaries, while the App demo provider is not the P4 workspace/reference implementation.
 - The P2A-05 live presentation intentionally covers the current basic Markdown subset; richer block widgets and position mapping around hidden syntax remain later work.
 - Keybinding Settings UI, persistence policy, and browser/CM6 event dispatch remain P3 work; P2A-06 only establishes the DOM-independent configuration and conflict contract.
+- P2A acceptance blockers include off-screen keyboard selection, caret popup boundary failures, missing slash group/reference mode navigation, slash IME submission risk, popup mutation lifetime, CRLF/mixed-line-ending fidelity, and Plus/Space keybinding round trips.
 - Git blame on a dirty Live Preview document needs a source-line mapping policy: committed lines should retain provenance while local/unsaved edits are marked local/uncommitted; Widget-collapsed source ranges must not create false line attribution. Phase 7 now carries this as an explicit design/acceptance risk.
 - Active instructions and SPEC now consistently point to the root `LEGACY_FEATURE_MAP.md`; historical architecture-review evidence may still mention the former path.
 
 ## Next
-P3-01 — Workspace tree
+P2A-R01 — Caret popup positioning and visible selection
