@@ -1,0 +1,298 @@
+// @vitest-environment jsdom
+
+import { describe, expect, it } from 'vitest'
+import {
+  createDocumentId,
+  createDocumentOrigin,
+  createDocumentPath,
+  documentById,
+  DocumentStore,
+} from '../../../../src/core/document'
+import {
+  mountBasicLivePreview,
+  renderBasicMarkdownPreview,
+} from '../../../../src/editor/preview'
+
+function makeStore(markdown: string): {
+  store: DocumentStore
+  locator: ReturnType<typeof documentById>
+} {
+  const store = new DocumentStore()
+  const id = createDocumentId('preview-document')
+  const path = createDocumentPath('preview-document.md')
+  store.load({ id, path, markdown })
+  return { store, locator: documentById(id) }
+}
+
+describe('basic live preview', () => {
+  it('renders headings, emphasis and safe links without interpreting unknown syntax', () => {
+    const parent = document.createElement('div')
+    const source =
+      '# Heading\n\nA **strong** and *emphasized* [link](https://example.test).\n\n:::unknown\nraw\n:::'
+
+    renderBasicMarkdownPreview(parent, source)
+
+    expect(parent.querySelector('h1')?.textContent).toBe('Heading')
+    expect(parent.querySelector('strong')?.textContent).toBe('strong')
+    expect(parent.querySelector('em')?.textContent).toBe('emphasized')
+    expect(parent.querySelector('a')?.getAttribute('href')).toBe(
+      'https://example.test',
+    )
+    expect(parent.textContent).toContain(':::unknown')
+    expect(parent.textContent).toContain('raw')
+    expect(parent.querySelector('script')).toBeNull()
+  })
+
+  it('updates from the authoritative Store and acknowledges the preview revision', () => {
+    const { store, locator } = makeStore('# Before')
+    const parent = document.createElement('div')
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+    })
+
+    store.applyChange(locator, {
+      markdown: '# After\n\n**updated**',
+      origin: createDocumentOrigin('test', 'preview-sync'),
+    })
+
+    expect(parent.querySelector('h1')?.textContent).toBe('After')
+    expect(parent.querySelector('strong')?.textContent).toBe('updated')
+    expect(preview.displayedRevision).toBe(1)
+    expect(preview.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+
+    preview.destroy()
+    expect(parent.childElementCount).toBe(0)
+  })
+
+  it('catches a Store change committed during preview attachment', () => {
+    const { store, locator } = makeStore('# Before')
+    let changed = false
+    const stopTimeline = store.subscribeTimeline((event) => {
+      if (event.type !== 'ProjectionAttached' || changed) return
+      changed = true
+      store.applyChange(locator, {
+        markdown: '# During attach',
+        origin: createDocumentOrigin('test', 'preview-attach'),
+      })
+    })
+    const parent = document.createElement('div')
+
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+    })
+    stopTimeline()
+
+    expect(parent.querySelector('h1')?.textContent).toBe('During attach')
+    expect(preview.displayedRevision).toBe(1)
+    expect(preview.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+
+    preview.destroy()
+  })
+
+  it('replays a Store change committed during renderer initialization', () => {
+    const { store, locator } = makeStore('# Before')
+    const parent = document.createElement('div')
+    const originalReplaceChildren = parent.replaceChildren.bind(parent)
+    let mutateOnFirstRender = true
+    parent.replaceChildren = (...nodes: (Node | string)[]): void => {
+      if (mutateOnFirstRender) {
+        mutateOnFirstRender = false
+        store.applyChange(locator, {
+          markdown: '# During render',
+          origin: createDocumentOrigin('test', 'preview-render'),
+        })
+      }
+      originalReplaceChildren(...nodes)
+    }
+
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+    })
+
+    expect(parent.querySelector('h1')?.textContent).toBe('During render')
+    expect(preview.displayedRevision).toBe(1)
+    expect(preview.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+
+    preview.destroy()
+  })
+
+  it('keeps source current while showing a degraded fallback after initial render failure', () => {
+    const { store, locator } = makeStore('# Initial source')
+    const parent = document.createElement('div')
+    let shouldFail = true
+    const renderer = (host: HTMLElement, source: string): void => {
+      if (shouldFail) throw new Error('rich renderer unavailable')
+      renderBasicMarkdownPreview(host, source)
+    }
+
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+      renderer,
+    })
+
+    expect(preview.renderMode).toBe('source-fallback')
+    expect(preview.displayedRevision).toBe(0)
+    expect(parent.querySelector('.live-preview-degraded')).not.toBeNull()
+    expect(parent.querySelector('.live-preview-source-fallback')?.textContent).toBe(
+      '# Initial source',
+    )
+    expect(preview.projectionState).toMatchObject({
+      revision: 0,
+      stale: false,
+      degraded: true,
+      degradedReason: 'Error: rich renderer unavailable',
+    })
+
+    const revisionBeforeRetry = store.getRevision(locator)
+    shouldFail = false
+    preview.retryRender()
+
+    expect(store.getRevision(locator)).toBe(revisionBeforeRetry)
+    expect(preview.renderMode).toBe('rich')
+    expect(preview.displayedRevision).toBe(0)
+    expect(preview.projectionState).toMatchObject({
+      revision: 0,
+      stale: false,
+      degraded: false,
+    })
+
+    preview.destroy()
+  })
+
+  it('acknowledges the current revision when an update falls back to source', () => {
+    const { store, locator } = makeStore('# Before')
+    const parent = document.createElement('div')
+    let shouldFail = false
+    const renderer = (host: HTMLElement, source: string): void => {
+      if (shouldFail) throw new Error('update renderer unavailable')
+      renderBasicMarkdownPreview(host, source)
+    }
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+      renderer,
+    })
+
+    shouldFail = true
+    store.applyChange(locator, {
+      markdown: '# Current source',
+      origin: createDocumentOrigin('test', 'preview-fallback'),
+    })
+
+    expect(preview.renderMode).toBe('source-fallback')
+    expect(preview.displayedRevision).toBe(1)
+    expect(parent.querySelector('.live-preview-source-fallback')?.textContent).toBe(
+      '# Current source',
+    )
+    expect(preview.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: true,
+      degradedReason: 'Error: update renderer unavailable',
+    })
+
+    shouldFail = false
+    preview.retryRender()
+
+    expect(preview.renderMode).toBe('rich')
+    expect(preview.displayedRevision).toBe(1)
+    expect(preview.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+    expect(parent.querySelector('h1')?.textContent).toBe('Current source')
+
+    preview.destroy()
+  })
+
+  it('keeps source stale and degraded when both rich and source fallback fail', () => {
+    const { store, locator } = makeStore('# Source')
+    const parent = document.createElement('div')
+    const originalReplaceChildren = parent.replaceChildren.bind(parent)
+    parent.replaceChildren = (..._nodes: (Node | string)[]): void => {
+      throw new Error('fallback DOM unavailable')
+    }
+
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+      renderer: () => {
+        throw new Error('rich renderer unavailable')
+      },
+    })
+
+    expect(preview.renderMode).toBe('unavailable')
+    expect(preview.displayedRevision).toBe(0)
+    expect(preview.projectionState).toMatchObject({
+      revision: 0,
+      stale: true,
+      degraded: true,
+    })
+    expect(preview.projectionState.degradedReason).toContain(
+      'source fallback failed: Error: fallback DOM unavailable',
+    )
+
+    parent.replaceChildren = originalReplaceChildren
+    preview.destroy()
+  })
+
+  it('unsubscribes before teardown-triggered Store changes', () => {
+    const { store, locator } = makeStore('before-teardown')
+    const parent = document.createElement('div')
+    const originalReplaceChildren = parent.replaceChildren.bind(parent)
+    let mutateOnCleanup = false
+    parent.replaceChildren = (...nodes: (Node | string)[]): void => {
+      if (mutateOnCleanup) {
+        mutateOnCleanup = false
+        store.applyChange(locator, {
+          markdown: 'during-teardown',
+          origin: createDocumentOrigin('test', 'preview-teardown'),
+        })
+      }
+      originalReplaceChildren(...nodes)
+    }
+
+    const preview = mountBasicLivePreview({
+      store,
+      locator,
+      parent,
+      projectionId: 'preview',
+    })
+    mutateOnCleanup = true
+
+    expect(() => preview.destroy()).not.toThrow()
+    expect(store.get(locator)?.markdown).toBe('during-teardown')
+    expect(() => store.getProjection(locator, 'preview')).toThrow(
+      /not attached/,
+    )
+  })
+})

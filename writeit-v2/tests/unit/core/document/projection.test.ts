@@ -136,4 +136,58 @@ describe('DocumentStore projection protocol', () => {
       degraded: false,
     })
   })
+
+  it('acknowledges a current source fallback without hiding render degradation', () => {
+    const store = makeStore()
+    store.attachProjection(locator, 'preview', createRevision(0))
+    store.applyChange(locator, { markdown: 'edited', origin: editOrigin })
+
+    store.acknowledgeProjection(locator, 'preview', createRevision(1), {
+      degradedReason: 'rich renderer failed',
+    })
+
+    expect(store.getProjection(locator, 'preview')).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: true,
+      degradedReason: 'rich renderer failed',
+    })
+    expect(store.getTimeline(locator)).toContainEqual(
+      expect.objectContaining({
+        type: 'ProjectionUpdated',
+        projectionId: 'preview',
+        revision: 1,
+        degradedReason: 'rich renderer failed',
+      }),
+    )
+
+    store.acknowledgeProjection(locator, 'preview', createRevision(1))
+    expect(store.getProjection(locator, 'preview')).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+  })
+
+  it('can mark an enhancement degraded while its source remains fresh', () => {
+    const store = makeStore()
+    store.attachProjection(locator, 'preview', createRevision(0))
+
+    store.markProjectionDegraded(locator, 'preview', 'syntax renderer failed')
+
+    expect(store.getProjection(locator, 'preview')).toMatchObject({
+      revision: 0,
+      stale: false,
+      degraded: true,
+      degradedReason: 'syntax renderer failed',
+    })
+    expect(store.getTimeline(locator)).toContainEqual(
+      expect.objectContaining({
+        type: 'ProjectionDegraded',
+        projectionId: 'preview',
+        revision: 0,
+        reason: 'syntax renderer failed',
+      }),
+    )
+  })
 })

@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-Current phase: P1 complete (P2 entry approved)
-Current task: None (P1-AR2 complete; P2-01 not started)
+Current phase: Phase 2A complete
+Current task: None (P2A-06 complete)
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -24,12 +24,35 @@ Current task: None (P1-AR2 complete; P2-01 not started)
 - [x] P1-R03 Explicit projection acknowledgement and stale protocol
 - [x] P1-R04 Timeline/history memory and source-fidelity guardrails
 - [x] P1-AR2 Re-run P1 architecture gate — PASS for P2-01 entry
+- [x] P2-01 Single Document / Single View
+- [x] Automated v2 architecture boundary checks and v2 CI
+- [x] P2-02 User transaction → DocumentStore
+- [x] P2-03 DocumentStore update → Projection
+- [x] P2-04 Multi-view same Document
+- [x] P2-05 Projection revision / stale detection
+- [x] P2-06 Basic Live Preview
+- [x] P2-AR1 P1/P2 Boundary Check & Architecture Review — gate result: CHANGES REQUIRED / HOLD ([report](./P2_ARCHITECTURE_REVIEW.md))
+- [x] P2-R01 Total observer failure isolation
+- [x] P2-R02 CM6 Store-sync authority boundary
+- [x] P2-R03 Atomic Projection attach, replay, and catch-up
+- [x] P2-R04 Separate source freshness from degraded rendering
+- [x] P2-R05 AST-backed architecture gate and fixture coverage
+- [x] P2-R06 Real-browser and CM6 source-fidelity gates
+- [x] P2-AR2 P1/P2 → post-P2 architecture gate re-review — PASS; architecture HOLD lifted ([report](./P2_ARCHITECTURE_REVIEW.md))
+- [x] Legacy user-visible feature omission audit — IMPLEMENTATION_SPEC expanded with explicit coverage/tasks; no product code changed
+- [x] P2A-00 Feature map sync — granular legacy workflow coverage added; root `LEGACY_FEATURE_MAP.md` remains canonical
+- [x] P2A-01 Command Registry — application command contract with availability/execute lifecycle; keybindings remain separate
+- [x] P2A-02 Slash Quick Insert Surface — CM6 slash trigger, filtering, keyboard/mouse selection, Escape dismissal, and basic Markdown provider
+- [x] P2A-03 Completion Engine — provider registry, ASCII `@`/`[[`/`![[` trigger detection, anchored CM6 menu, filtering, keyboard/mouse selection, Store-backed apply, and IME composition guard
+- [x] P2A-04 IME / full-width trigger normalization — exact 1:1 detection normalization for `＠`, `！`, `【`/`［` and closing variants; source-preserving CM6 apply and composition-boundary coverage
+- [x] P2A-05 Raw Source / Live Preview Toggle — one CM6 document switches between source and source-backed decorations/widgets; `Ctrl/Cmd+E`, selection, source revision and Store history remain continuous
+- [x] P2A-06 Keybinding Foundation — DOM-independent command-id mapping, canonical key-stroke normalization, atomic configurable overrides, reset semantics, and pure conflict detection
 
 ## Active
-None (P2-01 not started)
+None (P2A complete; P3 not started)
 
 ## Blocked
-- P2-02 and the first source-changing CM6 task remain gated on automated source-fidelity and architecture-boundary checks.
+None
 
 ## Recent decisions
 - CM6 Architecture Spike = GO; broader office-app clipboard compatibility and large-table performance sampling are post-GO validation, not architecture blockers.
@@ -50,14 +73,44 @@ None (P2-01 not started)
 - P1-R03 separates generic subscriptions from projection lifecycle, requires explicit projection acknowledgement, rejects revision regression, derives lagging state as stale, and tracks apply failure as degraded.
 - P1-R04 makes timeline facts compact and bounded, caps per-document undo/redo retention, and adds an unknown-Markdown source-fidelity corpus.
 - P1-AR2 re-runs the P1 → P2 gate: blocker remediations are accepted for P2-01; ADR-0004 remains GO.
+- P2-01 established the read-only CM6 Markdown projection boundary; later P2 tasks add Store-backed source changes without changing the authority model.
+- P2-02 through P2-05 connect CM6 user changes and Store updates with explicit origins, `storeSync`, per-projection acknowledgement, multi-view fan-out, and stale/degraded recovery; P2-06 adds a source-backed basic preview.
+- The v2 CI workflow installs Playwright Chromium and runs boundary/unit tests, real-browser integration tests, typecheck, and build for `writeit-v2` changes.
+- P2-AR1 keeps ADR-0004 at GO but holds P3: mount catch-up, fallback revision truth, and boundary enforcement still require remediation.
+- P2-R01 makes observer error formatting total, isolates stale bookkeeping and diagnostics failures, and preserves deterministic fan-out after hostile observer failures.
+- P2-R02 keeps Store-sync annotation capability private, authenticates replay transactions per adapter, constrains the public editor surface, and checks source authority after ignored changes.
+- P2-R03 subscribes before CM6/preview construction, buffers initialization events, and reconciles a fresh Store snapshot before the first projection acknowledgement; teardown unsubscribes before cleanup.
+- P2-R04 separates source freshness from enhancement health: a preview can acknowledge current source fallback while remaining degraded, and retry can clear degradation without a source revision.
+- P2-R05 replaces regex import scanning with TypeScript AST inspection, resolves local dependencies against an explicit layer matrix, and runs the same CLI against known-good/known-bad fixtures.
+- P2-R06 adds a Playwright Chromium gate for real CM6 typing, multi-projection/preview fan-out, clean destruction, unknown-Markdown targeted-edit fidelity, and degraded-preview recovery.
+- P2-AR2 accepts P2-R01 through P2-R06: all blocker regressions and the permanent Chromium/source-fidelity gate pass, the architecture HOLD is lifted, and ADR-0004 remains GO. The current SPEC requires Phase 2A before P3, so P2A-00 is the next permitted task.
+- The 2026-09-07 feature omission audit adds a legacy UX coverage baseline. Broad labels such as References/Templates/Search/Git no longer count as parity by themselves; completion, quick insert, reference clipboard/recovery, template intelligence, image workflows, precise search/replace, and detailed Git/Diff journeys are explicit deliverables.
+- Git provenance is now an explicit Phase 7 deliverable: IDEA-style editor/gutter Git blame must show line-level author/time with commit drill-down, local/uncommitted lines must not be falsely attributed, and file history must answer who changed a document and when. This is a product requirement, not a current P2 gate item.
+- Phase 2A (after P2-AR2, before P3) is reserved for Editing Assistance & Source UX foundations: CommandRegistry, `/` quick insert surface, `@`/`[[`/`![[` completion engine, full-width/IME trigger normalization, same-CM6 raw/Live Preview toggle, and keybinding foundation. It does not alter the current P2 remediation gate.
+- P2A-00 keeps the root `LEGACY_FEATURE_MAP.md` as the canonical map and adds one row per audited user workflow; broad capability rows remain historical context only.
+- P2A-01 establishes a DOM/CM6-independent CommandRegistry with stable ids, metadata, availability checks, execution, duplicate protection, and unregister handles; keybindings are deliberately outside the command contract.
+- P2A-02 adds a CM6 slash surface with pure query filtering and basic Markdown commands; command replacements use the DocumentStore mutation bridge, while Template/Mermaid providers remain future work.
+- P2A-03 adds a DOM/CM6-independent completion provider registry and edit contract; the CM6 adapter owns only trigger/location/UI/apply bridging, and P4 remains responsible for the real workspace reference provider.
+- P2A-04 normalizes supported full-width trigger punctuation only in a same-length detection copy; raw Markdown remains unchanged while the menu is open, and composition guards prevent premature trigger execution.
+- P2A-05 keeps raw source and Live Preview in one CM6 EditorView; mode changes are no-document-change state effects, and Markdown syntax is hidden/enhanced only through source-positioned decorations/widgets.
+- P2A-06 keeps command metadata independent from keybindings; the pure registry accepts defaults and user overrides, rejects conflicting active assignments atomically, and leaves Settings UI/event wiring to P3.
 
 ## Known risks
-- The source-fidelity corpus now covers unknown Markdown and targeted edits; automated architecture-boundary checks and the v2 CI path are not established yet, and are required before P2-02/source-changing CM6 work.
+- The AST-backed architecture checker now covers side-effect/re-export/dynamic/CommonJS/Vue imports and resolved layer dependencies; the real-browser gate covers the primary CM6 lifecycle path.
+- Full-source Store fan-out resets selection in another editable view and the count-bounded history has no byte-aware budget.
+- P2-06 preview intentionally covers only headings, emphasis and safe links; richer Markdown rendering remains future work, while source fallback/degraded recovery is covered in unit, jsdom, and real-browser tests.
 - Office-app clipboard coverage currently includes WPS but not the broader target matrix; additional compatibility and large-table performance sampling remain post-GO work.
 - DocumentStore and the minimal FileSystemPort are implemented; real platform adapters, external-file reconciliation and save-conflict policy remain for later phases.
 - `.pi/` and `.workbuddy/` debug resources still target the legacy application; they are intentionally retained and are not v2 diagnostics.
 - User-created `fromChatgptWeb.md` is intentionally retained temporarily as reference material and is not a runtime dependency.
 - Legacy `npm run test:unit` still has three failures in `tests/unit/diff/zz-seq-research.test.ts` (Mermaid sequence parsing and jsdom `getBBox`); P0-05 did not change that suite.
+- The granular feature map records migration strategy and coverage obligations; final parity outcomes remain intentionally open until the corresponding phase and Phase 12 review.
+- The audit identifies several legacy UX behaviors whose exact v2 design is intentionally not frozen yet (for example row/column reorder, theme/icon parity, some annotation drawer behavior, and platform GPU/lite-mode controls); they must be explicitly REDESIGNED/DEFERRED/DROPPED rather than silently omitted.
+- The completion surface now covers full-width trigger detection and IME composition boundaries, while the App demo provider is not the P4 workspace/reference implementation.
+- The P2A-05 live presentation intentionally covers the current basic Markdown subset; richer block widgets and position mapping around hidden syntax remain later work.
+- Keybinding Settings UI, persistence policy, and browser/CM6 event dispatch remain P3 work; P2A-06 only establishes the DOM-independent configuration and conflict contract.
+- Git blame on a dirty Live Preview document needs a source-line mapping policy: committed lines should retain provenance while local/unsaved edits are marked local/uncommitted; Widget-collapsed source ranges must not create false line attribution. Phase 7 now carries this as an explicit design/acceptance risk.
+- Active instructions and SPEC now consistently point to the root `LEGACY_FEATURE_MAP.md`; historical architecture-review evidence may still mention the former path.
 
 ## Next
-P2-01 — Single Document / Single View
+P3-01 — Workspace tree

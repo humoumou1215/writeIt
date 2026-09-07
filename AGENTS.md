@@ -23,7 +23,7 @@
 1. `writeit-v2/docs/IMPLEMENTATION_SPEC.md`
 2. `writeit-v2/docs/STATUS.md`
 3. 当前任务涉及的 ADR 或 feature spec
-4. `writeit-v2/docs/LEGACY_FEATURE_MAP.md` 中对应旧实现位置（如已建立且确有需要）
+4. 根目录 `LEGACY_FEATURE_MAP.md` 中对应旧实现位置（如已建立且确有需要）
 
 不要为了了解项目而无目的遍历整个 `editor-app/`。
 

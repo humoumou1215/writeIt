@@ -1,0 +1,50 @@
+name: WriteIt v2
+
+on:
+  push:
+    paths:
+      - "writeit-v2/**"
+      - ".github/workflows/v2.yml"
+  pull_request:
+    paths:
+      - "writeit-v2/**"
+      - ".github/workflows/v2.yml"
+
+jobs:
+  validate:
+    name: Validate v2
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: writeit-v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: writeit-v2/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check architecture boundaries
+        run: npm run check:boundaries
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run unit and boundary tests
+        run: npm run test
+
+      - name: Run real-browser integration tests
+        run: npm run test:browser
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build

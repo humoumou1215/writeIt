@@ -95,6 +95,17 @@ export interface ProjectionUpdatedTimelineEvent {
   readonly documentId: DocumentId
   readonly projectionId: ProjectionId
   readonly revision: Revision
+  /** Present when the acknowledged source is currently rendered degraded. */
+  readonly degradedReason?: string
+}
+
+export interface ProjectionDegradedTimelineEvent {
+  readonly sequence: number
+  readonly type: 'ProjectionDegraded'
+  readonly documentId: DocumentId
+  readonly projectionId: ProjectionId
+  readonly revision: Revision
+  readonly reason: string
 }
 
 export interface ProjectionDetachedTimelineEvent {
@@ -121,6 +132,7 @@ export type DocumentTimelineEvent =
   | DocumentPersistedTimelineEvent
   | ProjectionAttachedTimelineEvent
   | ProjectionUpdatedTimelineEvent
+  | ProjectionDegradedTimelineEvent
   | ProjectionDetachedTimelineEvent
   | ProjectionStaleTimelineEvent
 
@@ -132,6 +144,7 @@ export type DocumentTimelineEventInput =
   | TimelineEventInput<DocumentPersistedTimelineEvent>
   | TimelineEventInput<ProjectionAttachedTimelineEvent>
   | TimelineEventInput<ProjectionUpdatedTimelineEvent>
+  | TimelineEventInput<ProjectionDegradedTimelineEvent>
   | TimelineEventInput<ProjectionDetachedTimelineEvent>
   | TimelineEventInput<ProjectionStaleTimelineEvent>
 

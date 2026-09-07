@@ -76,13 +76,21 @@ export interface DocumentHistorySnapshot {
   readonly redo: readonly DocumentHistoryEntry[]
 }
 
+export interface ProjectionAcknowledgementOptions {
+  /**
+   * Keeps the projection source current while reporting a render/enhancement
+   * failure, for example when a preview displays a source fallback.
+   */
+  readonly degradedReason?: string
+}
+
 export interface ProjectionState {
   readonly projectionId: ProjectionId
-  /** Highest revision explicitly acknowledged by the projection. */
+  /** Highest source revision explicitly displayed and acknowledged. */
   readonly revision: Revision
-  /** True when explicitly stale or behind the authoritative document revision. */
+  /** True when the displayed source is not current or application is stale. */
   readonly stale: boolean
-  /** True when the projection reported an apply/render failure. */
+  /** Render/enhancement health; independent from source freshness. */
   readonly degraded: boolean
   readonly degradedReason?: string
 }
@@ -216,6 +224,23 @@ function requireProjectionId(projectionId: ProjectionId): ProjectionId {
   return projectionId
 }
 
+function requireProjectionAcknowledgementOptions(
+  options: ProjectionAcknowledgementOptions,
+): ProjectionAcknowledgementOptions {
+  if (options === null || typeof options !== 'object') {
+    throw new TypeError('Projection acknowledgement options must be an object')
+  }
+  if (
+    options.degradedReason !== undefined &&
+    typeof options.degradedReason !== 'string'
+  ) {
+    throw new TypeError(
+      'Projection acknowledgement degradedReason must be a string when provided',
+    )
+  }
+  return options
+}
+
 function requireMarkdown(markdown: string): void {
   if (typeof markdown !== 'string') {
     throw new TypeError('Document markdown must be a string')
@@ -223,6 +248,21 @@ function requireMarkdown(markdown: string): void {
 }
 
 const DEFAULT_HISTORY_MAX_ENTRIES = 1_000
+
+const UNFORMATTABLE_OBSERVER_ERROR = 'Observer threw an unformattable value'
+
+/**
+ * Observer failures are arbitrary JavaScript values. In particular, an
+ * object can throw while being coerced to a string, so diagnostics formatting
+ * must never become another failure in the committed-change path.
+ */
+function formatObserverError(error: unknown): string {
+  try {
+    return String(error)
+  } catch {
+    return UNFORMATTABLE_OBSERVER_ERROR
+  }
+}
 
 function requireHistoryMaxEntries(maxEntries: number): number {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
@@ -442,9 +482,11 @@ export class DocumentStore {
     locator: DocumentLocator,
     projectionId: ProjectionId,
     revision?: Revision,
+    options: ProjectionAcknowledgementOptions = {},
   ): void {
     const document = this.requireDocument(locator)
     const projection = this.requireProjection(document.id, projectionId)
+    const acknowledgement = requireProjectionAcknowledgementOptions(options)
     const displayedRevision = this.requireProjectionRevision(
       revision ?? document.revision,
       document.revision,
@@ -459,7 +501,11 @@ export class DocumentStore {
 
     projection.revision = displayedRevision
     projection.explicitlyStale = false
-    if (displayedRevision === document.revision) {
+    if (acknowledgement.degradedReason !== undefined) {
+      projection.degradedReason = acknowledgement.degradedReason
+    } else if (displayedRevision === document.revision) {
+      // A current acknowledgement without a degradation reason means the
+      // source was rendered successfully and clears an older failure.
       projection.degradedReason = undefined
     }
     this.timeline.record({
@@ -467,6 +513,9 @@ export class DocumentStore {
       documentId: document.id,
       projectionId: projection.id,
       revision: displayedRevision,
+      ...(projection.degradedReason === undefined
+        ? {}
+        : { degradedReason: projection.degradedReason }),
     })
   }
 
@@ -475,8 +524,9 @@ export class DocumentStore {
     locator: DocumentLocator,
     projectionId: ProjectionId,
     revision?: Revision,
+    options: ProjectionAcknowledgementOptions = {},
   ): void {
-    this.acknowledgeProjection(locator, projectionId, revision)
+    this.acknowledgeProjection(locator, projectionId, revision, options)
   }
 
   detachProjection(
@@ -503,6 +553,32 @@ export class DocumentStore {
       documentId: document.id,
       projectionId: projection.id,
       revision: detachedRevision,
+    })
+  }
+
+  /**
+   * Reports an enhancement/rendering failure without making an otherwise
+   * current source projection stale. A later current acknowledgement clears
+   * this state.
+   */
+  markProjectionDegraded(
+    locator: DocumentLocator,
+    projectionId: ProjectionId,
+    reason: string,
+  ): void {
+    const document = this.requireDocument(locator)
+    const projection = this.requireProjection(document.id, projectionId)
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+      throw new TypeError('Projection degradation reason must be non-empty')
+    }
+
+    projection.degradedReason = reason
+    this.timeline.record({
+      type: 'ProjectionDegraded',
+      documentId: document.id,
+      projectionId: projection.id,
+      revision: projection.revision,
+      reason,
     })
   }
 
@@ -1006,22 +1082,36 @@ export class DocumentStore {
       try {
         subscription.listener(event)
       } catch (error) {
-        if (subscription.projectionId !== undefined) {
-          this.markProjectionStaleAfterFailure(
-            documentId,
-            subscription.projectionId,
-            String(error),
-          )
-        }
-        this.reportObserverError({
-          source: 'document-store',
+        const context = {
+          source: 'document-store' as const,
           error,
           eventType: event.type,
           documentId,
           ...(subscription.projectionId === undefined
             ? {}
             : { projectionId: subscription.projectionId }),
-        })
+        }
+
+        // Keep stale bookkeeping independent from diagnostics and from the
+        // original observer failure. Even an unexpected internal bookkeeping
+        // failure must not prevent later subscriptions from receiving the
+        // already-committed event.
+        if (subscription.projectionId !== undefined) {
+          try {
+            this.markProjectionStaleAfterFailure(
+              documentId,
+              subscription.projectionId,
+              formatObserverError(error),
+            )
+          } catch (bookkeepingError) {
+            this.reportObserverError({
+              ...context,
+              error: bookkeepingError,
+            })
+          }
+        }
+
+        this.reportObserverError(context)
       }
     }
   }

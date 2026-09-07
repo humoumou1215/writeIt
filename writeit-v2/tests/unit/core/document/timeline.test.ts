@@ -159,6 +159,78 @@ describe('DocumentStore event timeline', () => {
     )
   })
 
+  it('keeps projection fan-out total when an observer throws an unformattable value', () => {
+    const hostileError = {
+      [Symbol.toPrimitive](): never {
+        throw new Error('cannot format thrown value')
+      },
+    }
+    const failures: Array<{ error: unknown }> = []
+    const store = new DocumentStore({
+      observerErrorSink: (context) => failures.push(context),
+    })
+    const healthyRevisions: number[] = []
+    store.load({ id, path, markdown: 'initial' })
+    store.attachProjection(idLocator, 'broken-preview')
+    store.attachProjection(idLocator, 'healthy-editor')
+    store.subscribeProjection(idLocator, 'broken-preview', () => {
+      throw hostileError
+    })
+    store.subscribeProjection(idLocator, 'healthy-editor', (event) => {
+      healthyRevisions.push(event.document.revision)
+    })
+
+    expect(() =>
+      store.applyChange(idLocator, {
+        markdown: 'edited',
+        origin: editOrigin,
+      }),
+    ).not.toThrow()
+
+    expect(healthyRevisions).toEqual([1])
+    expect(store.getProjection(idLocator, 'broken-preview')).toMatchObject({
+      revision: 0,
+      stale: true,
+      degraded: true,
+      degradedReason: 'Observer threw an unformattable value',
+    })
+    expect(failures).toHaveLength(1)
+    expect(failures[0]?.error).toBe(hostileError)
+  })
+
+  it('does not let a failed observer error sink interrupt healthy fan-out', () => {
+    const store = new DocumentStore({
+      observerErrorSink: () => {
+        throw new Error('diagnostics unavailable')
+      },
+    })
+    const healthyRevisions: number[] = []
+    store.load({ id, path, markdown: 'initial' })
+    store.attachProjection(idLocator, 'broken-preview')
+    store.attachProjection(idLocator, 'healthy-editor')
+    store.subscribeProjection(idLocator, 'broken-preview', () => {
+      throw new Error('preview cannot render')
+    })
+    store.subscribeProjection(idLocator, 'healthy-editor', (event) => {
+      healthyRevisions.push(event.document.revision)
+    })
+
+    expect(() =>
+      store.applyChange(idLocator, {
+        markdown: 'edited',
+        origin: editOrigin,
+      }),
+    ).not.toThrow()
+
+    expect(healthyRevisions).toEqual([1])
+    expect(store.getProjection(idLocator, 'broken-preview')).toMatchObject({
+      revision: 0,
+      stale: true,
+      degraded: true,
+      degradedReason: 'Error: preview cannot render',
+    })
+  })
+
   it('queues re-entrant source changes until the current fan-out completes', () => {
     const store = loadStore()
     const firstProjectionRevisions: number[] = []

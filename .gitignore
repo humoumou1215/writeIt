@@ -6,6 +6,9 @@
 
 # 依赖
 node_modules/
+# Pi orchestrator build/install outputs
+tools/pi-orchestrator/node_modules/
+tools/pi-orchestrator/dist/
 
 # 系统 / 编辑器
 .DS_Store
