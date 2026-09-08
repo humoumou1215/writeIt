@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P4-R01 — Complete
+Current task: P4-R02 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -74,6 +74,7 @@ Current task: P4-R01 — Complete
 - [x] P4-09 Embed Projection — source-backed editable/read-only CM6 child projections, multi-projection revision fan-out, nested/circular guards, stale/lifecycle state, Store undo/redo, unopened-target loading seam, and integration/Chromium coverage
 - [x] P2-AR-06 remediation — CM6-independent source deltas, minimal selection-preserving Store fan-out, explicit typing history grouping, and byte-aware delta history budgets
 - [x] P4-R01 — Directory rename/move safety for open Documents — fail-closed nested-directory preflight, typed displayable diagnostics, and unit/integration/Chromium coverage ([Task Contract](./P4_R01_TASK_CONTRACT.md))
+- [x] P4-R02 — ReferenceGraph rollback safety — compensation re-syncs graph facts from the current Store/filesystem state, preserves revision consistency, and exposes rollback-step diagnostics ([Task Contract](./P4_R02_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -178,6 +179,7 @@ None
 - P4-09 keeps embed child projections source-backed and bounded: target loading is delegated to the application persistence seam, nested content uses the current basic live-preview subset, and a depth limit degrades presentation without changing Markdown.
 - Directory operations containing a Store-loaded Document remain intentionally blocked for the lifetime of that runtime path binding; this conservative policy avoids adding a directory-wide path rebind/unload protocol in P4-R01.
 - P4-06 uses a preserve-when-unambiguous reference spelling policy (with workspace-relative fallback), rejects dirty/external incoming sources and existing targets before mutation, and compensates post-rename filesystem/Store failures without silently leaving broken links.
+- P4-R02 never reuses rollback snapshots as graph revision authority: compensation rebuilds from current Store documents and the current filesystem catalog, while store/filesystem/graph compensation failures remain explicit in `ReferenceRenameTransactionError`.
 - P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is a fallback when browser clipboard permissions or custom MIME support are unavailable. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
 - P4-08 keeps context actions source-backed: copy returns the exact token, open delegates to the application with an optional resolved target, and mode changes replace only the selected token through the projection mutation capability without creating an embed authority.
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes.

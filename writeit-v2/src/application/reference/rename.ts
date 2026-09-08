@@ -14,7 +14,7 @@ import {
   stringifyReference,
   ReferenceGraph,
   type ParsedReference,
-  type ReferenceIndexEntry,
+  type ReferenceDocumentInput,
   type ReferenceResolutionOptions,
 } from '../../core/reference'
 import {
@@ -175,9 +175,24 @@ export class ReferenceRenameFilesystemError extends ReferenceRenameError {
  * filesystem and Store state; callers can inspect whether that compensation
  * completed instead of receiving a silently half-linked workspace.
  */
+export type ReferenceRenameCompensationPhase =
+  | 'store'
+  | 'filesystem'
+  | 'graph'
+
+export interface ReferenceRenameCompensationFailure {
+  readonly phase: ReferenceRenameCompensationPhase
+  readonly cause: unknown
+  readonly message: string
+}
+
 export class ReferenceRenameTransactionError extends ReferenceRenameError {
   readonly rollbackAttempted: boolean
   readonly rollbackSucceeded: boolean
+  readonly storeRollbackSucceeded: boolean
+  readonly filesystemRollbackSucceeded: boolean
+  readonly graphRollbackSucceeded: boolean
+  readonly compensationFailures: readonly ReferenceRenameCompensationFailure[]
 
   constructor(input: {
     readonly message: string
@@ -186,6 +201,10 @@ export class ReferenceRenameTransactionError extends ReferenceRenameError {
     readonly cause: unknown
     readonly rollbackAttempted: boolean
     readonly rollbackSucceeded: boolean
+    readonly storeRollbackSucceeded?: boolean
+    readonly filesystemRollbackSucceeded?: boolean
+    readonly graphRollbackSucceeded?: boolean
+    readonly compensationFailures?: readonly ReferenceRenameCompensationFailure[]
   }) {
     super(input.message, {
       sourcePath: input.sourcePath,
@@ -195,6 +214,15 @@ export class ReferenceRenameTransactionError extends ReferenceRenameError {
     this.name = 'ReferenceRenameTransactionError'
     this.rollbackAttempted = input.rollbackAttempted
     this.rollbackSucceeded = input.rollbackSucceeded
+    this.storeRollbackSucceeded =
+      input.storeRollbackSucceeded ?? input.rollbackSucceeded
+    this.filesystemRollbackSucceeded =
+      input.filesystemRollbackSucceeded ?? input.rollbackSucceeded
+    this.graphRollbackSucceeded =
+      input.graphRollbackSucceeded ?? input.rollbackSucceeded
+    this.compensationFailures = Object.freeze([
+      ...(input.compensationFailures ?? []),
+    ])
   }
 }
 
@@ -229,6 +257,11 @@ interface StoreTransaction {
 
 interface FilesystemMoveState {
   movedPath: WorkspacePath
+}
+
+interface CompensationResult {
+  readonly succeeded: boolean
+  readonly error?: unknown
 }
 
 function errorMessage(error: unknown): string {
@@ -743,13 +776,38 @@ export class ReferenceRenameService {
         filesystemMove.movedPath,
         originalContents,
       )
+      const graphRollback = await this.trySynchronizeGraph(plan)
+      const compensationFailures = [
+        ...(!filesystemRollback.succeeded
+          ? [
+              {
+                phase: 'filesystem' as const,
+                cause: filesystemRollback.error,
+                message: errorMessage(filesystemRollback.error),
+              },
+            ]
+          : []),
+        ...(!graphRollback.succeeded
+          ? [
+              {
+                phase: 'graph' as const,
+                cause: graphRollback.error,
+                message: errorMessage(graphRollback.error),
+              },
+            ]
+          : []),
+      ]
       throw new ReferenceRenameTransactionError({
         message: `Unable to update references while moving ${plan.sourcePath}: ${errorMessage(error)}`,
         sourcePath: plan.sourcePath,
         targetPath: plan.targetPath,
         cause: error,
         rollbackAttempted: true,
-        rollbackSucceeded: filesystemRollback,
+        rollbackSucceeded: filesystemRollback.succeeded && graphRollback.succeeded,
+        storeRollbackSucceeded: true,
+        filesystemRollbackSucceeded: filesystemRollback.succeeded,
+        graphRollbackSucceeded: graphRollback.succeeded,
+        compensationFailures,
       })
     }
 
@@ -759,7 +817,7 @@ export class ReferenceRenameService {
     }
     try {
       const renamedDocumentId = this.applyStoreMutations(plan, storeTransaction)
-      this.synchronizeGraph(plan, storeTransaction, 'updated')
+      await this.synchronizeGraphFromCurrentState(plan)
       const finalDocuments = new Map<DocumentId, DocumentState>()
       if (this.store) {
         for (const documentId of storeTransaction.originals.keys()) {
@@ -775,19 +833,50 @@ export class ReferenceRenameService {
         filesystemMove.movedPath,
         originalContents,
       )
-      let graphRollback = true
-      try {
-        this.synchronizeGraph(plan, storeTransaction, 'original')
-      } catch {
-        graphRollback = false
-      }
+      const graphRollback = await this.trySynchronizeGraph(plan)
+      const compensationFailures = [
+        ...(!storeRollback.succeeded
+          ? [
+              {
+                phase: 'store' as const,
+                cause: storeRollback.error,
+                message: errorMessage(storeRollback.error),
+              },
+            ]
+          : []),
+        ...(!filesystemRollback.succeeded
+          ? [
+              {
+                phase: 'filesystem' as const,
+                cause: filesystemRollback.error,
+                message: errorMessage(filesystemRollback.error),
+              },
+            ]
+          : []),
+        ...(!graphRollback.succeeded
+          ? [
+              {
+                phase: 'graph' as const,
+                cause: graphRollback.error,
+                message: errorMessage(graphRollback.error),
+              },
+            ]
+          : []),
+      ]
       throw new ReferenceRenameTransactionError({
         message: `Reference rename could not be completed: ${errorMessage(error)}`,
         sourcePath: plan.sourcePath,
         targetPath: plan.targetPath,
         cause: error,
         rollbackAttempted: true,
-        rollbackSucceeded: storeRollback && filesystemRollback && graphRollback,
+        rollbackSucceeded:
+          storeRollback.succeeded &&
+          filesystemRollback.succeeded &&
+          graphRollback.succeeded,
+        storeRollbackSucceeded: storeRollback.succeeded,
+        filesystemRollbackSucceeded: filesystemRollback.succeeded,
+        graphRollbackSucceeded: graphRollback.succeeded,
+        compensationFailures,
       })
     }
   }
@@ -1087,19 +1176,34 @@ export class ReferenceRenameService {
   private rollbackStore(
     plan: RenamePlan,
     transaction: StoreTransaction,
-  ): boolean {
+  ): CompensationResult {
     const store = this.store
-    if (!store) return true
+    if (!store) return Object.freeze({ succeeded: true })
     let success = true
+    let hasError = false
+    let firstError: unknown
+    const fail = (error: unknown): void => {
+      success = false
+      if (!hasError) {
+        hasError = true
+        firstError = error
+      }
+    }
     const origin = createDocumentOrigin(
       'reference-rename-rollback',
       `${plan.targetPath}->${plan.sourcePath}`,
     )
 
     for (const original of [...transaction.originals.values()].reverse()) {
-      const current = store.get(documentById(original.id))
+      let current: DocumentState | undefined
+      try {
+        current = store.get(documentById(original.id))
+      } catch (error) {
+        fail(error)
+        continue
+      }
       if (!current) {
-        success = false
+        fail(new Error(`Document ${original.id} is unavailable during Store rollback`))
         continue
       }
       if (current.markdown !== original.markdown) {
@@ -1109,17 +1213,26 @@ export class ReferenceRenameService {
             origin,
             expectedRevision: current.revision,
           })
-        } catch {
-          success = false
+        } catch (error) {
+          fail(error)
         }
       }
     }
 
     if (transaction.targetDocumentId) {
-      const current = store.get(documentById(transaction.targetDocumentId))
+      let current: DocumentState | undefined
+      try {
+        current = store.get(documentById(transaction.targetDocumentId))
+      } catch (error) {
+        fail(error)
+      }
       const original = transaction.originals.get(transaction.targetDocumentId)
       if (!current || !original) {
-        success = false
+        fail(
+          new Error(
+            `Document ${transaction.targetDocumentId} is unavailable during path rollback`,
+          ),
+        )
       } else if (current.path !== original.path) {
         try {
           store.renamePath(
@@ -1128,16 +1241,22 @@ export class ReferenceRenameService {
             origin,
             current.revision,
           )
-        } catch {
-          success = false
+        } catch (error) {
+          fail(error)
         }
       }
     }
 
     for (const original of transaction.originals.values()) {
-      const current = store.get(documentById(original.id))
+      let current: DocumentState | undefined
+      try {
+        current = store.get(documentById(original.id))
+      } catch (error) {
+        fail(error)
+        continue
+      }
       if (!current) {
-        success = false
+        fail(new Error(`Document ${original.id} is unavailable during Store acknowledgement rollback`))
         continue
       }
       try {
@@ -1151,19 +1270,31 @@ export class ReferenceRenameService {
         if (current.revision > current.persistedRevision) {
           store.markPersisted(documentById(original.id), current.revision, origin)
         }
-      } catch {
-        success = false
+      } catch (error) {
+        fail(error)
       }
     }
-    return success
+    return Object.freeze({
+      succeeded: success,
+      ...(hasError ? { error: firstError } : {}),
+    })
   }
 
   private async rollbackFilesystem(
     plan: RenamePlan,
     movedPath: WorkspacePath,
     originalContents: ReadonlyMap<WorkspacePath, string>,
-  ): Promise<boolean> {
+  ): Promise<CompensationResult> {
     let success = true
+    let hasError = false
+    let firstError: unknown
+    const fail = (error: unknown): void => {
+      success = false
+      if (!hasError) {
+        hasError = true
+        firstError = error
+      }
+    }
     for (const [sourcePath, markdown] of [...originalContents.entries()].reverse()) {
       const currentPath = sourcePath === plan.sourcePath ? movedPath : sourcePath
       try {
@@ -1171,8 +1302,8 @@ export class ReferenceRenameService {
           createDocumentPath(currentPath),
           markdown,
         )
-      } catch {
-        success = false
+      } catch (error) {
+        fail(error)
       }
     }
 
@@ -1188,124 +1319,170 @@ export class ReferenceRenameService {
               workspaceParent(plan.sourcePath),
             )
       if (normalizePath(restored, 'Filesystem rollback result') !== plan.sourcePath) {
-        success = false
+        fail(
+          new Error(
+            `Filesystem rollback returned ${normalizePath(restored, 'Filesystem rollback result')}, expected ${plan.sourcePath}`,
+          ),
+        )
       }
-    } catch {
-      success = false
+    } catch (error) {
+      fail(error)
     }
-    return success
+    return Object.freeze({
+      succeeded: success,
+      ...(hasError ? { error: firstError } : {}),
+    })
+  }
+
+  private async trySynchronizeGraph(
+    plan: RenamePlan,
+  ): Promise<CompensationResult> {
+    try {
+      await this.synchronizeGraphFromCurrentState(plan)
+      return Object.freeze({ succeeded: true })
+    } catch (error) {
+      return Object.freeze({ succeeded: false, error })
+    }
   }
 
   /**
-   * Keeps an injected graph current without making it part of the source
-   * transaction. Both old and new target paths are removed before final facts
-   * are indexed, so a graph observer cannot retain a phantom old node.
+   * Rebuilds the injected graph from the authorities that exist after the
+   * filesystem/Store step has completed. In particular, rollback snapshots
+   * are historical inputs to the compensation algorithm, never graph
+   * revision authority.
    */
-  private synchronizeGraph(
+  private async synchronizeGraphFromCurrentState(
     plan: RenamePlan,
-    transaction: StoreTransaction,
-    contentMode: 'updated' | 'original',
-  ): void {
+  ): Promise<void> {
     const graph = this.graph
     if (!graph) return
 
-    const targetPath = contentMode === 'updated' ? plan.targetPath : plan.sourcePath
-    const targetOldPath = plan.sourcePath
-    const candidatePaths = new Set<WorkspacePath>([
-      targetOldPath,
-      plan.targetPath,
-      ...plan.contentUpdates.map((update) => update.sourcePath),
-    ])
-    const existingEntries = new Map<WorkspacePath, ReferenceIndexEntry | undefined>()
-    for (const path of candidatePaths) {
-      existingEntries.set(path, graph.getIndex().getByPath(path))
-    }
-    for (const path of candidatePaths) {
-      graph.getIndex().removeDocument(path)
+    let availablePaths: readonly WorkspacePath[]
+    try {
+      availablePaths = await collectWorkspaceFilePaths(
+        this.fileSystem,
+        this.rootPath,
+      )
+    } catch (error) {
+      throw new Error(
+        `Unable to inspect the current workspace while synchronizing ReferenceGraph: ${errorMessage(error)}`,
+        { cause: error },
+      )
     }
 
-    const indexDocument = (
-      path: WorkspacePath,
-      markdown: string,
-      existing: ReferenceIndexEntry | undefined,
-      document: DocumentState | undefined,
-    ): void => {
-      if (!existing && !document) return
-      graph.indexDocument({
+    const available = new Set<WorkspacePath>(availablePaths)
+    const currentDocuments = this.store?.getAll() ?? []
+    const indexedIds = new Set<DocumentId>()
+    const indexedPaths = new Set<WorkspacePath>()
+    const documents: ReferenceDocumentInput[] = []
+
+    for (const document of currentDocuments) {
+      const path = createWorkspacePath(document.path)
+      if (
+        path === '' ||
+        !isWorkspacePathWithin(path, this.rootPath) ||
+        indexedIds.has(document.id) ||
+        indexedPaths.has(path)
+      ) {
+        continue
+      }
+      documents.push({
+        id: document.id,
+        path,
+        markdown: document.markdown,
+        revision: document.revision,
+      })
+      indexedIds.add(document.id)
+      indexedPaths.add(path)
+    }
+
+    const sourceEntries = graph.getIndex().getAll()
+    for (const entry of sourceEntries) {
+      if (entry.sourceId !== undefined && indexedIds.has(entry.sourceId)) {
+        continue
+      }
+
+      let path: WorkspacePath | undefined
+      if (
+        entry.sourcePath === plan.sourcePath ||
+        entry.sourcePath === plan.targetPath
+      ) {
+        const sourceExists = available.has(plan.sourcePath)
+        const targetExists = available.has(plan.targetPath)
+        if (sourceExists && !targetExists) {
+          path = plan.sourcePath
+        } else if (targetExists && !sourceExists) {
+          path = plan.targetPath
+        } else if (available.has(entry.sourcePath)) {
+          // If compensation left both paths visible, retain the existing
+          // derived fact and expose the filesystem ambiguity to diagnostics.
+          path = entry.sourcePath
+        } else if (sourceExists) {
+          path = plan.sourcePath
+        } else if (targetExists) {
+          path = plan.targetPath
+        }
+      } else if (available.has(entry.sourcePath)) {
+        path = entry.sourcePath
+      }
+
+      if (path === undefined || indexedPaths.has(path)) continue
+
+      let markdown: string
+      try {
+        markdown = await this.fileSystem.readFile(createDocumentPath(path))
+      } catch (error) {
+        throw new Error(
+          `Unable to read current ReferenceGraph source ${path}: ${errorMessage(error)}`,
+          { cause: error },
+        )
+      }
+      documents.push({
         path,
         markdown,
-        ...(document === undefined
-          ? existing?.sourceId === undefined
-            ? {}
-            : { id: existing.sourceId }
-          : { id: document.id }),
-        revision: document?.revision ?? existing?.revision,
+        ...(entry.sourceId === undefined ? {} : { id: entry.sourceId }),
+        revision: entry.revision,
       })
+      if (entry.sourceId !== undefined) indexedIds.add(entry.sourceId)
+      indexedPaths.add(path)
     }
 
-    const targetDocument =
-      transaction.targetDocumentId === undefined || !this.store
-        ? undefined
-        : this.store.get(documentById(transaction.targetDocumentId))
-    const originalTargetDocument =
-      transaction.targetDocumentId === undefined
-        ? undefined
-        : transaction.originals.get(transaction.targetDocumentId)
-    const targetMarkdown =
-      contentMode === 'updated'
-        ? this.updatedContent(plan, plan.sourcePath)
-        : this.originalContent(plan, plan.sourcePath)
-    if (targetMarkdown !== undefined) {
-      indexDocument(
-        targetPath,
-        targetMarkdown,
-        existingEntries.get(targetOldPath) ?? existingEntries.get(plan.targetPath),
-        contentMode === 'updated' ? targetDocument : originalTargetDocument,
-      )
+    for (const path of indexedPaths) available.add(path)
+    graph.rebuild(documents)
+    graph.setWorkspacePaths([...available])
+
+    for (const document of currentDocuments) {
+      const path = createWorkspacePath(document.path)
+      if (
+        path === '' ||
+        !isWorkspacePathWithin(path, this.rootPath)
+      ) {
+        continue
+      }
+      const entry = graph.getIndex().getById(document.id)
+      if (
+        entry === undefined ||
+        entry.sourcePath !== path ||
+        entry.revision !== document.revision
+      ) {
+        throw new Error(
+          `ReferenceGraph revision mismatch for ${document.id}: Store=${document.revision}, graph=${entry?.revision ?? 'missing'}`,
+        )
+      }
+      if (
+        graph
+          .getEdges()
+          .some(
+            (edge) =>
+              edge.sourceId === document.id &&
+              edge.sourceRevision !== document.revision,
+          )
+      ) {
+        throw new Error(
+          `ReferenceGraph edge revision mismatch for ${document.id}: Store=${document.revision}`,
+        )
+      }
     }
-
-    for (const update of plan.contentUpdates) {
-      if (update.sourcePath === plan.sourcePath) continue
-      const document =
-        contentMode === 'updated'
-          ? update.document && this.store
-            ? this.store.get(documentById(update.document.id))
-            : undefined
-          : update.document
-      const markdown =
-        contentMode === 'updated'
-          ? update.updatedMarkdown
-          : update.originalMarkdown
-      indexDocument(
-        update.sourcePath,
-        markdown,
-        existingEntries.get(update.sourcePath),
-        document,
-      )
-    }
-
-    const workspacePaths = graph.getWorkspacePaths().map((path) =>
-      path === (contentMode === 'updated' ? plan.sourcePath : plan.targetPath)
-        ? targetPath
-        : path,
-    )
-    graph.setWorkspacePaths(workspacePaths)
-  }
-
-  private updatedContent(
-    plan: RenamePlan,
-    path: WorkspacePath,
-  ): string | undefined {
-    const update = plan.contentUpdates.find((candidate) => candidate.sourcePath === path)
-    return update?.updatedMarkdown ?? plan.sourceContents.get(path)
-  }
-
-  private originalContent(
-    plan: RenamePlan,
-    path: WorkspacePath,
-  ): string | undefined {
-    const update = plan.contentUpdates.find((candidate) => candidate.sourcePath === path)
-    return update?.originalMarkdown ?? plan.sourceContents.get(path)
   }
 }
 
