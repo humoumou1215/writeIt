@@ -117,8 +117,8 @@ The Goal is complete only when all of the following are true:
 | G3 | PASS | `010c2d6` | [P7 Architecture Review](./P7_ARCHITECTURE_REVIEW.md); 461 Vitest + 78 Chromium; typecheck/build PASS |
 | G4 | PASS | `d52183f` | [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md); search/replace, derived services, validation and template intelligence implemented |
 | G5 | PASS | `pending` | [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md); snapshot-based built-in/custom/batch export implemented |
-| G6 | ACTIVE | — | Starting P10 diagnostics and privacy contract |
-| G7 | PENDING | — | Desktop toolchain preflight required before implementation |
+| G6 | PASS | `pending` | [P10 Architecture Review](./P10_ARCHITECTURE_REVIEW.md); bounded diagnostics, privacy report and permissioned debug API implemented |
+| G7 | ACTIVE | — | Starting P11 desktop capability contract |
 | G8 | PENDING | — | — |
 
 ## Activation
