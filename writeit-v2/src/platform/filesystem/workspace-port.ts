@@ -12,7 +12,9 @@ export interface WorkspaceDeleteOptions {
 /**
  * Filesystem operations needed by the workspace tree. The tree is a derived
  * view of this port; it is refreshed after a successful mutation rather than
- * becoming a second source of file contents.
+ * becoming a second source of file contents. File rename/move adapters must
+ * preserve a text file's logical version token when they relocate unchanged
+ * content, so a planned conditional write can safely address the new path.
  */
 export interface WorkspaceFileSystemPort extends FileSystemPort {
   listDirectory(path: WorkspacePath): Promise<readonly WorkspaceEntry[]>

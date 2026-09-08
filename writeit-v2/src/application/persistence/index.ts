@@ -14,7 +14,13 @@ import type {
   DocumentState,
   Revision,
 } from '../../core/document'
-import type { FileSystemPort } from '../../platform/filesystem'
+import {
+  isFileVersionToken,
+  type ConditionalWriteDegraded,
+  type FileSystemPort,
+  type FileVersionToken,
+  type TextFileSnapshot,
+} from '../../platform/filesystem'
 
 /** `null` disables automatic persistence and leaves saving to the user. */
 export type AutoSaveDelayMs = number | null
@@ -36,8 +42,12 @@ export interface ExternalFileChange {
   readonly path: DocumentPath
   /** Content observed on disk; absent when the file was deleted. */
   readonly markdown?: string
+  /** Version observed on disk; absent when the file was deleted. */
+  readonly actualVersion?: FileVersionToken
   /** Content that the persistence policy last observed as persisted. */
   readonly baselineMarkdown: string
+  /** Version last acknowledged by the persistence policy, when known. */
+  readonly baselineVersion?: FileVersionToken
   readonly documentRevision: Revision
   readonly documentDirty: boolean
 }
@@ -52,6 +62,7 @@ export interface PersistenceState {
   readonly autoSaveDelayMs: AutoSaveDelayMs
   readonly pendingAutoSave: boolean
   readonly baselineMarkdown: string
+  readonly baselineVersion?: FileVersionToken
   readonly externalChange?: ExternalFileChange
   readonly lastError?: string
 }
@@ -60,6 +71,7 @@ export interface PersistenceSaveResult {
   readonly path: DocumentPath
   readonly revision: Revision
   readonly written: boolean
+  readonly version: FileVersionToken
   readonly document: DocumentState
 }
 
@@ -68,17 +80,22 @@ export interface ExternalFileCheckResult {
   readonly changed: boolean
   readonly kind: ExternalFileChangeKind | 'none'
   readonly markdown?: string
+  readonly version?: FileVersionToken
   readonly document: DocumentState
 }
 
 export interface PersistenceTrackOptions {
   /** Content known to be on disk at the tracked document's persisted revision. */
   readonly persistedMarkdown?: string
+  /** Version read with persistedMarkdown, when the caller has a coherent snapshot. */
+  readonly persistedVersion?: FileVersionToken
 }
 
 export interface PersistenceRebindPathOptions {
   /** New content already written while the document path was being moved. */
   readonly persistedMarkdown?: string
+  /** Version returned by the successful move/conditional write. */
+  readonly persistedVersion?: FileVersionToken
 }
 
 /**
@@ -147,6 +164,23 @@ export class PersistenceWriteError extends Error {
   }
 }
 
+export class PersistenceConditionalWriteDegradedError extends Error {
+  readonly code = 'persistence-conditional-write-degraded' as const
+  readonly path: DocumentPath
+  readonly expectedVersion: FileVersionToken
+  readonly reason: ConditionalWriteDegraded['reason']
+  readonly cause: ConditionalWriteDegraded
+
+  constructor(path: DocumentPath, outcome: ConditionalWriteDegraded) {
+    super(`Unable to safely save ${path}: ${outcome.message}`)
+    this.name = 'PersistenceConditionalWriteDegradedError'
+    this.path = path
+    this.expectedVersion = outcome.expectedVersion
+    this.reason = outcome.reason
+    this.cause = outcome
+  }
+}
+
 export class PersistenceDeletionSaveError extends Error {
   readonly code = 'persistence-deletion-save-failed' as const
   readonly path?: DocumentPath
@@ -202,6 +236,8 @@ export class SaveConflictError extends Error {
   readonly kind: ExternalFileChangeKind
   readonly expectedMarkdown: string
   readonly actualMarkdown?: string
+  readonly expectedVersion?: FileVersionToken
+  readonly actualVersion?: FileVersionToken
   readonly revision: Revision
 
   constructor(input: {
@@ -209,6 +245,8 @@ export class SaveConflictError extends Error {
     readonly kind: ExternalFileChangeKind
     readonly expectedMarkdown: string
     readonly actualMarkdown?: string
+    readonly expectedVersion?: FileVersionToken
+    readonly actualVersion?: FileVersionToken
     readonly revision: Revision
   }) {
     super(
@@ -221,6 +259,8 @@ export class SaveConflictError extends Error {
     this.kind = input.kind
     this.expectedMarkdown = input.expectedMarkdown
     this.actualMarkdown = input.actualMarkdown
+    this.expectedVersion = input.expectedVersion
+    this.actualVersion = input.actualVersion
     this.revision = input.revision
   }
 }
@@ -239,6 +279,7 @@ interface TrackedDocument {
   readonly id: DocumentId
   path: DocumentPath
   persistedMarkdown: string
+  persistedVersion?: FileVersionToken
   phase: 'ready' | 'saving' | 'external-change' | 'conflict' | 'error'
   externalChange?: ExternalFileChange
   lastError?: string
@@ -250,11 +291,16 @@ interface TrackedDocument {
   readonly unsubscribeStore: PersistenceUnsubscribe
 }
 
-interface DiskReadResult {
-  readonly kind: 'available' | 'deleted'
-  readonly markdown?: string
-  readonly cause?: unknown
-}
+type DiskReadResult =
+  | {
+      readonly kind: 'available'
+      readonly markdown: string
+      readonly version: FileVersionToken
+    }
+  | {
+      readonly kind: 'deleted'
+      readonly cause?: unknown
+    }
 
 const DEFAULT_SCHEDULER: PersistenceScheduler = {
   set(callback, delayMs) {
@@ -354,6 +400,12 @@ export class DocumentPersistenceService {
     ) {
       throw new TypeError('Tracked persisted Markdown must be a string')
     }
+    if (
+      options.persistedVersion !== undefined &&
+      !isFileVersionToken(options.persistedVersion)
+    ) {
+      throw new TypeError('Tracked persisted version must be a file version token')
+    }
 
     const baseline = options.persistedMarkdown ?? document.markdown
     let unsubscribeStore: PersistenceUnsubscribe = () => undefined
@@ -361,6 +413,9 @@ export class DocumentPersistenceService {
       id: document.id,
       path: document.path,
       persistedMarkdown: baseline,
+      ...(options.persistedVersion === undefined
+        ? {}
+        : { persistedVersion: options.persistedVersion }),
       phase: 'ready',
       pendingAutoSave: false,
       suppressAutoSave: 0,
@@ -388,15 +443,18 @@ export class DocumentPersistenceService {
     return this.getState(locator)
   }
 
-  /** Reads a file, seeds the Store, and starts tracking its persistence state. */
+  /** Reads a coherent file snapshot, seeds the Store, and starts tracking. */
   async loadFromFile(input: PersistenceLoadInput): Promise<DocumentState> {
-    const markdown = await this.readFile(input.path)
+    const snapshot = await this.readSnapshot(input.path)
     const document = this.store.load({
       id: input.id,
       path: input.path,
-      markdown,
+      markdown: snapshot.content,
     })
-    this.track(documentById(document.id), { persistedMarkdown: markdown })
+    this.track(documentById(document.id), {
+      persistedMarkdown: snapshot.content,
+      persistedVersion: snapshot.version,
+    })
     return document
   }
 
@@ -708,10 +766,19 @@ export class DocumentPersistenceService {
     ) {
       throw new TypeError('Rebound persisted Markdown must be a string')
     }
+    if (
+      options.persistedVersion !== undefined &&
+      !isFileVersionToken(options.persistedVersion)
+    ) {
+      throw new TypeError('Rebound persisted version must be a file version token')
+    }
 
     record.path = path
     if (options.persistedMarkdown !== undefined) {
       record.persistedMarkdown = options.persistedMarkdown
+    }
+    if (options.persistedVersion !== undefined) {
+      record.persistedVersion = options.persistedVersion
     }
     record.externalChange = undefined
     record.lastError = undefined
@@ -821,13 +888,21 @@ export class DocumentPersistenceService {
       })
     }
 
-    const markdown = disk.markdown as string
-    if (markdown === record.persistedMarkdown) {
+    const markdown = disk.markdown
+    const version = disk.version
+    const versionChanged =
+      record.persistedVersion !== undefined &&
+      record.persistedVersion !== version
+    if (markdown === record.persistedMarkdown && !versionChanged) {
+      if (record.persistedVersion === undefined) {
+        record.persistedVersion = version
+      }
       this.clearExternalChange(record)
       return Object.freeze({
         path: record.path,
         changed: false,
         kind: 'none' as const,
+        version,
         document: this.requireDocument(locator),
       })
     }
@@ -835,12 +910,14 @@ export class DocumentPersistenceService {
     this.noteExternalChange(record, document, {
       kind: 'changed',
       markdown,
+      actualVersion: version,
     })
     return Object.freeze({
       path: record.path,
       changed: true,
       kind: 'changed' as const,
       markdown,
+      version,
       document: this.requireDocument(locator),
     })
   }
@@ -861,7 +938,7 @@ export class DocumentPersistenceService {
     if (disk.kind === 'deleted') {
       throw new ExternalFileUnavailableError(record.path, disk.cause)
     }
-    return this.replaceWithDisk(record, disk.markdown as string)
+    return this.replaceWithDisk(record, disk)
   }
 
   /**
@@ -877,7 +954,7 @@ export class DocumentPersistenceService {
     if (disk.kind === 'deleted') {
       throw new ExternalFileUnavailableError(record.path, disk.cause)
     }
-    return this.replaceWithDisk(record, disk.markdown as string)
+    return this.replaceWithDisk(record, disk)
   }
 
   /**
@@ -916,15 +993,51 @@ export class DocumentPersistenceService {
       if (disk.kind === 'deleted') {
         throw this.createConflict(record, before, 'deleted')
       }
-      if (disk.markdown !== record.persistedMarkdown) {
-        throw this.createConflict(record, before, 'changed', disk.markdown)
+      const diskVersion = disk.version
+      const diskChanged =
+        disk.markdown !== record.persistedMarkdown ||
+        (record.persistedVersion !== undefined &&
+          record.persistedVersion !== diskVersion)
+      if (diskChanged) {
+        throw this.createConflict(
+          record,
+          before,
+          'changed',
+          disk.markdown,
+          diskVersion,
+        )
       }
 
       const targetRevision = before.revision
       const targetMarkdown = before.markdown
+      let persistedVersion = diskVersion
       if (before.dirty) {
-        await this.fileSystem.writeFile(record.path, targetMarkdown)
+        const outcome = await this.fileSystem.writeTextIfUnchanged(
+          record.path,
+          diskVersion,
+          targetMarkdown,
+        )
+        if (outcome.status === 'conflict') {
+          throw this.createConflict(
+            record,
+            before,
+            outcome.reason,
+            outcome.actualContent,
+            outcome.actualVersion,
+            outcome.expectedVersion,
+          )
+        }
+        if (outcome.status === 'degraded') {
+          throw new PersistenceConditionalWriteDegradedError(
+            record.path,
+            outcome,
+          )
+        }
+        persistedVersion = outcome.version
         record.persistedMarkdown = targetMarkdown
+        record.persistedVersion = persistedVersion
+      } else if (record.persistedVersion === undefined) {
+        record.persistedVersion = persistedVersion
       }
 
       record.externalChange = undefined
@@ -946,6 +1059,7 @@ export class DocumentPersistenceService {
         path: record.path,
         revision: targetRevision,
         written: before.dirty,
+        version: persistedVersion,
         document: acknowledged,
       })
     } catch (error) {
@@ -956,6 +1070,7 @@ export class DocumentPersistenceService {
         if (
           error instanceof PersistenceReadError ||
           error instanceof PersistenceWriteError ||
+          error instanceof PersistenceConditionalWriteDegradedError ||
           error instanceof ExternalFileUnavailableError
         ) {
           throw error
@@ -970,8 +1085,10 @@ export class DocumentPersistenceService {
 
   private replaceWithDisk(
     record: TrackedDocument,
-    markdown: string,
+    snapshot: Extract<DiskReadResult, { readonly kind: 'available' }>,
   ): DocumentState {
+    const markdown = snapshot.markdown
+    const version = snapshot.version
     record.suppressAutoSave += 1
     try {
       const current = this.requireDocument(documentById(record.id))
@@ -989,6 +1106,7 @@ export class DocumentPersistenceService {
         createDocumentOrigin('persistence', 'file-reload'),
       )
       record.persistedMarkdown = markdown
+      record.persistedVersion = version
       record.externalChange = undefined
       record.lastError = undefined
       record.phase = 'ready'
@@ -1099,13 +1217,21 @@ export class DocumentPersistenceService {
     document: DocumentState,
     kind: ExternalFileChangeKind,
     markdown?: string,
+    actualVersion?: FileVersionToken,
+    expectedVersion: FileVersionToken | undefined = record.persistedVersion,
   ): SaveConflictError {
-    this.noteExternalChange(record, document, { kind, markdown })
+    this.noteExternalChange(record, document, {
+      kind,
+      markdown,
+      actualVersion,
+    })
     return new SaveConflictError({
       path: record.path,
       kind,
       expectedMarkdown: record.persistedMarkdown,
       ...(markdown === undefined ? {} : { actualMarkdown: markdown }),
+      ...(expectedVersion === undefined ? {} : { expectedVersion }),
+      ...(actualVersion === undefined ? {} : { actualVersion }),
       revision: document.revision,
     })
   }
@@ -1113,15 +1239,25 @@ export class DocumentPersistenceService {
   private noteExternalChange(
     record: TrackedDocument,
     document: DocumentState,
-    input: { readonly kind: ExternalFileChangeKind; readonly markdown?: string },
+    input: {
+      readonly kind: ExternalFileChangeKind
+      readonly markdown?: string
+      readonly actualVersion?: FileVersionToken
+    },
   ): ExternalFileChange {
     const change: ExternalFileChange = Object.freeze({
       kind: input.kind,
       path: record.path,
       baselineMarkdown: record.persistedMarkdown,
+      ...(record.persistedVersion === undefined
+        ? {}
+        : { baselineVersion: record.persistedVersion }),
       documentRevision: document.revision,
       documentDirty: document.dirty,
       ...(input.markdown === undefined ? {} : { markdown: input.markdown }),
+      ...(input.actualVersion === undefined
+        ? {}
+        : { actualVersion: input.actualVersion }),
     })
     record.externalChange = change
     record.phase = document.dirty ? 'conflict' : 'external-change'
@@ -1150,9 +1286,9 @@ export class DocumentPersistenceService {
     }
   }
 
-  private async readFile(path: DocumentPath): Promise<string> {
+  private async readSnapshot(path: DocumentPath): Promise<TextFileSnapshot> {
     try {
-      return await this.fileSystem.readFile(path)
+      return await this.fileSystem.readTextSnapshot(path)
     } catch (error) {
       throw new PersistenceReadError(path, error)
     }
@@ -1160,9 +1296,11 @@ export class DocumentPersistenceService {
 
   private async readDisk(record: TrackedDocument): Promise<DiskReadResult> {
     try {
+      const snapshot = await this.fileSystem.readTextSnapshot(record.path)
       return Object.freeze({
         kind: 'available' as const,
-        markdown: await this.fileSystem.readFile(record.path),
+        markdown: snapshot.content,
+        version: snapshot.version,
       })
     } catch (error) {
       if (isMissingFileError(error)) {
@@ -1212,6 +1350,9 @@ export class DocumentPersistenceService {
       autoSaveDelayMs: this.autoSaveDelayMs,
       pendingAutoSave: record.pendingAutoSave,
       baselineMarkdown: record.persistedMarkdown,
+      ...(record.persistedVersion === undefined
+        ? {}
+        : { baselineVersion: record.persistedVersion }),
       ...(record.externalChange === undefined
         ? {}
         : { externalChange: record.externalChange }),

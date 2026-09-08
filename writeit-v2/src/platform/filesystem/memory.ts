@@ -14,7 +14,13 @@ import type {
   WorkspacePath,
 } from '../../core/workspace'
 import type { BinaryFileSystemPort } from './binary-port'
-import type { FileSystemPort } from './port'
+import { isFileVersionToken } from './port'
+import type {
+  ConditionalWriteResult,
+  FileSystemPort,
+  FileVersionToken,
+  TextFileSnapshot,
+} from './port'
 import {
   WorkspaceDirectoryNotEmptyError,
   WorkspaceEntryAlreadyExistsError,
@@ -119,7 +125,16 @@ function compareEntries(left: WorkspaceEntry, right: WorkspaceEntry): number {
 export class MemoryFileSystem
   implements FileSystemPort, WorkspaceFileSystemPort, BinaryFileSystemPort
 {
+  private static nextAdapterId = 0
+
+  private readonly adapterId = ++MemoryFileSystem.nextAdapterId
+
+  private versionSequence = 0
+
   private readonly files = new Map<WorkspacePath, string>()
+
+  /** Current logical version for every text or binary workspace file. */
+  private readonly versions = new Map<WorkspacePath, FileVersionToken>()
 
   /** Binary files share the same workspace namespace as text files. */
   private readonly binaryFiles = new Map<WorkspacePath, Uint8Array>()
@@ -146,9 +161,18 @@ export class MemoryFileSystem
   }
 
   async readFile(path: DocumentPath): Promise<string> {
+    return (await this.readTextSnapshot(path)).content
+  }
+
+  async readTextSnapshot(path: DocumentPath): Promise<TextFileSnapshot> {
     const normalizedPath = requirePath(path)
     const content = this.files.get(normalizedPath)
-    if (content !== undefined) return content
+    if (content !== undefined) {
+      return Object.freeze({
+        content,
+        version: this.requireVersion(normalizedPath),
+      })
+    }
     if (this.binaryFiles.has(normalizedPath)) {
       throw new WorkspaceInvalidOperationError(
         `Workspace file ${normalizedPath} contains binary data`,
@@ -182,6 +206,55 @@ export class MemoryFileSystem
     this.ensureParentDirectories(normalizedPath)
     this.binaryFiles.delete(normalizedPath)
     this.files.set(normalizedPath, content)
+    this.versions.set(normalizedPath, this.issueVersion())
+  }
+
+  async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
+    const normalizedPath = requirePath(path)
+    requireContent(content)
+    if (!isFileVersionToken(expectedVersion)) {
+      throw new TypeError('Expected version must be a non-empty file version token')
+    }
+
+    if (this.directories.has(normalizedPath)) {
+      throw new WorkspaceInvalidOperationError(
+        `Cannot write a file over directory ${normalizedPath}`,
+      )
+    }
+
+    const currentVersion = this.versions.get(normalizedPath)
+    const currentContent = this.files.get(normalizedPath)
+    if (currentContent === undefined && !this.binaryFiles.has(normalizedPath)) {
+      return Object.freeze({
+        status: 'conflict' as const,
+        reason: 'deleted' as const,
+        expectedVersion,
+      })
+    }
+    if (currentContent === undefined || currentVersion !== expectedVersion) {
+      return Object.freeze({
+        status: 'conflict' as const,
+        reason: 'changed' as const,
+        expectedVersion,
+        actualVersion: this.requireVersion(normalizedPath),
+        ...(currentContent === undefined ? {} : { actualContent: currentContent }),
+      })
+    }
+
+    this.ensureParentDirectories(normalizedPath)
+    this.binaryFiles.delete(normalizedPath)
+    this.files.set(normalizedPath, content)
+    const version = this.issueVersion()
+    this.versions.set(normalizedPath, version)
+    return Object.freeze({
+      status: 'written' as const,
+      atomicity: 'strong' as const,
+      version,
+    })
   }
 
   async writeBinary(path: WorkspacePath, data: Uint8Array): Promise<void> {
@@ -197,6 +270,7 @@ export class MemoryFileSystem
     this.ensureParentDirectories(normalizedPath)
     this.files.delete(normalizedPath)
     this.binaryFiles.set(normalizedPath, bytes)
+    this.versions.set(normalizedPath, this.issueVersion())
   }
 
   async deleteBinary(path: WorkspacePath): Promise<void> {
@@ -204,6 +278,7 @@ export class MemoryFileSystem
     if (!this.binaryFiles.delete(normalizedPath)) {
       throw new FileNotFoundError(createDocumentPath(normalizedPath))
     }
+    this.versions.delete(normalizedPath)
   }
 
   async listDirectory(
@@ -245,6 +320,7 @@ export class MemoryFileSystem
     this.requireParentDirectory(normalizedPath)
     this.requirePathDoesNotExist(normalizedPath)
     this.files.set(normalizedPath, content)
+    this.versions.set(normalizedPath, this.issueVersion())
   }
 
   async createDirectory(path: WorkspacePath): Promise<void> {
@@ -271,8 +347,14 @@ export class MemoryFileSystem
       )
     }
 
-    if (this.files.delete(normalizedPath)) return
-    if (this.binaryFiles.delete(normalizedPath)) return
+    if (this.files.delete(normalizedPath)) {
+      this.versions.delete(normalizedPath)
+      return
+    }
+    if (this.binaryFiles.delete(normalizedPath)) {
+      this.versions.delete(normalizedPath)
+      return
+    }
     if (!this.directories.has(normalizedPath)) {
       throw new WorkspaceEntryNotFoundError(normalizedPath)
     }
@@ -296,10 +378,16 @@ export class MemoryFileSystem
       }
     }
     for (const file of [...this.files.keys()]) {
-      if (isWorkspacePathWithin(file, normalizedPath)) this.files.delete(file)
+      if (isWorkspacePathWithin(file, normalizedPath)) {
+        this.files.delete(file)
+        this.versions.delete(file)
+      }
     }
     for (const file of [...this.binaryFiles.keys()]) {
-      if (isWorkspacePathWithin(file, normalizedPath)) this.binaryFiles.delete(file)
+      if (isWorkspacePathWithin(file, normalizedPath)) {
+        this.binaryFiles.delete(file)
+        this.versions.delete(file)
+      }
     }
   }
 
@@ -410,12 +498,14 @@ export class MemoryFileSystem
     this.requirePathDoesNotExist(path)
     this.ensureParentDirectories(path)
     this.files.set(path, content)
+    this.versions.set(path, this.issueVersion())
   }
 
   private registerBinaryFile(path: WorkspacePath, data: Uint8Array): void {
     this.requirePathDoesNotExist(path)
     this.ensureParentDirectories(path)
     this.binaryFiles.set(path, requireBinaryContent(data))
+    this.versions.set(path, this.issueVersion())
   }
 
   private ensureParentDirectories(path: WorkspacePath): void {
@@ -467,6 +557,19 @@ export class MemoryFileSystem
     return undefined
   }
 
+  private issueVersion(): FileVersionToken {
+    this.versionSequence += 1
+    return `memory:${this.adapterId}:${this.versionSequence}` as FileVersionToken
+  }
+
+  private requireVersion(path: WorkspacePath): FileVersionToken {
+    const version = this.versions.get(path)
+    if (version === undefined) {
+      throw new Error(`MemoryFileSystem version missing for ${path}`)
+    }
+    return version
+  }
+
   private moveEntryToTarget(
     source: WorkspacePath,
     target: WorkspacePath,
@@ -483,16 +586,21 @@ export class MemoryFileSystem
     if (target !== source) this.requirePathDoesNotExist(target)
 
     if (sourceKind === 'file') {
+      const version = this.requireVersion(source)
       const content = this.files.get(source)
       if (content !== undefined) {
         this.files.delete(source)
+        this.versions.delete(source)
         this.files.set(target, content)
+        this.versions.set(target, version)
         return target
       }
       const bytes = this.binaryFiles.get(source)
       if (bytes !== undefined) {
         this.binaryFiles.delete(source)
+        this.versions.delete(source)
         this.binaryFiles.set(target, bytes)
+        this.versions.set(target, version)
         return target
       }
       throw new WorkspaceEntryNotFoundError(source)
@@ -507,19 +615,38 @@ export class MemoryFileSystem
     const binaryFilesToMove = [...this.binaryFiles.entries()].filter(
       ([candidate]) => isWorkspacePathWithin(candidate, source),
     )
+    const fileVersionsToMove = new Map(
+      filesToMove.map(([file]) => [file, this.requireVersion(file)]),
+    )
+    const binaryVersionsToMove = new Map(
+      binaryFilesToMove.map(([file]) => [file, this.requireVersion(file)]),
+    )
 
     for (const directory of directoriesToMove) this.directories.delete(directory)
-    for (const [file] of filesToMove) this.files.delete(file)
-    for (const [file] of binaryFilesToMove) this.binaryFiles.delete(file)
+    for (const [file] of filesToMove) {
+      this.files.delete(file)
+      this.versions.delete(file)
+    }
+    for (const [file] of binaryFilesToMove) {
+      this.binaryFiles.delete(file)
+      this.versions.delete(file)
+    }
 
     for (const directory of directoriesToMove) {
       this.directories.add(this.movePath(directory, source, target))
     }
     for (const [file, content] of filesToMove) {
-      this.files.set(this.movePath(file, source, target), content)
+      const movedPath = this.movePath(file, source, target)
+      this.files.set(movedPath, content)
+      this.versions.set(movedPath, fileVersionsToMove.get(file) as FileVersionToken)
     }
     for (const [file, bytes] of binaryFilesToMove) {
-      this.binaryFiles.set(this.movePath(file, source, target), bytes)
+      const movedPath = this.movePath(file, source, target)
+      this.binaryFiles.set(movedPath, bytes)
+      this.versions.set(
+        movedPath,
+        binaryVersionsToMove.get(file) as FileVersionToken,
+      )
     }
 
     return target

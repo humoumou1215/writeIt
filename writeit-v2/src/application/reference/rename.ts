@@ -30,7 +30,12 @@ import {
   isPersistenceTracked,
 } from '../persistence'
 import type { PersistenceRebindPathOptions } from '../persistence'
-import type { WorkspaceFileSystemPort } from '../../platform/filesystem'
+import type {
+  ConditionalWriteResult,
+  FileVersionToken,
+  TextFileSnapshot,
+  WorkspaceFileSystemPort,
+} from '../../platform/filesystem'
 import { WorkspaceEntryAlreadyExistsError } from '../../platform/filesystem'
 
 export type ReferenceRenameOperation = 'rename' | 'move'
@@ -73,6 +78,9 @@ export interface ReferenceRenameConflict {
     | 'missing-document-file'
   readonly path: WorkspacePath
   readonly documentId?: DocumentId
+  readonly expectedVersion?: FileVersionToken
+  readonly actualVersion?: FileVersionToken
+  readonly actualContent?: string
   readonly message: string
 }
 
@@ -229,6 +237,7 @@ export class ReferenceRenameTransactionError extends ReferenceRenameError {
 interface ContentUpdate {
   readonly sourcePath: WorkspacePath
   readonly originalMarkdown: string
+  readonly originalVersion: FileVersionToken
   readonly updatedMarkdown: string
   readonly referenceCount: number
   readonly document?: DocumentState
@@ -240,6 +249,7 @@ interface RenamePlan {
   readonly targetPath: WorkspacePath
   readonly availablePaths: readonly WorkspacePath[]
   readonly sourceContents: ReadonlyMap<WorkspacePath, string>
+  readonly sourceVersions: ReadonlyMap<WorkspacePath, FileVersionToken>
   readonly loadedByPath: ReadonlyMap<WorkspacePath, DocumentState>
   readonly contentUpdates: readonly ContentUpdate[]
 }
@@ -256,12 +266,17 @@ interface StoreTransaction {
 }
 
 interface FilesystemMoveState {
-  movedPath: WorkspacePath
+  readonly movedPath: WorkspacePath
+  readonly writtenVersions: Map<WorkspacePath, FileVersionToken>
 }
 
 interface CompensationResult {
   readonly succeeded: boolean
   readonly error?: unknown
+}
+
+interface FilesystemRollbackResult extends CompensationResult {
+  readonly restoredVersions: ReadonlyMap<WorkspacePath, FileVersionToken>
 }
 
 function errorMessage(error: unknown): string {
@@ -270,6 +285,20 @@ function errorMessage(error: unknown): string {
   } catch {
     return 'Unknown rename failure'
   }
+}
+
+function conditionalWriteFailureMessage(
+  path: WorkspacePath,
+  outcome: Exclude<ConditionalWriteResult, { readonly status: 'written' }>,
+): string {
+  if (outcome.status === 'conflict') {
+    const actual =
+      outcome.actualVersion === undefined
+        ? 'missing'
+        : `actual version ${outcome.actualVersion}`
+    return `Conditional write for ${path} conflicted (${outcome.reason}; expected version ${outcome.expectedVersion}, ${actual})`
+  }
+  return `Conditional write for ${path} is degraded (${outcome.reason}): ${outcome.message}`
 }
 
 function normalizePath(value: unknown, name: string): WorkspacePath {
@@ -309,7 +338,9 @@ function isWorkspaceFileSystemPort(
   const candidate = value as Record<string, unknown>
   return (
     typeof candidate.readFile === 'function' &&
+    typeof candidate.readTextSnapshot === 'function' &&
     typeof candidate.writeFile === 'function' &&
+    typeof candidate.writeTextIfUnchanged === 'function' &&
     typeof candidate.listDirectory === 'function' &&
     typeof candidate.renameEntry === 'function' &&
     typeof candidate.moveEntry === 'function'
@@ -706,11 +737,6 @@ export class ReferenceRenameService {
       )
     }
 
-    const originalContents = new Map<WorkspacePath, string>()
-    for (const update of plan.contentUpdates) {
-      originalContents.set(update.sourcePath, update.originalMarkdown)
-    }
-
     let filesystemMove: FilesystemMoveState | undefined
     try {
       const moved =
@@ -725,7 +751,10 @@ export class ReferenceRenameService {
             )
       // Treat a returned path as advisory only until it validates; the source
       // may already have moved when an adapter reports a malformed result.
-      filesystemMove = { movedPath: plan.targetPath }
+      filesystemMove = {
+        movedPath: plan.targetPath,
+        writtenVersions: new Map(),
+      }
       const normalizedMoved = normalizePath(moved, 'Filesystem rename result')
       if (normalizedMoved !== plan.targetPath) {
         throw new Error(
@@ -738,10 +767,19 @@ export class ReferenceRenameService {
           update.sourcePath === plan.sourcePath
             ? plan.targetPath
             : update.sourcePath
-        await this.fileSystem.writeFile(
+        const outcome = await this.fileSystem.writeTextIfUnchanged(
           createDocumentPath(destinationPath),
+          update.originalVersion,
           update.updatedMarkdown,
         )
+        if (outcome.status !== 'written') {
+          throw this.conditionalWriteFailure(
+            destinationPath,
+            outcome,
+            plan,
+          )
+        }
+        filesystemMove.writtenVersions.set(update.sourcePath, outcome.version)
       }
     } catch (error) {
       if (!filesystemMove) {
@@ -773,9 +811,13 @@ export class ReferenceRenameService {
 
       const filesystemRollback = await this.rollbackFilesystem(
         plan,
-        filesystemMove.movedPath,
-        originalContents,
+        filesystemMove,
       )
+      const persistenceRollback =
+        this.synchronizePersistenceAfterFilesystemRollback(
+          plan,
+          filesystemRollback.restoredVersions,
+        )
       const graphRollback = await this.trySynchronizeGraph(plan)
       const compensationFailures = [
         ...(!filesystemRollback.succeeded
@@ -784,6 +826,15 @@ export class ReferenceRenameService {
                 phase: 'filesystem' as const,
                 cause: filesystemRollback.error,
                 message: errorMessage(filesystemRollback.error),
+              },
+            ]
+          : []),
+        ...(!persistenceRollback.succeeded
+          ? [
+              {
+                phase: 'store' as const,
+                cause: persistenceRollback.error,
+                message: errorMessage(persistenceRollback.error),
               },
             ]
           : []),
@@ -803,8 +854,11 @@ export class ReferenceRenameService {
         targetPath: plan.targetPath,
         cause: error,
         rollbackAttempted: true,
-        rollbackSucceeded: filesystemRollback.succeeded && graphRollback.succeeded,
-        storeRollbackSucceeded: true,
+        rollbackSucceeded:
+          filesystemRollback.succeeded &&
+          persistenceRollback.succeeded &&
+          graphRollback.succeeded,
+        storeRollbackSucceeded: persistenceRollback.succeeded,
         filesystemRollbackSucceeded: filesystemRollback.succeeded,
         graphRollbackSucceeded: graphRollback.succeeded,
         compensationFailures,
@@ -816,7 +870,11 @@ export class ReferenceRenameService {
       sourceChanges: [],
     }
     try {
-      const renamedDocumentId = this.applyStoreMutations(plan, storeTransaction)
+      const renamedDocumentId = this.applyStoreMutations(
+        plan,
+        storeTransaction,
+        filesystemMove,
+      )
       await this.synchronizeGraphFromCurrentState(plan)
       const finalDocuments = new Map<DocumentId, DocumentState>()
       if (this.store) {
@@ -827,11 +885,14 @@ export class ReferenceRenameService {
       }
       return createResult(plan, renamedDocumentId, finalDocuments)
     } catch (error) {
-      const storeRollback = this.rollbackStore(plan, storeTransaction)
       const filesystemRollback = await this.rollbackFilesystem(
         plan,
-        filesystemMove.movedPath,
-        originalContents,
+        filesystemMove,
+      )
+      const storeRollback = this.rollbackStore(
+        plan,
+        storeTransaction,
+        filesystemRollback.restoredVersions,
       )
       const graphRollback = await this.trySynchronizeGraph(plan)
       const compensationFailures = [
@@ -981,6 +1042,8 @@ export class ReferenceRenameService {
 
     const loadedByPath = normalizeLoadedDocuments(this.store, this.rootPath)
     const sourceContents = new Map<WorkspacePath, string>()
+    const sourceVersions = new Map<WorkspacePath, FileVersionToken>()
+    const sourceSnapshots = new Map<WorkspacePath, TextFileSnapshot>()
     const candidatePaths = new Set<WorkspacePath>(
       availablePaths.filter((path) => isReferenceDocumentPath(path)),
     )
@@ -990,13 +1053,13 @@ export class ReferenceRenameService {
 
     for (const path of [...candidatePaths].sort()) {
       const loaded = loadedByPath.get(path)
-      if (loaded) {
-        sourceContents.set(path, loaded.markdown)
-        continue
-      }
       try {
-        const markdown = await this.fileSystem.readFile(createDocumentPath(path))
-        sourceContents.set(path, markdown)
+        const snapshot = await this.fileSystem.readTextSnapshot(
+          createDocumentPath(path),
+        )
+        sourceSnapshots.set(path, snapshot)
+        sourceVersions.set(path, snapshot.version)
+        sourceContents.set(path, loaded?.markdown ?? snapshot.content)
       } catch (error) {
         throw new ReferenceRenamePreflightError(
           `Unable to read ${path} before updating incoming references: ${errorMessage(error)}`,
@@ -1038,6 +1101,7 @@ export class ReferenceRenameService {
         Object.freeze({
           sourcePath,
           originalMarkdown: markdown,
+          originalVersion: sourceVersions.get(sourcePath) as FileVersionToken,
           updatedMarkdown: rewritten.markdown,
           referenceCount: rewritten.referenceCount,
           document: loadedByPath.get(sourcePath),
@@ -1071,25 +1135,25 @@ export class ReferenceRenameService {
         })
         continue
       }
-      try {
-        const disk = await this.fileSystem.readFile(createDocumentPath(path))
-        if (disk !== document.markdown) {
-          conflicts.push({
-            kind: 'external-change',
-            path,
-            documentId: document.id,
-            message: `Workspace file ${path} changed outside DocumentStore; rename was not applied`,
-          })
-        }
-      } catch (error) {
+      const snapshot = sourceSnapshots.get(path)
+      if (snapshot === undefined) {
         throw new ReferenceRenamePreflightError(
-          `Unable to verify loaded document ${path} before rename: ${errorMessage(error)}`,
+          `Unable to verify loaded document ${path} before rename: snapshot is missing`,
           {
             sourcePath: input.sourcePath,
             targetPath: input.targetPath,
-            cause: error,
           },
         )
+      }
+      if (snapshot.content !== document.markdown) {
+        conflicts.push({
+          kind: 'external-change',
+          path,
+          documentId: document.id,
+          actualVersion: snapshot.version,
+          actualContent: snapshot.content,
+          message: `Workspace file ${path} changed outside DocumentStore; rename was not applied`,
+        })
       }
     }
     if (conflicts.length > 0) {
@@ -1105,6 +1169,7 @@ export class ReferenceRenameService {
       targetPath: input.targetPath,
       availablePaths,
       sourceContents,
+      sourceVersions,
       loadedByPath,
       contentUpdates: Object.freeze(contentUpdates),
     })
@@ -1113,6 +1178,7 @@ export class ReferenceRenameService {
   private applyStoreMutations(
     plan: RenamePlan,
     transaction: StoreTransaction,
+    filesystemMove: FilesystemMoveState,
   ): DocumentId | undefined {
     const store = this.store
     if (!store) return undefined
@@ -1152,8 +1218,12 @@ export class ReferenceRenameService {
       const current = store.get(documentById(original.id))
       if (!current) throw new Error(`Document ${original.id} is no longer loaded`)
       if (this.persistence && isPersistenceTracked(this.persistence, documentById(original.id))) {
+        const persistedVersion =
+          filesystemMove.writtenVersions.get(createWorkspacePath(original.path)) ??
+          plan.sourceVersions.get(createWorkspacePath(original.path))
         const persistenceOptions: PersistenceRebindPathOptions = {
           persistedMarkdown: current.markdown,
+          ...(persistedVersion === undefined ? {} : { persistedVersion }),
         }
         this.persistence.rebindPath(
           documentById(original.id),
@@ -1176,6 +1246,7 @@ export class ReferenceRenameService {
   private rollbackStore(
     plan: RenamePlan,
     transaction: StoreTransaction,
+    restoredVersions: ReadonlyMap<WorkspacePath, FileVersionToken>,
   ): CompensationResult {
     const store = this.store
     if (!store) return Object.freeze({ succeeded: true })
@@ -1261,10 +1332,14 @@ export class ReferenceRenameService {
       }
       try {
         if (this.persistence && isPersistenceTracked(this.persistence, documentById(original.id))) {
+          const persistedVersion = restoredVersions.get(createWorkspacePath(original.path))
           this.persistence.rebindPath(
             documentById(original.id),
             current.path,
-            { persistedMarkdown: original.markdown },
+            {
+              persistedMarkdown: original.markdown,
+              ...(persistedVersion === undefined ? {} : { persistedVersion }),
+            },
           )
         }
         if (current.revision > current.persistedRevision) {
@@ -1282,12 +1357,13 @@ export class ReferenceRenameService {
 
   private async rollbackFilesystem(
     plan: RenamePlan,
-    movedPath: WorkspacePath,
-    originalContents: ReadonlyMap<WorkspacePath, string>,
-  ): Promise<CompensationResult> {
+    filesystemMove: FilesystemMoveState,
+  ): Promise<FilesystemRollbackResult> {
     let success = true
     let hasError = false
     let firstError: unknown
+    const restoredVersions = new Map<WorkspacePath, FileVersionToken>()
+    let restoredTargetVersion: FileVersionToken | undefined
     const fail = (error: unknown): void => {
       success = false
       if (!hasError) {
@@ -1295,27 +1371,44 @@ export class ReferenceRenameService {
         firstError = error
       }
     }
-    for (const [sourcePath, markdown] of [...originalContents.entries()].reverse()) {
-      const currentPath = sourcePath === plan.sourcePath ? movedPath : sourcePath
+
+    for (const update of [...plan.contentUpdates].reverse()) {
+      const writtenVersion = filesystemMove.writtenVersions.get(update.sourcePath)
+      if (writtenVersion === undefined) continue
+      const currentPath =
+        update.sourcePath === plan.sourcePath
+          ? filesystemMove.movedPath
+          : update.sourcePath
       try {
-        await this.fileSystem.writeFile(
+        const outcome = await this.fileSystem.writeTextIfUnchanged(
           createDocumentPath(currentPath),
-          markdown,
+          writtenVersion,
+          update.originalMarkdown,
         )
+        if (outcome.status !== 'written') {
+          fail(this.conditionalWriteFailure(currentPath, outcome, plan))
+          continue
+        }
+        if (update.sourcePath === plan.sourcePath) {
+          restoredTargetVersion = outcome.version
+        } else {
+          restoredVersions.set(update.sourcePath, outcome.version)
+        }
       } catch (error) {
         fail(error)
       }
     }
 
+    let moveRestored = false
     try {
       const restored =
         plan.operation === 'rename'
           ? await this.fileSystem.renameEntry(
-              movedPath,
+              filesystemMove.movedPath,
               workspaceName(plan.sourcePath),
             )
           : await this.fileSystem.moveEntry(
-              movedPath,
+              filesystemMove.movedPath,
               workspaceParent(plan.sourcePath),
             )
       if (normalizePath(restored, 'Filesystem rollback result') !== plan.sourcePath) {
@@ -1324,9 +1417,98 @@ export class ReferenceRenameService {
             `Filesystem rollback returned ${normalizePath(restored, 'Filesystem rollback result')}, expected ${plan.sourcePath}`,
           ),
         )
+      } else {
+        moveRestored = true
       }
     } catch (error) {
       fail(error)
+    }
+
+    if (moveRestored) {
+      if (restoredTargetVersion !== undefined) {
+        restoredVersions.set(plan.sourcePath, restoredTargetVersion)
+      } else if (!plan.contentUpdates.some((update) => update.sourcePath === plan.sourcePath)) {
+        const originalVersion = plan.sourceVersions.get(plan.sourcePath)
+        if (originalVersion !== undefined) {
+          restoredVersions.set(plan.sourcePath, originalVersion)
+        }
+      }
+    }
+
+    return Object.freeze({
+      succeeded: success,
+      restoredVersions,
+      ...(hasError ? { error: firstError } : {}),
+    })
+  }
+
+  private conditionalWriteFailure(
+    path: WorkspacePath,
+    outcome: Exclude<ConditionalWriteResult, { readonly status: 'written' }>,
+    plan: RenamePlan,
+  ): ReferenceRenameError {
+    if (outcome.status === 'conflict') {
+      return new ReferenceRenameConflictError(
+        [
+          {
+            kind: 'external-change',
+            path,
+            expectedVersion: outcome.expectedVersion,
+            ...(outcome.actualVersion === undefined
+              ? {}
+              : { actualVersion: outcome.actualVersion }),
+            ...(outcome.actualContent === undefined
+              ? {}
+              : { actualContent: outcome.actualContent }),
+            message: `${conditionalWriteFailureMessage(path, outcome)}; rename was not applied`,
+          },
+        ],
+        {
+          sourcePath: plan.sourcePath,
+          targetPath: plan.targetPath,
+          cause: outcome,
+        },
+      )
+    }
+    return new ReferenceRenameFilesystemError(
+      conditionalWriteFailureMessage(path, outcome),
+      {
+        sourcePath: plan.sourcePath,
+        targetPath: plan.targetPath,
+        cause: outcome,
+      },
+    )
+  }
+
+  private synchronizePersistenceAfterFilesystemRollback(
+    plan: RenamePlan,
+    restoredVersions: ReadonlyMap<WorkspacePath, FileVersionToken>,
+  ): CompensationResult {
+    if (!this.persistence) return Object.freeze({ succeeded: true })
+    let success = true
+    let hasError = false
+    let firstError: unknown
+    for (const [sourcePath, persistedVersion] of restoredVersions) {
+      const document = plan.loadedByPath.get(sourcePath)
+      if (!document || !isPersistenceTracked(this.persistence, documentById(document.id))) {
+        continue
+      }
+      try {
+        this.persistence.rebindPath(
+          documentById(document.id),
+          document.path,
+          {
+            persistedMarkdown: document.markdown,
+            persistedVersion,
+          },
+        )
+      } catch (error) {
+        success = false
+        if (!hasError) {
+          hasError = true
+          firstError = error
+        }
+      }
     }
     return Object.freeze({
       succeeded: success,

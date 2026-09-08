@@ -20,6 +20,10 @@ import {
 import { ReferenceGraph } from '../../../src/core/reference'
 import { MemoryFileSystem } from '../../../src/platform/filesystem'
 import type { WorkspacePath } from '../../../src/core/workspace'
+import type {
+  ConditionalWriteResult,
+  FileVersionToken,
+} from '../../../src/platform/filesystem'
 
 const targetId = createDocumentId('rename-target')
 const sourceId = createDocumentId('rename-source')
@@ -69,12 +73,75 @@ function createRenameFixture(fileSystem: MemoryFileSystem) {
 class FailOnceOnSourceWriteFileSystem extends MemoryFileSystem {
   private failed = false
 
-  override async writeFile(path: DocumentPath, content: string): Promise<void> {
+  override async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
     if (!this.failed && String(path) === 'source.md') {
       this.failed = true
       throw new Error('simulated reference write failure')
     }
-    await super.writeFile(path, content)
+    return super.writeTextIfUnchanged(path, expectedVersion, content)
+  }
+}
+
+class RaceOnSourceConditionalWriteFileSystem extends MemoryFileSystem {
+  private raced = false
+
+  override async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
+    if (!this.raced && String(path) === 'source.md') {
+      this.raced = true
+      await super.writeFile(path, 'external [[target]]\n')
+    }
+    return super.writeTextIfUnchanged(path, expectedVersion, content)
+  }
+}
+
+class WriteThenRaceOnNextSourceFileSystem extends MemoryFileSystem {
+  private injected = false
+
+  override async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
+    const outcome = await super.writeTextIfUnchanged(
+      path,
+      expectedVersion,
+      content,
+    )
+    if (
+      !this.injected &&
+      String(path) === 'notes/source.md' &&
+      outcome.status === 'written'
+    ) {
+      this.injected = true
+      await super.writeFile(
+        createDocumentPath('source.md'),
+        'external source [[target]]\n',
+      )
+    }
+    return outcome
+  }
+}
+
+class DegradedConditionalWriteFileSystem extends MemoryFileSystem {
+  override async writeTextIfUnchanged(
+    _path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    _content: string,
+  ): Promise<ConditionalWriteResult> {
+    return {
+      status: 'degraded',
+      reason: 'atomicity-unavailable',
+      expectedVersion,
+      message: 'conditional rename write is unavailable',
+    }
   }
 }
 
@@ -338,6 +405,117 @@ describe('ReferenceRenameService', () => {
       '[[target]]',
     )
     expect(graph.getIndex().getById(sourceId)?.revision).toBe(0)
+  })
+
+  it('aborts a planned incoming rewrite race without overwriting the external source', async () => {
+    const fileSystem = new RaceOnSourceConditionalWriteFileSystem({
+      files: {
+        'target.md': '# Target\n',
+        'source.md': '[[target]] [[target#Target]] ![[target.md|ro]] Keep this source exact.\n',
+        'notes/source.md': 'See [[../target.md]].\n',
+      },
+    })
+    const { store, graph, service } = createRenameFixture(fileSystem)
+
+    const error = await service.rename('target.md', 'renamed.md').catch(
+      (value: unknown) => value,
+    )
+    expect(error).toBeInstanceOf(ReferenceRenameTransactionError)
+    expect(error).toMatchObject({
+      rollbackAttempted: true,
+      rollbackSucceeded: true,
+      cause: expect.objectContaining({
+        name: 'ReferenceRenameConflictError',
+        conflicts: [
+          expect.objectContaining({
+            kind: 'external-change',
+            path: 'source.md',
+            expectedVersion: expect.any(String),
+            actualVersion: expect.any(String),
+          }),
+        ],
+      }),
+    })
+    expect(await fileSystem.readFile(createDocumentPath('source.md'))).toBe(
+      'external [[target]]\n',
+    )
+    expect(fileSystem.hasFile(createDocumentPath('target.md'))).toBe(true)
+    expect(fileSystem.hasFile(createDocumentPath('renamed.md'))).toBe(false)
+    expect(store.get(documentById(sourceId))?.markdown).toContain('[[target]]')
+    expect(graph.getBacklinks('target.md')).toHaveLength(4)
+  })
+
+  it('does not overwrite an external source during conditional rollback', async () => {
+    const fileSystem = new WriteThenRaceOnNextSourceFileSystem({
+      files: {
+        'target.md': '# Target\n',
+        'source.md': '[[target]] [[target#Target]] ![[target.md|ro]] Keep this source exact.\n',
+        'notes/source.md': 'See [[../target.md]].\n',
+      },
+    })
+    const { store, service } = createRenameFixture(fileSystem)
+
+    const error = await service.rename('target.md', 'renamed.md').catch(
+      (value: unknown) => value,
+    )
+    expect(error).toBeInstanceOf(ReferenceRenameTransactionError)
+    expect(error).toMatchObject({
+      rollbackSucceeded: true,
+      cause: expect.objectContaining({
+        conflicts: [
+          expect.objectContaining({
+            kind: 'external-change',
+            path: 'source.md',
+          }),
+        ],
+      }),
+    })
+    expect(await fileSystem.readFile(createDocumentPath('source.md'))).toBe(
+      'external source [[target]]\n',
+    )
+    expect(await fileSystem.readFile(createDocumentPath('notes/source.md'))).toBe(
+      'See [[../target.md]].\n',
+    )
+    expect(fileSystem.hasFile(createDocumentPath('target.md'))).toBe(true)
+    expect(fileSystem.hasFile(createDocumentPath('renamed.md'))).toBe(false)
+    expect(store.get(documentById(sourceId))?.markdown).toContain('[[target]]')
+  })
+
+  it('reports degraded conditional rename support without claiming a safe rewrite', async () => {
+    const fileSystem = new DegradedConditionalWriteFileSystem({
+      files: {
+        'target.md': '# Target\n',
+        'source.md': [
+          '[[target]] [[target#Target]] ![[target.md|ro]]',
+          'Keep this source exact.\n',
+        ].join(' '),
+        'notes/source.md': 'See [[../target.md]].\n',
+      },
+    })
+    const { store, service } = createRenameFixture(fileSystem)
+
+    const error = await service.rename('target.md', 'renamed.md').catch(
+      (value: unknown) => value,
+    )
+    expect(error).toBeInstanceOf(ReferenceRenameTransactionError)
+    expect(error).toMatchObject({
+      rollbackSucceeded: true,
+      cause: expect.objectContaining({
+        name: 'ReferenceRenameFilesystemError',
+        cause: expect.objectContaining({
+          status: 'degraded',
+          reason: 'atomicity-unavailable',
+        }),
+      }),
+    })
+    expect(await fileSystem.readFile(createDocumentPath('target.md'))).toBe(
+      '# Target\n',
+    )
+    expect(await fileSystem.readFile(createDocumentPath('source.md'))).toBe(
+      '[[target]] [[target#Target]] ![[target.md|ro]] Keep this source exact.\n',
+    )
+    expect(fileSystem.hasFile(createDocumentPath('renamed.md'))).toBe(false)
+    expect(store.get(documentById(targetId))?.path).toBe('target.md')
   })
 
   it('compensates a reference write failure and leaves the old link graph intact', async () => {

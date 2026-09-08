@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P3-R02 — Complete
+Current task: P3-R03 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -78,6 +78,7 @@ Current task: P3-R02 — Complete
 - [x] P3-R01 — Standard document-relative image paths — nested attachment source paths, document-relative resolution, source-backed preview/copy, and workspace-tree location share one path semantics ([Task Contract](./P3_R01_TASK_CONTRACT.md))
 - [x] P4-R03 — Entity completion across reference modes — file-self/object/heading child candidates now use one provider contract for link, editable embed, and readonly embed modes, with source-safe CM6 navigation and trigger-normalization coverage ([Task Contract](./P4_R03_TASK_CONTRACT.md))
 - [x] P3-R02 — Dirty-aware recursive workspace deletion — unified file/directory application deletion, nested dirty Save/Discard/Cancel protection, guarded save rollback, projection/tab/persistence/recovery/ReferenceIndex cleanup, and unit/integration/Chromium coverage ([Task Contract](./P3_R02_TASK_CONTRACT.md))
+- [x] P3-R03 — Conditional filesystem writes / conflict-safe mutation — coherent text snapshots, immutable version tokens, deterministic MemoryFileSystem CAS, guarded persistence save, and rename rewrite/rollback conflict diagnostics ([Task Contract](./P3_R03_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -136,7 +137,7 @@ None
 - P2A-AR1 re-ran the unit, boundary, Chromium, typecheck, and build gates plus interactive acceptance smoke; all remediation criteria passed, no HIGH P2A blocker remained, and P3-01 became the next permitted task.
 - P3-01 keeps the workspace tree as a filesystem-derived projection: mutations go through `WorkspaceFileSystemPort` and refresh publishes a new immutable tree snapshot; open-document/tab/path linkage remains for P3-02/P3-03.
 - P3-02 keeps tab state as application orchestration over stable DocumentIds; DocumentStore remains the only source of Markdown, path, revision, persisted revision, and dirty state, while only the active tab owns mounted CM6/preview projections.
-- P3-03 keeps persistence as an application policy over FileSystemPort: saves validate the last known external Markdown baseline, never overwrite an external conflict implicitly, and reload/discard are explicit Store mutations. Auto-save timers only schedule the same guarded save path.
+- P3-03 keeps persistence as an application policy over FileSystemPort: saves validate the last known external Markdown/version baseline, use atomic conditional writes, never overwrite an external conflict implicitly, and reload/discard are explicit Store mutations. Auto-save timers only schedule the same guarded save path.
 - P3-04 keeps recovery metadata and shell preferences outside DocumentStore: only workspace/document paths, active/selected entries, and validated UI settings are persisted; reopening reads Markdown through the filesystem and a desktop adapter can replace the browser storage port later.
 - P3-05 keeps shared shortcut command metadata and assignments outside DocumentStore: the Settings UI projects the command catalog over an independent KeybindingRegistry, persists only validated overrides through SettingsStoragePort, and rejects Mod/Ctrl/Meta-equivalent conflicts atomically. `editor.table.add-row` is exposed in the catalog but remains unavailable until the table editor phase.
 - P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: successful binary writes retain canonical workspace destinations but persist document-relative Markdown source paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
@@ -148,13 +149,14 @@ None
 - P4-R03 keeps entity child discovery independent of the active reference insertion mode; the same file-self/object/heading candidates receive the current mode only through the provider/application apply contract, while mode/navigation/filter/back actions remain source-, revision-, history-, and caret-preserving.
 - P3-R02 routes File Tree deletion through an application-owned recursive plan. Dirty Documents are resolved as one explicit Save/Discard/Cancel decision; guarded Save writes roll back before filesystem failure, while successful deletion tears down projections, tabs, persistence registrations, recovery bindings, reference facts and Store Documents. Directory rename/move safety remains the existing fail-closed block for open descendants.
 - P4-R01 makes directory rename/move fail closed before filesystem mutation when any nested runtime Document or recovery path binding would be stranded. The typed diagnostic includes operation/source/target, affected paths, DocumentIds and dirty state; unaffected directories retain the existing filesystem-refresh behavior.
+- P3-R03 makes text persistence and incoming reference rewrites use coherent snapshot versions plus atomic conditional writes; expected changed/deleted outcomes are explicit conflicts, and adapters without strong compare-and-write must return degraded instead of claiming a safe write. MemoryFileSystem preserves logical text tokens across workspace moves so rename path rebinds remain conditional-safe.
 
 ## Known risks
 - The AST-backed architecture checker now covers side-effect/re-export/dynamic/CommonJS/Vue imports and resolved layer dependencies; the real-browser gate covers the primary CM6 lifecycle path.
 - P2-AR-06 remediation now uses source/projection deltas for fan-out and retains history deltas under `maxEntries` plus UTF-8 `maxBytes`; `getHistory()` still materializes compatibility before/after snapshots on demand, and generic whole-document replacements use a contiguous fallback when exact disjoint ranges are unavailable.
 - P2-06 preview intentionally covers only headings, emphasis and safe links; richer Markdown rendering remains future work, while source fallback/degraded recovery is covered in unit, jsdom, and real-browser tests.
 - Office-app clipboard coverage currently includes WPS but not the broader target matrix; additional compatibility and large-table performance sampling remain post-GO work.
-- DocumentStore and the minimal FileSystemPort are implemented; real platform adapters and push-based filesystem watch/external-change notification remain later work. The P3-03 policy currently detects changes through explicit checks and guarded saves.
+- DocumentStore and the minimal FileSystemPort are implemented; real platform adapters and push-based filesystem watch/external-change notification remain later work. The P3-03 policy now uses explicit version snapshots and guarded conditional saves; native adapters still need to implement the strong CAS contract or surface degraded outcomes.
 - `.pi/` and `.workbuddy/` debug resources still target the legacy application; they are intentionally retained and are not v2 diagnostics.
 - User-created `fromChatgptWeb.md` is intentionally retained temporarily as reference material and is not a runtime dependency.
 - Legacy `npm run test:unit` still has three failures in `tests/unit/diff/zz-seq-research.test.ts` (Mermaid sequence parsing and jsdom `getBBox`); P0-05 did not change that suite.
@@ -164,7 +166,7 @@ None
 - The P2A-05 live presentation intentionally covers the current basic Markdown subset; richer block widgets and position mapping around hidden syntax remain later work.
 - P2A-06 established the DOM-independent keybinding contract; P3-05 now provides browser application-command dispatch and the Settings UI, while native/global OS handling and CM6/table-specific actions remain later work.
 - P3-01 currently uses `MemoryFileSystem` for the browser workspace surface; real platform filesystem adapters and push-based external-change notification remain later work.
-- P3-02/P3-03 close confirmation and persistence use the browser/mock filesystem path; native dialogs, real filesystem watching, and platform-specific atomic-write guarantees remain later work.
+- P3-02/P3-03 close confirmation and persistence use the browser/mock filesystem path; native dialogs and real filesystem watching remain later work, while a native adapter must not claim conditional-write safety until it can provide the contract's atomic compare-and-write guarantee.
 - The P3-06 binary port is implemented by `MemoryFileSystem` for browser/unit coverage; real filesystem binary adapters and system file-manager reveal remain P11 adapter work. Image projection/read/decode behavior is covered by P3-07 but still depends on the later platform binary adapter outside the mock filesystem.
 - P3-04 recovery currently stores one browser session in localStorage and the demo filesystem is recreated on page load; durable multi-workspace identity and native desktop restore remain P11 adapter work.
 - Shortcut dispatch currently covers the browser application commands registered by P3-05; native/global OS shortcut behavior and the real table-row action remain later platform/table work.

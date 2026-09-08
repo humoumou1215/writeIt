@@ -1,4 +1,15 @@
-export type { FileSystemPort } from './port'
+export type {
+  ConditionalWriteConflict,
+  ConditionalWriteConflictReason,
+  ConditionalWriteDegraded,
+  ConditionalWriteDegradedReason,
+  ConditionalWriteResult,
+  ConditionalWriteSuccess,
+  FileSystemPort,
+  FileVersionToken,
+  TextFileSnapshot,
+} from './port'
+export { isFileVersionToken } from './port'
 export type {
   AttachmentFileSystemPort,
   BinaryFileSystem,
