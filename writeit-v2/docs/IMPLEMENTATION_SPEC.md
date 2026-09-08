@@ -81,6 +81,8 @@ writeit-v2/
 │   ├── IMPLEMENTATION_SPEC.md
 │   ├── STATUS.md
 │   ├── REPOSITORY_INVENTORY.md
+│   ├── UX_SPEC.md                 # 用户可直接阅读的界面与交互约定
+│   ├── PHASE_GATE_CHECKLIST.md    # 每个阶段完成前的固定验收表
 │   ├── GLOSSARY.md
 │   └── adr/
 ├── src/
@@ -191,6 +193,35 @@ import { something } from '../../editor-app/src/...'
 - “Search migrated” 必须分别验收 search、precise navigation/highlight、replace。
 - Phase 12 只负责**确认和关闭**能力，不应成为首次发现遗漏的阶段。
 - 当旧行为不适合 v2 时，可以 `REDESIGNED` / `INTENTIONALLY DROPPED`，但必须在 `LEGACY_FEATURE_MAP.md` 与 STATUS/ADR（必要时）留下明确决策。
+
+## 5B. UX / 产品体验合同
+
+从 P5 开始，架构规则与用户体验规则分开管理：
+
+- `IMPLEMENTATION_SPEC.md`：回答“功能由谁负责、数据怎么流动、哪些边界不能破坏、Pi 这一任务具体做什么”。
+- `UX_SPEC.md`：回答“用户看到什么、按钮放哪里、什么时候出现、点击/键盘操作后发生什么、Live Preview 怎么显示”。
+- `PHASE_GATE_CHECKLIST.md`：回答“一个 Phase 做完以后，进入下一阶段前固定检查什么”。
+
+`UX_SPEC.md` 必须优先使用普通用户能理解的中文。需要保留英文名时，第一次出现必须解释，例如 `Live Preview（实时预览）`、`Raw Source（源码模式）`、`Widget（编辑区里的交互控件）`。
+
+### UX 决策规则
+
+1. 涉及页面布局、按钮位置、菜单入口、快捷操作、Live Preview 显示方式的任务，Pi 开始前必须读取 `UX_SPEC.md` 对应章节。
+2. 未在 `UX_SPEC.md` 明确的视觉细节，Pi 可以做最小实现，但不得把临时选择写成不可改变的产品规则。
+3. 会改变用户主要操作方式的选择，例如“表格行操作放在右键菜单还是永久按钮”，必须先写入 `UX_SPEC.md` 或由用户确认，不能由单个实现任务静默决定。
+4. Figma 是可选的视觉参考，不是数据/架构真相。若使用 Figma，已确认的页面 Frame/链接可记录在 `UX_SPEC.md`；若 Figma 与文字规则冲突，先停止实现并更新其中一方，不允许自行猜测。
+5. UI 美化不能以破坏 Markdown source、DocumentStore、undo/redo、selection、clipboard、IME（中文输入法组合输入）等行为为代价。
+
+### P5 前 UX 基线工作
+
+在 P4 remediation（修复审查问题）期间，可以并行完善 UX 文档和原型，但不应借此绕过 P4 gate：
+
+- **UX-01 Workspace Shell Baseline**：主页面区域、侧边栏、tabs、工具入口、右侧面板的职责。
+- **UX-02 Editor Presentation Baseline**：Raw Source / Live Preview 以及 heading、link、reference、embed、code、table、Mermaid 等显示规则。
+- **UX-03 Interaction Baseline**：菜单、右键、popup、keyboard、hover、dangerous action confirmation 的统一规则。
+- **UX-04 Optional Figma Reference**：只在需要视觉对比或复杂交互时建立 Figma 页面；不会 Figma 不影响 Pi 开发。
+
+这些任务主要修改文档/原型，不改变当前 P4 产品代码 gate。
 
 ## 6. Phase 0 — Repository Reset
 
@@ -419,156 +450,1656 @@ Reference 不能只验收 parser/graph；必须覆盖 legacy 的输入、导航�
 - **P4-08 Reference Context Actions**：打开引用、复制引用 syntax、link/embed/readonly 模式切换。
 - **P4-09 Embed Projection**：editable/read-only、multi projection、nested、circular、revision、undo、close/reopen、stale、lifecycle；Spike 是证据，不替代 production 测试。
 
+### P4-UX01 — Workspace / Navigation / Completion UX Follow-up
+
+**Goal**
+
+把已经完成的 P2A/P3/P4 基础能力调整到 2026-09-08 已确认的交互，不重写底层架构。
+
+**Allowed scope**
+
+- workspace shell / tabs / navigation application
+- completion popup adapter
+- Reference navigation adapter
+- browser tests
+- `UX_SPEC.md` / Feature Map 状态同步
+
+**Read first**
+
+- P2A completion / raw-source rules
+- P3 tabs/navigation
+- P4 reference navigation
+- `UX_SPEC.md` 第 3、6、7、8 节
+
+**Implementation requirements**
+
+- 左侧栏可折叠、可 resize；自动收纳默认关闭并有明显开关。
+- Search/Git 切换不销毁或重新创建当前 editor projection。
+- 当前文档在 File Tree 和 Git changed-files 中持续轻量突出；reveal current file 有明显入口。
+- tab 支持关闭和双击关闭，dirty 保护规则一致。
+- 内部文档导航支持普通 tab 打开与 split（分屏）打开；同一文档在两个 pane 中仍共享 DocumentStore。
+- popup 只由真实输入 trigger 触发，光标移动到旧 `@` / `[[...]]` 不触发。
+- popup 在 Raw Source 和 Live Preview 都工作。
+- 文件夹候选支持 Right 进入、Left 按真实浏览历史返回并恢复上一层选择。
+- File Tree 拖动文件/目录 move 仍走统一 workspace mutation，不绕过 rename/persistence/reference 处理。
+
+**Tests**
+
+Playwright 覆盖 sidebar state、Search/Git 切换 editor continuity、double-click close + dirty confirm、split navigation、raw-mode popup、cursor-move-no-trigger、Left/Right folder navigation、tree drag move。
+
+**Acceptance criteria**
+
+用户可以在不丢编辑状态的情况下切换工作区工具，并用鼠标/键盘完成导航；任何 UX 调整不建立新的 Markdown 数据副本。
+
+**Out of scope**
+
+Outline 的组合内容、Annotation、Mermaid、Table。
+
+### P4-UX02 — Reference / Embed / Image Presentation Follow-up
+
+**Goal**
+
+落实已确认的 Reference occurrence、Embed 外观和 Image 预览入口，同时保持已有 ReferenceGraph/Projection 规则。
+
+**Allowed scope**
+
+- Reference decorations / occurrence mapping
+- Embed projection presentation
+- Image projection controls
+- browser tests
+- derived contracts needed by P8 Backlinks
+
+**Read first**
+
+- P4-02、P4-05、P4-09
+- P3-07
+- `UX_SPEC.md` 第 5、9 节
+
+**Implementation requirements**
+
+- 每个 Reference 具体出现位置有独立、派生的 occurrence identity，可显示 `①②...`；编号不写入 Markdown。
+- 同一源文件两次引用同一目标时必须保留两个可精确定位的位置，供 P8 Backlinks 使用。
+- Embed 外观接近 blockquote：第一行显示真实 `![[...]]` 来源；readonly 状态同时显示。
+- Embed 第一行在该 Embed 滚过窗口顶部时支持 sticky（吸顶）显示，直到 Embed 结束。
+- nested Embed 用多层 `>` 视觉表示，但绝不把 `>` 写回 source。
+- circular Embed 第一行仍显示来源，第二行显示循环提示并停止继续展开。
+- Image 单击不直接 preview；hover 显示 Preview 图标等轻量按钮，普通单击只做 focus/光斑反馈。
+
+**Tests**
+
+Reference duplicate-occurrence、source edit 后 occurrence remap、nested/circular Embed、sticky header、readonly、Image hover/preview-icon/browser interaction。
+
+**Acceptance criteria**
+
+显示效果符合 UX_SPEC，Reference/Embed/Image 的视觉增强均不修改原 Markdown；重复 Reference 可以被后续 Backlinks 精确区分。
+
+**Out of scope**
+
+P8 Backlinks 面板、组合大纲/字数、Mermaid。
+
 ## 11. Phase 5 — Table Engine
 
-正式迁移 Table：
+Phase 5 正式迁移 Markdown Table。这里不再把 parser、serializer、selection 等每个小类拆成独立任务，而是按“用户能完成一段完整操作”来拆任务。
 
-```text
-core/table/
-  parser
-  serializer
-  model
-  selection
-  operations
-  clipboard
-editor/cm6/widgets/table/
-```
+简单解释：
 
-`table-core` 不依赖 CM6。Markdown 修改限制在当前 table region，编辑 cell 禁止重写整个文件。Production acceptance 至少重新覆盖 Spike 的 click、keyboard navigation、rectangle selection、TSV/HTML clipboard、multi-cell paste、undo/redo、row/column add-delete、IME、source switch safety；办公软件扩展矩阵和大表格性能是 post-GO quality work。
+- **Table Core（表格核心）**：只处理 Markdown 表格文字和行列数据，不知道页面怎么画。
+- **Projection（编辑显示层）**：把 Markdown 表格显示成用户可以点、选、编辑的表格界面。
+- **Source region（源码区域）**：当前表格在 Markdown 文件中占据的那一小段文字。修改表格只能改这里，不能顺手重写整篇文档。
 
-- row/column reorder、column resize 若未在首版实现，必须在 Feature Map 中显式 `DEFERRED`，不能遗漏。
-- `Shift+Enter` 等 table command 通过统一 Command/Keybinding 体系注册，不建立 table 私有快捷键配置系统。
+### P5 不可破坏的规则
 
-## 12. Phase 6 — Annotation + Mermaid
+1. `core/table` 不依赖 CM6、Vue、DOM 或 Tauri。
+2. Markdown 仍是保存格式；表格 UI 不是第二份数据。
+3. 编辑一个 cell（单元格）只能生成当前 table region 的最小 Markdown 修改，不允许把整篇文档重新序列化。
+4. Raw Source（源码模式）与 Live Preview（实时预览）切换时，表格内容、撤销历史、光标/选择必须尽量连续。
+5. IME（中文输入法组合输入）期间不能因为 Enter/Tab 等操作误提交半成品文字。
+6. 表格快捷键统一注册到 CommandRegistry / Keybinding，不建立表格私有快捷键系统。
+7. row/column reorder（行列拖动排序）和 column resize（列宽调整）是 P5 最终必须能力，不再作为可永久延后的功能。
+8. cell 在 UI 中允许多行显示；Markdown source 必须使用明确、可读、可 Diff 的表示方式，默认候选为 `<br>`，不得把物理换行直接写进 table row 破坏表格结构。
 
-### Annotation
+### P5-00 — Table UX & Behavior Contract
 
-- **P6-A01 Domain**：`Annotation`、`Thread`、`Comment`、`RangeAnchor`、`ResolvedState`；持久化格式另行明确，CM6 Decoration 不是 annotation 数据。
-- **P6-A02 Create/anchor mapping**：选中文本添加批注；代码块内按 legacy 行为升级为整块/稳定 anchor（可 redesign，但需明确）。
-- **P6-A03 Thread UX**：drawer/card、reply、Enter 发送 / Shift+Enter 换行、resolve/unresolve 权限策略、点击定位。
-- **P6-A04 Drawer UX**：宽度、open policy（普通视图/diff 视图）、active card、anchor 连线/定位反馈。
+**Goal**
 
-### Mermaid
+先把“表格应该怎么用”写清楚，再写主要产品代码，避免 Pi 自己决定交互。
 
-- **P6-M01 Source-backed preview**：fenced source → Widget；loading/error；失败 fallback source。
-- **P6-M02 Preview/edit toggle**：进入源码编辑与预览切换不改写 fence。
-- **P6-M03 Slash templates**：通过 P2A CommandRegistry 提供 legacy Mermaid 快速插入模板（具体模板集合可以调整，但必须有产品决策）。
-- **P6-M04 Mermaid reference completion**：代码块内 `@` 联想复用 P2A/P4 completion provider，不复制业务逻辑。
-- **P6-M05 Performance**：按需/可视区渲染等策略作为性能实现细节；不能因懒加载导致 source 或诊断失真。
+**Allowed scope**
 
-## 13. Phase 7 — Git + Diff + Provenance
+- `docs/UX_SPEC.md` Table 章节
+- `docs/IMPLEMENTATION_SPEC.md` 的 P5 小幅澄清
+- 必要时更新 `LEGACY_FEATURE_MAP.md`
+- 可选 Figma / 截图参考
 
-Git/Review 是完整工作台，不只是一张 Diff 组件。除“发生了什么变化”外，v2 还必须能够回答“这一行/这一段是谁在什么时候提交的、属于哪个 commit”。
+**Read first**
 
-- **P7-01 Git Repository Port**：repo info、branch、worktree status、history、file content/diff、file history、blame；browser mock 与 Tauri adapter 分离。Git blame 使用机器可解析结果（实现可基于 `git blame --line-porcelain` 或等价库/API），Core/UI 不直接解析人类可读 CLI 文本。
-- **P7-02 Workbench Navigation**：仓库状态、branch picker/filter/switch、worktree file list、history/commit file list。
-- **P7-03 Comparison Targets**：worktree vs HEAD、commit diff、Shift/显式 two-commit range comparison。
-- **P7-04 Raw Diff Guarantee**：`Raw Diff → Semantic Enhancement → Renderer`；每一个 raw change 至少存在 raw representation。
-- **P7-05 Text Diff UX**：split/unified、line + word highlight、hunk fold、F7/Shift+F7 navigation、current/total count。
-- **P7-06 Discard/Revert**：editable target 才允许 discard file / discard hunk；必须有确认与失败处理。
-- **P7-07 Rich/Semantic Diff**：Table/Mermaid/Embed 等 enhancement；失败只能 degraded to source diff。
-- **P7-08 Change Explanation**：若保留 legacy “改动说明” annotation/cards，作为 review-derived annotation 明确建模，不混入 source authority。
-- **P7-09 Workspace Integration**：文件树 Git 状态、当前文件 Git diff 入口、快捷键。
-- **P7-10 Git Blame / Annotate Data Model**：建立按 Markdown source line/range 返回的 provenance 结果，至少包含 `commitId`、author name/email、author time、可选 committer time、commit summary、original path/line（若可得）和 final line range。Blame 是 Git 派生数据，不进入 Document authority，不允许为了计算 blame 改写或保存 Document。
-- **P7-11 IDEA-style Editor Blame UX**：编辑区或 gutter 右键提供 `Annotate with Git Blame` / `Show Git Blame`；开启后在 CM6 gutter 显示每行最近一次已提交修改的作者与时间，支持关闭。hover/click 至少显示 commit hash、author、时间、subject；点击 commit 可以进入 Commit Detail / Git Log / 对应 diff。显示字段可后续配置，但首版至少有 Author + Date。
-- **P7-12 Working-tree / Dirty Semantics**：当前 Document 与 Git baseline 不一致时，不得把尚未提交的行错误归因给旧 commit。新增/修改但未提交的 source line/range 必须明确显示 `Uncommitted` / `Local changes`；未保存的 DocumentStore source 也不能为了 blame 被隐式写盘。对未改动且可可靠映射的行继续显示已提交 blame；映射失败时必须 degraded/unknown，而不是猜测作者。
-- **P7-13 File History / Document Provenance**：当前文档提供 `Show File History`，列出实际触及该文件的 commits，至少显示 author、date/time、commit id、summary；选择 commit 可查看该版本或该 commit 对该文件的 diff。若 Git backend 支持，rename history 应使用等价于 `--follow` 的策略或明确标记历史在 rename 处中断。
-- **P7-14 Blame Options / Provenance Quality**：参考 IDE annotate 体验，允许后续提供 Ignore Whitespace、Detect Movements Within File、Detect Copies/Movements Across Files、author time vs commit time 等选项。它们可以是 quality follow-up，但 GitBlamePort 的设计不得阻止这些能力。
+- ADR-0005
+- CM6 Table Spike 结论与测试场景
+- legacy Table 用户操作
+- `UX_SPEC.md`
 
-### Git Blame / Provenance invariants
+**Implementation requirements**
 
-1. **Source-line fact**：blame 的定位对象始终是 Markdown source line/range，不是富文本 DOM node、Widget DOM 或渲染后的 HTML。
-2. **No false attribution**：无法可靠映射的 dirty/local line 必须显示 local/unknown，不能显示一个看似可信但实际来自旧 source line 的作者。
-3. **Projection-only UI**：CM6 gutter 只是 provenance Projection；关闭 blame 不改变 Markdown、selection history 或 Git 状态。
-4. **Live Preview compatibility**：raw source 模式优先提供逐行 annotation。Live Preview 若用 Widget 替换多行 source，可显示该 source range 的紧凑 provenance marker/summary；点击可展开详情或切回 source 定位。不得因为 Widget 折叠而把多行错误归成一个 commit。
-5. **Commit drill-down**：从 line blame 到 commit detail/diff 的导航必须使用 commit id，不依赖当前 gutter 文本解析。
-6. **Performance/caching**：blame/file-history 可以按 `(repo, path, revision/options)` 缓存并在 HEAD/worktree/path 变化时失效；不得每次光标移动都重新执行完整 Git blame。
+至少确定：
 
-### Git Blame / Provenance acceptance
+- 什么时候显示成表格，什么时候显示原 Markdown。
+- **单击 cell = 选中整个 cell，不显示光标；直接输入覆盖原内容。**
+- **双击 cell = 进入文字编辑，显示光标，可追加/删除/选择文本。**
+- cell 选中状态：`Enter` 移动到下一行对应 cell；`Tab/Shift+Tab` 前后移动。
+- cell 编辑状态：`Enter` 插入 cell 内显示换行。
+- cell 内换行的 Markdown 表示方式：默认评估并优先采用 `<br>`；必须用 legacy fixture / renderer 验证后写死合同，不能让 DOM 成为唯一换行数据。
+- 如何选择一个 cell、连续区域、整行、整列。
+- 添加/删除行列入口放在哪里。
+- 复制粘贴文本、TSV、HTML/办公软件数据时如何处理多行 cell。
+- 表格语法错误或不完整时如何安全退回源码。
+- column resize、row reorder、column reorder 的操作方式和显示反馈；三者均属于 P5 必须能力。
+- 列宽先作为显示状态，不得为了宽度无意义改写 Markdown；是否跨重启保存另行明确。
+
+**Tests**
+
+本任务以文档审查为主，不要求新增产品测试。
+
+**Acceptance criteria**
+
+用户阅读 `UX_SPEC.md` 后，可以回答“我点哪里、按什么键、会发生什么”；Pi 不需要自己发明核心表格操作。
+
+**Out of scope**
+
+不实现 Table Core 或 CM6 Table Widget。
+
+### P5-01 — Table Core
+
+**Goal**
+
+一次建立可测试的表格文字模型：识别、解析、修改前定位、序列化。
+
+**Allowed scope**
+
+- `src/core/table/**`
+- 对应 unit tests / fixtures
+
+**Read first**
+
+- ADR-0001、ADR-0005
+- P5-00
+- Table Spike 中可复用的纯算法/fixtures
+
+**Implementation requirements**
+
+- 识别 Markdown table 的 source range。
+- parser → model → serializer 明确。
+- 支持 alignment、空 cell、escaped pipe 等既定 Markdown 行为。
+- 支持 P5-00 确认的 cell 内逻辑换行表示（默认候选 `<br>`）在 model 中作为换行语义，而不是普通不可解释字符串。
+- malformed/incomplete table（不完整或错误表格）必须返回可解释结果或安全拒绝，不能“修复”用户源码。
+- 对旧项目可复制的纯逻辑重新放入 v2 边界，不 import legacy runtime。
+
+**Tests**
+
+- parser/serializer golden corpus。
+- CRLF/LF、中文、emoji、escaped characters。
+- malformed table。
+- `open → no edit → save` 不改变 bytes。
+
+**Acceptance criteria**
+
+Table Core 可脱离浏览器运行；同一输入得到稳定结果；未知/错误输入不会被偷偷重写。
+
+**Out of scope**
+
+CM6 UI、鼠标选择、clipboard。
+
+### P5-02 — Table Editing Operations
+
+**Goal**
+
+建立用户编辑表格时真正使用的一组核心修改操作，并保证只改当前表格区域。
+
+**Allowed scope**
+
+- `src/core/table/**`
+- 必要的 application command / SourceChange bridge
+- unit/integration tests
+
+**Read first**
+
+- P5-01
+- DocumentStore / History / SourceChange contract
+
+**Implementation requirements**
 
 至少覆盖：
 
-- 在已提交文件上右键开启 blame，连续多行来自不同 commits 时 gutter 显示正确不同作者/时间。
-- hover/click 某行能看到对应 commit id、author、date、summary，并能打开该 commit 对应详情/diff。
-- 当前文档存在 local/uncommitted 修改时，修改行显示 local/uncommitted，未改动行的历史作者不被整体抹掉。
-- 新增的未提交行不能被错误归因到相邻旧行的 commit。
-- 关闭/重新开启 blame 不修改 Markdown source，也不新增 DocumentStore revision。
-- `Show File History` 至少可回答“这个文档曾由哪些用户、在什么时间、通过哪些 commits 修改过”。
-- 非 Git workspace、untracked file、Git command failure 有明确空态/错误态，不影响编辑。
+- edit / replace cell
+- cell logical newline mutation（按 P5-00 的 source 表示）
+- add/delete row
+- add/delete column
+- row reorder
+- column reorder
+- alignment mutation
+- 多 cell paste 所需的矩形数据写入基础
+- 每个操作生成可定位、最小范围的 Markdown change
+- undo/redo 仍由 DocumentStore history 统一处理
 
-建议提供 `rawChangeCount`、`representedChangeCount`、`degradedChangeCount`，并允许诊断显示例如 `18/18 changes represented; 2 degraded to source diff`。
+**Tests**
+
+- 每种操作前后 Markdown 精确断言。
+- 修改 table 前后的普通正文必须 byte-for-byte 不变。
+- undo/redo round trip。
+- multi-view 下修改不会产生第二份 table state。
+
+**Acceptance criteria**
+
+操作一张表格不会导致整篇 Markdown 重写；所有变更可撤销并通过正常 DocumentStore revision 流转。
+
+**Out of scope**
+
+最终视觉样式、办公软件 clipboard 适配。
+
+### P5-03 — CM6 Table Projection
+
+**Goal**
+
+让用户在 Live Preview 中真正可以点击和编辑表格，同时保持 Markdown 为唯一保存数据。
+
+**Allowed scope**
+
+- `src/editor/cm6/widgets/table/**`
+- 必要的 editor projection bridge
+- browser tests
+
+**Read first**
+
+- P5-00 ~ P5-02
+- `UX_SPEC.md` Table / Live Preview
+- P2 projection rules
+
+**Implementation requirements**
+
+- 表格识别与 Widget 显示。
+- 单击 cell 进入“选中、无光标”状态；直接输入覆盖 cell。
+- 双击 cell 进入“编辑、有光标”状态。
+- 两种状态的 Enter/Tab/Arrow 行为严格按 P5-00 / UX_SPEC。
+- 编辑状态的 cell 支持多行显示。
+- keyboard navigation。
+- focus/selection lifecycle。
+- Raw Source ↔ Live Preview 切换安全。
+- Store 更新后 table projection 正确刷新；不得从 DOM 反向当作保存真相。
+- malformed table 降级回 source，不吞内容。
+
+**Tests**
+
+真实 browser 覆盖 click、focus、Tab/Enter、切换模式、外部 Store update、undo/redo。
+
+**Acceptance criteria**
+
+用户可以完成“打开文档 → 点表格 → 修改 cell → 保存 → reopen”，Markdown 正确且无额外 rewrite。
+
+**Out of scope**
+
+矩形 clipboard 与高级行列控制。
+
+### P5-04 — Table Selection, Clipboard & IME
+
+**Goal**
+
+完成表格最容易出问题的选择、复制粘贴和中文输入。
+
+**Allowed scope**
+
+- table selection / clipboard core
+- CM6 table adapter
+- browser tests / clipboard fixtures
+
+**Read first**
+
+- P5-00 ~ P5-03
+- Spike clipboard/IME evidence
+
+**Implementation requirements**
+
+- cell / rectangle selection，并区分 cell-selected 与 text-editing 两种状态。
+- TSV copy/paste；多行 cell 使用明确转义/HTML clipboard 策略，不能把一格拆成多行多 cell。
+- HTML clipboard（能可靠支持的部分）。
+- multi-cell paste，尺寸不一致时规则明确。
+- WPS 作为最低兼容基线；Excel/Numbers 若当前测试环境可覆盖则加入代表性 fixture，不能因此无限扩大本任务。
+- IME composition 期间不误触 table command。
+
+**Tests**
+
+Playwright 覆盖鼠标选择、键盘扩选、copy/paste、中文输入、undo/redo。
+
+**Acceptance criteria**
+
+普通表格编辑不会因中文输入或办公软件粘贴造成内容丢失、错位或整文重写。
+
+**Out of scope**
+
+无限覆盖所有 Office 版本；大表格极限性能优化。
+
+### P5-05 — Table Commands & Advanced Controls
+
+**Goal**
+
+把用户常用的行列操作接入统一命令/快捷键体系，并完成 P5-00 已确认的 UI 控件。
+
+**Allowed scope**
+
+- CommandRegistry / Keybinding integration
+- table context actions / controls
+- settings exposure
+- browser tests
+
+**Read first**
+
+- P5-00 ~ P5-04
+- P2A CommandRegistry / Keybinding foundation
+- `UX_SPEC.md` Table 章节
+
+**Implementation requirements**
+
+- add/delete row/column、row/column reorder 等 command 有稳定 command id。
+- context menu、hover controls 或 toolbar 按 `UX_SPEC.md` 实现。
+- row reorder / column reorder 有清楚拖拽插入位置，并走同一 Table Core mutation。
+- column resize 可直接拖动，属于显示状态，不为调整宽度重写 Markdown。
+- 快捷键冲突由已有 Keybinding foundation 处理。
+
+**Tests**
+
+command unit test + browser interaction test。
+
+**Acceptance criteria**
+
+同一操作从菜单/快捷键触发时走同一 application command，不出现两套逻辑。
+
+**Out of scope**
+
+未在 P5-00 接受的高级 spreadsheet 功能。
+
+### P5-AR1 — Table Phase Gate
+
+**Goal**
+
+确认 P5 不只是“功能能跑”，而是真正满足 Table 的数据安全、编辑体验和 source fidelity 要求。
+
+**Allowed scope**
+
+- review report / remediation task list
+- 必要的测试补充
+- `STATUS.md`、`LEGACY_FEATURE_MAP.md`、`UX_SPEC.md` 状态同步
+
+**Read first**
+
+- P5-00 ~ P5-05
+- ADR-0005
+- `PHASE_GATE_CHECKLIST.md`
+- Table Spike acceptance evidence
+
+**Implementation requirements**
+
+至少重新覆盖单击选 cell / 双击文字编辑、覆盖输入、两种 Enter 行为、cell 内换行、keyboard navigation、rectangle selection、TSV/HTML clipboard、multi-cell paste、undo/redo、row/column add-delete、row/column reorder、column resize、IME、source switch safety、multi-view 和 source fidelity。
+
+**Tests**
+
+运行 P5 unit/integration/browser tests，并补任何 Gate 才发现的 regression test。
+
+**Acceptance criteria**
+
+Gate 结果只能是：
+
+- `PASS`：可进入 P6。
+- `PASS WITH FOLLOW-UP`：只有明确非阻断质量项时可进入 P6。
+- `CHANGES REQUIRED / HOLD`：存在数据丢失、authority、持久化、主要用户旅程 blocker 时必须先修复。
+
+**Out of scope**
+
+不在 Gate 中顺手开发 P6 功能。
+
+## 12. Phase 6 — Annotation + Mermaid
+
+Phase 6 包含两个用户可见能力，但仍共用编辑器基础设施。为了控制任务数量，按完整使用流程拆分，不再把每个小 UI 状态拆成独立 Task。
+
+### P6-00 — Annotation / Mermaid UX Contract
+
+**Goal**
+
+在实现前确认批注面板、卡片、定位方式，以及 Mermaid 预览/源码切换的用户行为。
+
+**Allowed scope**
+
+- `docs/UX_SPEC.md`
+- 必要的 `LEGACY_FEATURE_MAP.md`
+- 若长期数据格式需要新决定，可准备 ADR 提案，但本任务不实现产品功能
+
+**Read first**
+
+- legacy Annotation/Mermaid 用户行为和 fixtures
+- P2A CommandRegistry / Completion
+- P4 Reference provider
+- `UX_SPEC.md`
+
+**Implementation requirements**
+
+确认 Annotation 右侧 drawer、正文颜色 anchor 与卡片连线、active card、reply/resolve 行为、anchor 失效提示；确认 Mermaid 在 Live Preview 总是显示渲染图、source 默认折叠/可展开、实时重渲染、hover controls、Reference 点击导航、loading/error/source fallback、slash template 入口。
+
+**Tests**
+
+文档审查即可；若使用 Figma，只需附已确认 frame/link。
+
+**Acceptance criteria**
+
+Pi 可以从文档回答主要交互，不需要自己决定布局和关键按键行为。
+
+**Out of scope**
+
+Annotation/Mermaid 产品实现。
+
+### P6-A01 — Annotation Data + Anchor
+
+**Goal**
+
+建立 Annotation、Thread、Comment、RangeAnchor、ResolvedState 及持久化/锚点规则。
+
+**Allowed scope**
+
+- `src/core/annotation/**`
+- `src/application/**` 中必要的 annotation contract
+- unit/integration tests
+- 如持久化格式改变长期数据合同，则新增/更新 ADR
+
+**Read first**
+
+- ADR-0001~0003
+- legacy annotation fixtures
+- P6-00
+
+**Implementation requirements**
+
+Decoration 不是数据 authority；source edit 后 anchor mapping 有明确成功/失效状态；代码块 anchor 规则明确；删除/移动内容后不能把批注错误挂到无关文本。
+
+**Tests**
+
+anchor mapping、文档编辑前后、undo/redo、invalid anchor、多人/多线程基础模型（若模型支持）。
+
+**Acceptance criteria**
+
+批注数据可脱离 CM6 测试，编辑器只负责显示/定位；失效 anchor 不产生错误定位。
+
+**Out of scope**
+
+完整 drawer UI、未来远程协作后端。
+
+### P6-A02 — Annotation Thread UX
+
+**Goal**
+
+一次完成创建批注、查看线程、回复、resolve/unresolve、点击定位的完整流程。
+
+**Allowed scope**
+
+- annotation application commands
+- CM6 decorations / mapping bridge
+- annotation drawer/card UI
+- browser tests
+
+**Read first**
+
+- P6-00、P6-A01
+- `UX_SPEC.md` Annotation 章节
+- P2 projection lifecycle rules
+
+**Implementation requirements**
+
+选区创建、代码块规则、Enter 发送 / Shift+Enter 换行、active card、点击卡片自然滚动正文；正文使用颜色标记；失败 anchor 有明确提示而不是静默跳错位置；关闭 drawer 不改变 source。
+
+**Tests**
+
+真实 browser 用户旅程、source edit 后定位、multi-view source change、resolve/unresolve、reply keyboard。
+
+**Acceptance criteria**
+
+从创建到回复/解决全过程可用，关闭/打开 UI 不修改 Markdown，anchor 失效可被理解和恢复。
+
+**Out of scope**
+
+复杂权限体系、在线同步。
+
+### P6-A03 — Annotation Drawer Layout & Review Integration
+
+**Goal**
+
+完成普通编辑和未来 Diff 场景需要的 drawer 布局、宽度、active card 和定位反馈。
+
+**Allowed scope**
+
+- annotation drawer/panel UI
+- shared panel layout
+- browser layout tests / screenshot baseline
+
+**Read first**
+
+- P6-00、P6-A02
+- `UX_SPEC.md` Workspace / Context Panel / Annotation
+
+**Implementation requirements**
+
+面板不能遮挡到无法编辑；resize/open state 是 UI state，不进入 Document authority；多个 annotation 时 active 状态清楚；普通编辑与 review 模式的 open policy 明确；每个可定位批注卡片与正文 anchor 有正确连线，scroll/resize/source mapping 后重新计算；点击正文 anchor 与点击右侧卡片可以互相定位。
+
+**Tests**
+
+browser layout states、窄窗口、多卡片、resize/open-close；必要时少量 screenshot baseline。
+
+**Acceptance criteria**
+
+普通编辑、窄窗口、多个批注卡片时仍可完成编辑和定位，布局变化不新增 Document revision。
+
+**Out of scope**
+
+P7 Git Diff 本身。
+
+### P6-M01 — Mermaid Source-backed Preview
+
+**Goal**
+
+完成 fenced Mermaid source → preview → edit/source fallback 的完整流程。
+
+**Allowed scope**
+
+- Mermaid source detection/render adapter/widget
+- editor commands needed for preview/edit
+- unit/browser tests
+
+**Read first**
+
+- P6-00
+- ADR-0001~0003
+- P2 Raw/Live Preview rules
+- legacy Mermaid fixtures
+
+**Implementation requirements**
+
+source 永远保留；Live Preview 默认始终显示渲染图；source editor 默认折叠、可展开/折叠，展开编辑时图实时刷新；render error 显示错误并能查看 source；hover 显示轻量操作按钮，普通单击只做 focus/光斑反馈；未知/非法图不丢源码；异步 render 旧结果不能覆盖新 source。
+
+**Tests**
+
+正常、错误、快速连续编辑、旧 render 晚到、undo/redo、Raw/Live toggle、close/detach during render。
+
+**Acceptance criteria**
+
+Renderer 坏了仍能看到和编辑原 Mermaid source；切换和失败不产生无关 Markdown 修改。
+
+**Out of scope**
+
+slash template、reference completion、高级性能优化。
+
+### P6-M02 — Mermaid Commands, Reference Completion & Performance
+
+**Goal**
+
+接入 slash templates、代码块内 `@` completion，并做首版必要的按需渲染。
+
+**Allowed scope**
+
+- CommandRegistry provider
+- existing P4 completion provider integration
+- Mermaid visibility/performance adapter
+- unit/browser tests
+
+**Read first**
+
+- P6-M01
+- P2A command/completion contracts
+- P4 reference completion
+- `UX_SPEC.md` Mermaid
+
+**Implementation requirements**
+
+复用 P2A CommandRegistry 和 P4 completion provider；不能复制第二套 reference completion 业务逻辑；Mermaid source 中可解析的 WriteIt 内部 Reference 在渲染图里仍保留可点击语义，点击按普通 tab / split 两种导航策略打开；broken reference 有明确反馈；性能优化不能造成 source/diagnostics 失真；不可见区渲染策略可延后但必须有明确理由。
+
+**Tests**
+
+command/completion unit + browser、渲染图内部 Reference 点击（普通打开/split/broken）、scroll/visibility 代表性测试、error fallback 不受性能策略影响。
+
+**Acceptance criteria**
+
+模板插入和引用联想最终仍产生正常 Markdown mutation；性能策略不会让用户看到过期图或丢 source。
+
+**Out of scope**
+
+极端大文档性能专项。
+
+### P6-AR1 — Annotation + Mermaid Phase Gate
+
+**Goal**
+
+确认 Annotation 与 Mermaid 的 source authority、错误恢复和主要交互达到可进入 P7 的质量。
+
+**Allowed scope**
+
+review report、必要 regression tests、remediation task、STATUS/Feature Map/UX sync。
+
+**Read first**
+
+P6 全部 tasks、`PHASE_GATE_CHECKLIST.md`、对应 UX_SPEC。
+
+**Implementation requirements**
+
+重点检查 source authority、anchor correctness、renderer failure fallback、focus/keyboard/IME、async stale result、drawer 主要布局。
+
+**Tests**
+
+运行 P6 unit/integration/browser suite，并补真实 blocker 的回归用例。
+
+**Acceptance criteria**
+
+给出 PASS / PASS WITH FOLLOW-UP / CHANGES REQUIRED-HOLD，所有 blocker 有具体 task id。
+
+**Out of scope**
+
+不开始 P7 实现。
+
+## 13. Phase 7 — Git + Diff + Provenance
+
+Git/Review 是完整工作台，不只是一张 Diff 组件。核心要求是：任何富显示失败时，用户仍能看到真实 Markdown change；任何 Git blame（行作者信息）都不能把本地未提交内容错误算到旧 commit 上。
+
+### P7-00 — Git / Diff UX & Port Contract
+
+**Goal**
+
+在实现前确认 Git 工作台入口、Diff 布局、Blame gutter（编辑器行旁作者/时间）和 File History 用户流程，同时冻结 Git adapter 的最小能力。
+
+**Allowed scope**
+
+- `UX_SPEC.md` Git/Diff/Blame
+- Git port/interface 文档或类型草案
+- Feature Map / ADR clarification
+
+**Read first**
+
+- ADR-0006
+- legacy Git/Diff journeys
+- `UX_SPEC.md`
+
+**Implementation requirements**
+
+确认 branch/worktree/history/range comparison、split/unified、discard、blame、file history 的页面入口；定义 GitRepositoryPort / GitBlamePort 需要的数据，不让 UI 解析人类可读 CLI 输出。
+
+**Tests**
+
+文档/type contract review；无需完整产品测试。
+
+**Acceptance criteria**
+
+后续任务不用重新讨论“从哪里进入、看到什么、Port 返回什么基本字段”。
+
+**Out of scope**
+
+真实 Git 命令实现、Diff UI。
+
+### P7-01 — Git Repository Data + Browser Mock
+
+**Goal**
+
+提供 repo info、branch、worktree status、history、file diff/content、file history、blame 的平台边界和 browser/mock 实现。
+
+**Allowed scope**
+
+- platform/git port
+- browser/mock adapter
+- application query contracts
+- tests
+
+**Read first**
+
+- P7-00
+- architecture dependency rules
+
+**Implementation requirements**
+
+Core/UI 不直接执行 git command；错误/非 Git workspace 有明确结果；mock 可构造 rename、dirty、untracked、command failure；machine-readable result 在 adapter 内标准化。
+
+**Tests**
+
+adapter contract、error cases、mock fixtures、integration。
+
+**Acceptance criteria**
+
+后续 UI 可以只依赖统一 port，测试不要求本机一定有特定 Git 历史。
+
+**Out of scope**
+
+Workbench UI、discard。
+
+### P7-02 — Workbench Navigation & Comparison Targets
+
+**Goal**
+
+完成 repo/branch/worktree/history 导航以及 worktree vs HEAD、commit、two-commit range comparison。
+
+**Allowed scope**
+
+- Git application queries/commands
+- review/workbench UI
+- browser tests
+
+**Read first**
+
+- P7-00、P7-01
+- `UX_SPEC.md` Git Workbench
+
+**Implementation requirements**
+
+branch switch/filter、worktree file list、history/commit file list、comparison target model；当前 dirty Document 与 Git baseline 区分清楚；branch switch failure 不改变 UI 为假成功。
+
+**Tests**
+
+application + browser 用户旅程，含 empty/non-git/error state。
+
+**Acceptance criteria**
+
+用户可以从 workspace 到指定比较目标，不靠隐藏调试入口，错误状态明确。
+
+**Out of scope**
+
+完整 text diff renderer、discard。
+
+### P7-03 — Raw/Text Diff Guarantee
+
+**Goal**
+
+一次完成 Raw Diff guarantee 和首版 split/unified 文本 Diff UX。
+
+**Allowed scope**
+
+- core/diff guarantee
+- review diff application/UI
+- tests/fixtures
+
+**Read first**
+
+- ADR-0006
+- P7-01、P7-02
+- `UX_SPEC.md` Diff
+
+**Implementation requirements**
+
+`Raw Diff → optional semantic enhancement → renderer`；每个 raw change 都必须能显示；line + word highlight、hunk fold/navigation、current/total；renderer failure 退回 source diff。
+
+**Tests**
+
+rawChangeCount == represented raw changes；semantic failure fixtures；browser split/unified/navigation；large representative diff 基本性能。
+
+**Acceptance criteria**
+
+不存在“因为富渲染失败而看不到真实修改”；raw source 始终是保证层。
+
+**Out of scope**
+
+Table/Mermaid rich diff、discard、blame。
+
+### P7-04 — Discard/Revert + Workspace Integration
+
+**Goal**
+
+完成 file/hunk discard、确认与失败处理，并接入文件树 Git 状态、当前文件 diff 入口和快捷键。
+
+**Allowed scope**
+
+- Git destructive application commands
+- workspace/review integration
+- confirmation UI
+- tests
+
+**Read first**
+
+- P7-01~03
+- P3 persistence/dirty policy
+- `UX_SPEC.md` Dangerous Actions
+
+**Implementation requirements**
+
+只有可编辑 target 能 discard；dirty/open Document 必须走明确冲突策略；失败不能让 UI 假装已回滚；file/hunk discard 后 Store/FS/Git status 一致。
+
+**Tests**
+
+成功/失败/dirty conflict/browser confirmation、partial hunk、external change where applicable。
+
+**Acceptance criteria**
+
+破坏性操作可追踪、可失败、不会静默丢本地工作。
+
+**Out of scope**
+
+rich diff、blame。
+
+### P7-05 — Rich/Semantic Diff
+
+**Goal**
+
+在 Raw Diff 已可靠的基础上增强 Table/Mermaid/Embed 等显示。
+
+**Allowed scope**
+
+- semantic diff providers
+- review renderer/UI
+- annotation/change explanation integration if retained
+- tests
+
+**Read first**
+
+- P7-03
+- P5 Table、P6 Mermaid、P4 Embed contracts
+
+**Implementation requirements**
+
+增强失败只允许 degraded to source diff；raw change coverage 可诊断；Change Explanation 若保留，建模为 review-derived data，不进入 Markdown authority。
+
+Mermaid semantic diff 额外要求：
+
+- 至少能对已声明支持的图类型识别 added/removed nodes/edges。
+- 绿色表示新增，红色表示删除；“修改”优先表达为旧结构红 + 新结构绿。
+- 例如 flowchart 删除 B、增加 D 时，B 及相关 removed edges 为红，D 及 added edges 为绿。
+- 每种 Mermaid diagram type 有明确 support matrix；无法可靠匹配 node identity 时必须退回 before/after 或 source diff，不能猜。
+- Mermaid rich diff 只是增强层，Raw Diff 始终完整存在。
+
+**Tests**
+
+每类 enhancement 成功+失败 fallback、raw coverage assertions。
+
+**Acceptance criteria**
+
+rich renderer 永远不是 change existence 的唯一证据。
+
+**Out of scope**
+
+Blame/File History。
+
+### P7-06 — Git Blame + File History
+
+**Goal**
+
+一次完成行作者/时间、commit drill-down、dirty/local semantics、file history。
+
+**Allowed scope**
+
+- GitBlame/FileHistory port data
+- application mapping/cache
+- CM6 gutter / review UI
+- browser/integration tests
+
+**Read first**
+
+- P7-00、P7-01
+- P2 Raw/Live Preview mapping rules
+- `UX_SPEC.md` Blame
+
+**Implementation requirements**
+
+- provenance 定位对象是 Markdown source line/range。
+- 至少返回 commitId、author name/email、author time、summary、original path/line（可得时）。
+- 本地新增/修改行显示 `Uncommitted / Local changes`，不能借用相邻旧行作者。
+- 未改动且能可靠映射的行继续显示历史作者。
+- Live Preview 折叠多行时不得把整个 Widget 错归为一个 commit；必要时显示 compact marker 并可回源码查看。
+- click/hover 用 commitId 打开 commit detail/diff。
+- File History 至少显示 author、date/time、commit id、summary；rename history 支持 `--follow` 等价能力或明确提示中断。
+- blame/history 可缓存，但 HEAD/path/options 变化必须失效，不能每次移动光标都重新跑完整 blame。
+
+**Tests**
+
+不同 commit 多行、dirty modification、new local line、untracked/non-git、toggle blame 不产生 DocumentStore revision、file history drill-down、cache invalidation。
+
+**Acceptance criteria**
+
+用户能够可靠回答“这一行是谁什么时候提交的”和“这个文件由谁在什么时候改过”，本地改动不被错误归因。
+
+**Out of scope**
+
+高级 movement/copy detection 可作为 quality follow-up，但 port 设计不得阻止。
+
+### P7-AR1 — Git + Diff Phase Gate
+
+**Goal**
+
+确认 Git/Review 功能在真实失败路径下仍可靠，尤其是 raw diff 和 destructive operations。
+
+**Allowed scope**
+
+review report、regression tests、remediation tasks、docs/status sync。
+
+**Read first**
+
+P7 全部 tasks、ADR-0006、`PHASE_GATE_CHECKLIST.md`。
+
+**Implementation requirements**
+
+重点检查 raw change 100% representation、discard 数据安全、dirty/local blame、Git failure fallback、主要导航路径和基本性能。
+
+**Tests**
+
+运行 P7 unit/integration/browser/E2E（若已有），增加 blocker regression tests。
+
+**Acceptance criteria**
+
+给出明确 Gate 结果；任何 raw change omission、错误 discard、false blame attribution 均阻断 P8。
+
+**Out of scope**
+
+不开始 P8。
 
 ## 14. Phase 8 — Derived Services + Template Intelligence
 
-Outline、Search、Backlinks、Validation、Template rules、Suggestions 都是 Document 的派生结果，不得为了这些功能建立第二份 Document authority。
+Outline、Search、Backlinks、Validation、Template rules、Suggestions 都是从 Markdown 推导出来的结果，不能建立第二份 Document 数据。
 
-### Search / Replace
+### P8-00 — Search / Panel / Template UX Contract
 
-- **P8-S01** workspace full-text search、case sensitivity、结果按文件分组、缓存/失效策略。
-- **P8-S02** occurrence-precise navigation：打开文件、定位命中、CM6 highlight/current highlight；Widget/atomic region 必须有可解释 fallback。
-- **P8-S03** replace selected / replace all：application command，写入 DocumentStore/FS 的顺序明确；对 dirty/open document 不允许像 legacy 一样靠隐式跳过，必须给出显式冲突策略和用户反馈。
-- **P8-S04** 键盘 UX：Enter 跳转、上下选择、Esc 收起/清空的具体 UX 可 redesign，但必须可用。
+**Goal**
 
-### Outline / Backlinks
+确认 Search、左侧 Outline、Backlinks、状态栏组合统计、Validation issue、Template picker/placeholder 的位置和主要交互。
 
-- **P8-I01** Outline index + panel：heading hierarchy、点击 jump、active heading tracking；宽度/open/autofit 为 UI state。
-- **P8-I02** Backlinks/reference health：来自 ReferenceGraph；可跳转到 source reference。
+**Allowed scope**
 
-### Validation
+`UX_SPEC.md`、Feature Map、必要的 command/provider contract clarification。
 
-- **P8-V01** rule execution + issues。
-- **P8-V02** automatic validation + issue presentation。
-- **P8-V03** strict save gate：属于 application save policy；不得让 CM6 plugin 决定能否持久化。
+**Read first**
 
-### Template System
+legacy Search/Outline/Template journeys、P2A commands/completion、P4 ReferenceGraph。
 
-- **P8-T01 Template Catalog**：`.template/` + `doctype:`；workspace/global domain 与覆盖优先级明确；tree change 可 rescan；扫描失败降级。
-- **P8-T02 Create/Insert Template**：接 P3 create-from-template 与 P2A slash command；插入后仍通过正常 Markdown/Reference 流程处理。
-- **P8-T03 Template Placeholder**：`{{...}}` source-backed decoration；点击/键盘进入时可以整体选择替换，code fence 等例外行为明确。
-- **P8-T04 `rules.ts` Provider**：接 Validation。
-- **P8-T05 `suggest.ts` Provider**：静态 objects + 动态 `objectsFor(ctx)`；`SuggestContext` 至少覆盖 legacy 真实需要的 paragraph、heading、task、table、file/object ref 结构查询，具体 API 可 redesign。
-- **P8-T06 Completion Integration**：P4 entity completion 使用 Template suggestion provider；无 suggest 时 fallback heading entities。
-- **P8-T07 `export.ts` Metadata/Provider**：只建立与 P9 exporter 的 contract，不在 Template service 里直接导出。
+**Implementation requirements**
+
+写清“在哪里搜、怎么跳、怎么替换、模板从哪里建/插入、错误在哪里看、面板怎么开关”。
+
+**Tests**
+
+文档审查。
+
+**Acceptance criteria**
+
+Pi 不需要自行设计 Search/Template 主工作流。
+
+**Out of scope**
+
+产品实现。
+
+### P8-01 — Workspace Search + Precise Navigation
+
+**Goal**
+
+完成全文搜索、case sensitivity、按文件分组、缓存失效，以及精确跳到 occurrence 并高亮。
+
+**Allowed scope**
+
+search/index core/application、Search UI、CM6 highlight adapter、tests。
+
+**Read first**
+
+P8-00、P4 derived-index rules、`UX_SPEC.md` Search。
+
+**Implementation requirements**
+
+Widget/atomic region 命中无法精确定位时必须有解释性 fallback；open document 与 disk source 的选择策略明确；Document change/rename/delete 后 index 正确失效。
+
+**Tests**
+
+index unit、cache invalidation、browser precise jump/highlight、widget fallback。
+
+**Acceptance criteria**
+
+每个搜索结果都能稳定到达对应文档位置或明确说明为什么只能降级定位。
+
+**Out of scope**
+
+Replace。
+
+### P8-02 — Replace with Dirty/Conflict Policy
+
+**Goal**
+
+完成 replace selected / replace all，并明确 dirty/open documents 的处理。
+
+**Allowed scope**
+
+search/replace application commands、persistence integration、UI、tests。
+
+**Read first**
+
+P8-01、P3 persistence/conflict policy、`UX_SPEC.md` Search/Replace。
+
+**Implementation requirements**
+
+替换必须通过 application command；不能隐式跳过 dirty 文件；批量失败给逐文件结果；不得覆盖未确认的外部修改；可撤销的 open-document replace 与 disk-only replace 边界明确。
+
+**Tests**
+
+open dirty、closed file、external conflict、partial failure、undo where applicable。
+
+**Acceptance criteria**
+
+用户知道哪些替换成功/失败，失败不会造成静默数据丢失。
+
+**Out of scope**
+
+模板功能。
+
+### P8-03 — Outline + Backlinks + Composed Content Stats
+
+**Goal**
+
+完成 heading hierarchy、点击跳转、active tracking、Backlinks 精确 occurrence navigation，以及底部状态栏需要的组合字数/引用/Embed 统计。
+
+**Allowed scope**
+
+outline/backlink/composed-content derived services、左侧 Outline UI、Backlinks UI、status bar stats、CM6 navigation adapter、tests。
+
+**Read first**
+
+P8-00、P4 ReferenceGraph、P4-UX02 occurrence contract、`UX_SPEC.md` 第 3、5、9 节。
+
+**Implementation requirements**
+
+index 是派生状态；Outline 独立位于左侧，可与 File Tree/Annotation 同时显示；hover/current heading、正文滚动跟随、Outline 自身自动滚动、点击自然滚动均按 UX_SPEC。
+
+建立 cycle-safe 的“组合内容”查询：当前 root document + 实际显示的 Embed 内容递归组成用户看到的结构，但不复制/保存到 root Markdown。组合内容至少供：
+- word count；
+- Reference / Embed count；
+- Outline headings。
+
+同一个 Embed 出现两次按两次用户可见内容计算；circular embed 在循环提示处停止。
+
+Backlinks 必须保留具体 occurrence：A.md 两次引用 B.md 时，B 的 Backlinks 可显示 `A.md ① ②`，两个入口分别滚动到正确 source occurrence；Reference 正文角标与 Backlinks occurrence 使用同一派生定位依据。
+
+source change 后 active heading/backlinks/stats 刷新；broken backlink 有明确状态。
+
+**Tests**
+
+index/composed-content unit、nested/circular/repeated Embed stats、source update、duplicate-reference occurrence、browser Outline follow-scroll/natural-scroll、Backlinks ①② precise navigation。
+
+**Acceptance criteria**
+
+大纲/反链/状态栏统计不会成为第二 truth；用户看到的 Embed 标题/字数得到一致体现；重复 Reference 可以精确跳到每一次实际出现位置。
+
+**Out of scope**
+
+Validation/Templates。
+
+### P8-04 — Validation + Strict Save Gate
+
+**Goal**
+
+完成 rule execution、issue surface、automatic validation 和 strict save policy。
+
+**Allowed scope**
+
+core/validation、application save policy、issue UI、tests。
+
+**Read first**
+
+P3 persistence、P8-00、legacy validation behavior。
+
+**Implementation requirements**
+
+是否允许保存由 application policy 决定，不让 CM6 plugin 自己拦磁盘写入；规则失败有隔离；strict/non-strict 模式和用户反馈清楚。
+
+**Tests**
+
+rule failures、strict/non-strict save、issue navigation、validation stale result。
+
+**Acceptance criteria**
+
+Validation 可以阻止/提醒保存但不能成为 Markdown authority，规则崩溃不破坏编辑。
+
+**Out of scope**
+
+Template rules provider（P8-06 接入）。
+
+### P8-05 — Template Catalog, Create/Insert & Placeholder
+
+**Goal**
+
+形成可用模板主流程：扫描 → 选择 → 新建/插入 → placeholder 替换。
+
+**Allowed scope**
+
+Template catalog/application、P3 create hook、P2A slash integration、placeholder decoration/UI、tests。
+
+**Read first**
+
+P8-00、P3-08、P2A CommandRegistry、legacy template fixtures。
+
+**Implementation requirements**
+
+`.template/` + doctype；workspace/global 优先级；tree change 可 rescan；扫描失败降级；接 create-from-template 和 slash；placeholder 是 source-backed decoration，整体替换但不建立第二 authority。
+
+**Tests**
+
+catalog priority/rescan/failure、create/insert、placeholder keyboard/click/browser、source fidelity。
+
+**Acceptance criteria**
+
+用户可以从模板新建/插入并继续正常编辑 Markdown；模板服务失败不会破坏现有文档。
+
+**Out of scope**
+
+rules.ts、dynamic suggest、最终 export。
+
+### P8-06 — Template Rules, Dynamic Suggestion & Export Contract
+
+**Goal**
+
+接入 `rules.ts`、静态/动态 `suggest.ts`、P4 entity completion，并建立 `export.ts` 与 P9 的合同。
+
+**Allowed scope**
+
+Template provider contracts/application integration、P4 completion integration、P8 validation integration、tests。
+
+**Read first**
+
+P8-04、P8-05、P4 Entity Completion、legacy template suggest/rules/export。
+
+**Implementation requirements**
+
+`objectsFor(ctx)` 上下文覆盖 paragraph、heading、task、table、file/object ref 等实际需求；无 suggest 时 fallback heading；provider failure 隔离；Template service 不直接执行最终 export。
+
+**Tests**
+
+provider unit/integration、completion integration、rule provider failure、dynamic context fixtures。
+
+**Acceptance criteria**
+
+模板 intelligence 可替换/失败降级，不污染 Document authority，P9 有稳定 export provider contract。
+
+**Out of scope**
+
+实际 PDF/DOCX export。
+
+### P8-AR1 — Derived Services Phase Gate
+
+**Goal**
+
+确认 Search/Replace/Outline/Validation/Template 在数据更新和失败场景下保持一致。
+
+**Allowed scope**
+
+review、regression tests、remediation、docs sync。
+
+**Read first**
+
+P8 全部 tasks、`PHASE_GATE_CHECKLIST.md`。
+
+**Implementation requirements**
+
+重点检查 Search 精确性、Replace 数据安全、Validation save policy、Template full journey、index freshness/provider failure。
+
+**Tests**
+
+运行全部 P8 tests；至少一个 E2E 覆盖 search → precise jump → replace 和 template create/insert。
+
+**Acceptance criteria**
+
+数据丢失、错误批量替换、stale index 导致错误写入均必须 HOLD。
+
+**Out of scope**
+
+不开始 P9。
 
 ## 15. Phase 9 — Export
 
-重新评估 exporter，但以下 legacy 能力必须逐项决策：
+### P9-00 — Export UX & Contract
 
-- **P9-01 Markdown export**。
-- **P9-02 PDF export**。
-- **P9-03 DOCX export**。
-- **P9-04 Template/custom `export.ts` provider**。
-- **P9-05 Batch export**：多文件选择，每文件可以选择不同格式，输出文件名/失败结果明确。
+**Goal**
 
-每个 Exporter 通过明确的 `DocumentSnapshot` 和 `ExportContext` 输入工作，不把当前 CM6 DOM 作为唯一输出来源。
+确认单文件/多文件导出入口、格式选择、输出路径/文件名、失败结果展示；定义 `DocumentSnapshot + ExportContext` 输入。
+
+**Allowed scope**
+
+UX_SPEC Export、export port/contracts、Feature Map。
+
+**Read first**
+
+legacy ExportModal/exporters、P8 template export provider contract、ADR-0001。
+
+**Implementation requirements**
+
+定义 exporter 输入、输出结果、错误模型、batch item；不把当前 CM6 DOM 作为唯一输出来源。
+
+**Tests**
+
+contract/type tests 可选，主要文档审查。
+
+**Acceptance criteria**
+
+后续 exporter 可以完全从 snapshot/context 工作，用户能理解导出入口和失败结果。
+
+**Out of scope**
+
+具体格式实现。
+
+### P9-01 — Built-in Markdown / PDF / DOCX Export
+
+**Goal**
+
+一次完成三种内建 exporter 及代表性格式测试。
+
+**Allowed scope**
+
+platform/export、application export orchestration、必要 UI、tests。
+
+**Read first**
+
+P9-00、P3 image/reference path rules、P8 templates。
+
+**Implementation requirements**
+
+明确图片/reference/template 如何处理；单个 exporter 失败不污染 Document；输入来自 snapshot；输出文件名/路径规则稳定。
+
+**Tests**
+
+golden/structural tests、图片/表格/reference/Unicode 代表性文档。
+
+**Acceptance criteria**
+
+同一文档可稳定导出 Markdown/PDF/DOCX，并有可读错误；导出不修改 source。
+
+**Out of scope**
+
+custom provider、batch mixed-format。
+
+### P9-02 — Custom Template Export + Batch Export
+
+**Goal**
+
+接 P8 `export.ts` provider，支持多文件各自选择格式和逐项结果。
+
+**Allowed scope**
+
+custom exporter provider runner、batch orchestration/UI、tests。
+
+**Read first**
+
+P9-00、P9-01、P8-06。
+
+**Implementation requirements**
+
+batch 中一项失败不隐瞒其他项结果；filename conflict 策略明确；custom provider 有权限/错误边界；每个文件可以不同格式。
+
+**Tests**
+
+mixed-format batch、partial failure、name collision、custom exporter failure。
+
+**Acceptance criteria**
+
+用户能明确知道每个文件的输出位置/格式/成功失败，部分失败不让整个 batch 结果模糊。
+
+**Out of scope**
+
+新的外部云导出服务。
+
+### P9-AR1 — Export Phase Gate
+
+**Goal**
+
+确认 Export 的 source correctness、格式覆盖和批量失败语义。
+
+**Allowed scope**
+
+review、tests、remediation、docs sync。
+
+**Read first**
+
+P9 全部 tasks、`PHASE_GATE_CHECKLIST.md`。
+
+**Implementation requirements**
+
+检查 Markdown/PDF/DOCX/custom/batch、snapshot source、图片/引用策略、partial failure、export 不修改 Document。
+
+**Tests**
+
+运行 exporter tests + 代表性 end-to-end export journey。
+
+**Acceptance criteria**
+
+错误输出、source mutation、batch silent failure 均不能 PASS。
+
+**Out of scope**
+
+不开始 P10。
 
 ## 16. Phase 10 — Observability / Diagnostics
 
-这是正式架构组成部分，而不是只做 Debug Panel。
+简单解释：Diagnostics（诊断）是“应用出问题时能直接看到发生了什么”，不只是开发者 Debug Panel。
 
-至少实现：
+### P10-00 — Diagnostics & Privacy Contract
 
-- Document / Projection diagnostics、Event timeline、Error ring、Performance samples、Diff coverage、Reference health。
-- 用户可生成诊断报告/包；是否包含 screenshot、DOM、document content、full path 需要显式选择并保留 privacy/redaction policy。
-- 可选异常提示/badge 与 timeline tracking。
-- Debug Panel 应能回答某 Document 的 revision、persisted revision、Projection 列表、stale/degraded/source-fresh 状态、最后修改者和最后保存时间。
+**Goal**
 
-等 v2 Diagnostics 稳定后，再处理 `.pi/extensions/writeit-debug` 和 `.pi/skills/writeit-debug`。不得直接搬运旧协议；届时可升级 `writeit` tool 或建立 `writeit-v2` tool，提供 `documents`、`projections`、`timeline`、`diff.health`、`refs.health`、`performance`、`screenshot` 等语义诊断 API。
+确定哪些诊断数据默认保留、哪些只能用户主动勾选进入报告，例如 screenshot、DOM、document content、full path。
 
-Agent debug channel 的 `off/local/lan`、LAN 下高风险 exec 限制属于新协议的安全设计项，需显式决策而不是复制 legacy 行为。
+**Allowed scope**
+
+Diagnostics contract/UX/privacy docs、必要 ADR/Feature Map。
+
+**Read first**
+
+legacy diagnostics/debug、现有 Event Timeline、UX_SPEC Error/Diagnostics。
+
+**Implementation requirements**
+
+隐私选项显式；报告能说明包含哪些敏感内容；默认不悄悄收集完整文档/绝对路径/截图。
+
+**Tests**
+
+文档/contract review。
+
+**Acceptance criteria**
+
+开发者和用户都能理解“报告里会带什么、不带什么”。
+
+**Out of scope**
+
+诊断 UI 和 agent transport 实现。
+
+### P10-01 — Runtime Diagnostics
+
+**Goal**
+
+统一 Document/Projection、timeline、error ring、performance samples、Diff coverage、Reference health 等运行状态。
+
+**Allowed scope**
+
+observability core/application、bounded buffers/cache、tests。
+
+**Read first**
+
+P10-00、P1 Event Timeline、P2 Projection diagnostics、P7 diff health、P4 refs health。
+
+**Implementation requirements**
+
+能回答 revision、persistedRevision、projection list、stale/degraded/source-fresh、最近修改/保存事实；诊断本身失败不能破坏编辑；内存有界。
+
+**Tests**
+
+failure isolation、bounded memory、representative facts、malformed error object。
+
+**Acceptance criteria**
+
+诊断信息可靠且不会成为业务依赖或第二 truth。
+
+**Out of scope**
+
+最终报告 UI、LAN debug。
+
+### P10-02 — Diagnostics UI & Report Package
+
+**Goal**
+
+提供异常 badge、timeline/debug view 和用户可生成的诊断包。
+
+**Allowed scope**
+
+Diagnostics UI、report builder/storage port、privacy UI、browser/integration tests。
+
+**Read first**
+
+P10-00、P10-01、UX_SPEC Errors/Context Panel。
+
+**Implementation requirements**
+
+privacy selections 清楚；生成报告失败不影响文档；可选 screenshot/DOM/content/path；report 对缺失诊断项容错。
+
+**Tests**
+
+browser UI、package content assertions、privacy exclusions、report failure。
+
+**Acceptance criteria**
+
+用户能生成可用于排障的报告，并能明确控制敏感内容。
+
+**Out of scope**
+
+Agent debug transport。
+
+### P10-03 — Agent Debug API & Transport
+
+**Goal**
+
+等 v2 Diagnostics 稳定后，再建立 `writeit-v2` agent/debug API，并决定 off/local/lan 与 LAN 高风险 exec 限制。
+
+**Allowed scope**
+
+agent/debug API、transport、permission policy、tests；必要的 `.pi` v2 resource 更新。
+
+**Read first**
+
+P10-00~02、legacy debug protocol、desktop security requirements。
+
+**Implementation requirements**
+
+不得直接搬 legacy 私有状态协议；API 用 documents/projections/timeline/diff.health/refs.health/performance 等语义数据；LAN 权限单独安全设计；默认拒绝未授权高风险动作。
+
+**Tests**
+
+permission/transport/API contract、unauthorized attempts、disconnect/reconnect。
+
+**Acceptance criteria**
+
+Agent 能诊断但不能绕过正常数据/权限边界，LAN 模式安全规则明确。
+
+**Out of scope**
+
+Tauri-specific transport implementation可留 P11。
+
+### P10-AR1 — Diagnostics Phase Gate
+
+**Goal**
+
+确认诊断是可靠旁路能力，不会反向影响文档业务和隐私。
+
+**Allowed scope**
+
+review、tests、remediation、docs sync。
+
+**Read first**
+
+P10 全部 tasks、`PHASE_GATE_CHECKLIST.md`。
+
+**Implementation requirements**
+
+重点检查诊断 failure isolation、privacy defaults、report correctness、agent permission。
+
+**Tests**
+
+运行 P10 suite + privacy/security regression。
+
+**Acceptance criteria**
+
+敏感数据默认泄漏、诊断导致编辑失败、Agent 越权均必须 HOLD。
+
+**Out of scope**
+
+不开始 P11。
 
 ## 17. Phase 11 — Tauri + Desktop Platform
 
-仅在 browser architecture 稳定后接入 Tauri 2。FileSystem、Binary/Attachment IO、Git、Window、Dialogs、Export、Diagnostics storage 分别实现 adapter；Tauri command 不得直接进入 Document Core。
+Phase 11 才把稳定的 browser 架构接到真正桌面能力。Tauri command 只是平台实现，不得直接进入 Document Core。
 
-Desktop parity 至少审查：
+### P11-00 — Desktop Capability Contract
 
-- 打开/恢复上次 workspace。
-- “在系统文件管理器中显示”文件/目录/图片。
-- Window/titlebar 等平台 shell。
-- Windows/macOS packaging。
-- legacy lite mode、WebView2 GPU blacklist / occlusion options 是否仍有必要；若保留，建模为 platform performance profile，不进入 editor/core。
-- debug local/LAN transport 与权限限制。
+**Goal**
+
+列出 browser mock 到 desktop adapter 的映射：FileSystem、Binary/Attachment、Git、Window、Dialogs、Export、Diagnostics storage、reveal in explorer、workspace restore。
+
+**Allowed scope**
+
+platform contract/docs、UX desktop behavior、Feature Map、必要 ADR clarification。
+
+**Read first**
+
+P3/P7/P9/P10 ports、legacy Tauri integration、UX_SPEC。
+
+**Implementation requirements**
+
+每项都有明确 Port/Adapter owner；平台调用不散落进 UI/Core；Windows/macOS 差异记录。
+
+**Tests**
+
+contract review。
+
+**Acceptance criteria**
+
+所有 desktop 能力都有 owner 和 adapter contract，Pi 不需要临时从 Vue 组件直接 call Tauri。
+
+**Out of scope**
+
+实际 adapter implementation。
+
+### P11-01 — Desktop FS / Window / Dialog / Recovery
+
+**Goal**
+
+完成文件系统、打开/恢复 workspace、reveal file/dir/image、窗口/titlebar、dialogs 等基本桌面旅程。
+
+**Allowed scope**
+
+Tauri FS/Binary/Window/Dialog adapters、workspace recovery integration、platform tests。
+
+**Read first**
+
+P11-00、P3 persistence/workspace、P3 image、UX desktop journey。
+
+**Implementation requirements**
+
+不绕过 application save/conflict/delete policy；last workspace restore 有失败/不存在路径处理；reveal failure 不修改文档。
+
+**Tests**
+
+adapter contract + 少量真实 desktop E2E。
+
+**Acceptance criteria**
+
+open → edit → save → close → reopen 在 desktop 真实文件系统成立；平台错误不造成 ghost state。
+
+**Out of scope**
+
+Git/export/diagnostics adapters。
+
+### P11-02 — Desktop Git / Export / Diagnostics Adapters
+
+**Goal**
+
+把 P7/P9/P10 的 browser/mock ports 接到 Tauri/desktop 实现。
+
+**Allowed scope**
+
+Tauri Git/Export/Diagnostics storage adapters、integration tests。
+
+**Read first**
+
+P11-00、P7 ports、P9 export contracts、P10 diagnostics contracts。
+
+**Implementation requirements**
+
+不绕过 application policy；Git command/result 解析留在 adapter；export/diagnostics storage failure 有明确错误；browser mock contract 与 desktop behavior 对齐。
+
+**Tests**
+
+contract parity、Git command failure、export failure、storage failure。
+
+**Acceptance criteria**
+
+同一 application code 可在 browser mock 与 desktop adapter 上工作，不需要 desktop-only 业务分支散落各处。
+
+**Out of scope**
+
+packaging/performance profile。
+
+### P11-03 — Packaging & Performance Profile
+
+**Goal**
+
+完成 Windows/macOS packaging，并重新评估 legacy lite mode / WebView2 GPU blacklist / occlusion options。
+
+**Allowed scope**
+
+Tauri/build config、platform settings/performance profile、packaging smoke tests。
+
+**Read first**
+
+P11-01/02、legacy performance options、实际目标部署环境。
+
+**Implementation requirements**
+
+只有真实性能证据需要时才保留 lite/performance settings；建模为 platform performance profile，不进入 editor/core；Windows/macOS config 明确。
+
+**Tests**
+
+build/package smoke、代表性低性能/无 GPU 环境检查（能力允许时）。
+
+**Acceptance criteria**
+
+两个目标平台可生成可启动产物；性能兼容选项有证据而不是历史包袱。
+
+**Out of scope**
+
+Linux packaging，除非后续明确加入目标。
+
+### P11-04 — Desktop Debug Transport Security
+
+**Goal**
+
+实现已在 P10 决定的 local/lan debug transport 与权限限制。
+
+**Allowed scope**
+
+Tauri/local LAN transport、安全/权限 UI、tests。
+
+**Read first**
+
+P10-03、P11-00、legacy LAN debug restrictions。
+
+**Implementation requirements**
+
+LAN 默认不开放高风险 exec；授权/绑定/错误状态明确；不能因为 debug channel 影响普通编辑；关闭 debug 后端口/资源正确释放。
+
+**Tests**
+
+local/lan permissions、unauthorized attempts、shutdown/restart lifecycle、network failure。
+
+**Acceptance criteria**
+
+debug transport 可用且默认安全，不产生后台残留或越权入口。
+
+**Out of scope**
+
+新的远程云控制平台。
+
+### P11-AR1 — Desktop Phase Gate
+
+**Goal**
+
+确认 v2 browser 架构在桌面环境仍保持数据和边界正确。
+
+**Allowed scope**
+
+review、desktop regression tests、remediation、docs sync。
+
+**Read first**
+
+P11 全部 tasks、`PHASE_GATE_CHECKLIST.md`、P3/P7/P9/P10 gates。
+
+**Implementation requirements**
+
+重点检查真实文件数据安全、platform adapter 边界、Windows/macOS 基本可用、Git/Export/Diagnostics parity、debug transport 安全。
+
+**Tests**
+
+desktop smoke/E2E + adapter suites + package verification。
+
+**Acceptance criteria**
+
+真实文件覆盖/丢失、平台调用越界、debug 越权、无法启动/保存的目标平台均必须 HOLD。
+
+**Out of scope**
+
+Phase 12 parity review 本身。
+
 
 ## 18. Phase 12 — Feature Parity Review
 
@@ -639,6 +2170,8 @@ v2 成为主产品前不移动 `editor-app/`。最终是否将 legacy 移到 `le
 
 覆盖必须依赖真实编辑器/浏览器行为的 CM6 transaction、Widget、focus、IME、clipboard、selection 和 lifecycle；另外覆盖 `/`/reference completion popup、raw/Live Preview toggle、search highlight、image paste 等 adapter 行为。业务 provider/core 逻辑仍优先 unit/integration。
 
+对布局和 Live Preview 这种纯文字断言很难发现的问题，允许维护**少量关键 screenshot baseline（截图基线）**，例如 workspace shell、Markdown Live Preview、reference popup、embed、table、annotation、Git diff。不要对每个小组件做像素级截图测试；只锁用户真正关心的关键状态。
+
 ### E2E
 
 只保留关键旅程，例如：
@@ -694,19 +2227,46 @@ P0-02
 
 ## 23. Pi Task Contract
 
-每个任务应能在一次 Pi 工作周期完成，并包含：
+每个任务继续包含：
 
 ```text
-Goal
-Allowed scope
-Read first
-Implementation requirements
-Tests
-Acceptance criteria
-Out of scope
+Goal                 这次要解决什么
+Allowed scope        允许修改哪些区域
+Read first           开始前必须读什么
+Implementation requirements  必须做到什么
+Tests                怎么证明
+Acceptance criteria  什么叫真正完成
+Out of scope         这次明确不做什么
 ```
 
-避免“重构整个编辑器”之类无法验收的任务，改用例如 `P4-03 — Multi-projection propagation` 的小任务。
+### Task 粒度规则
+
+前面的 P0~P2 拆得细是必要的，因为当时在建立 DocumentStore、Projection、持久化等地基。后续不需要机械保持相同粒度。
+
+从 P5 起优先按 **vertical slice（完整操作流程）** 合并任务。简单说：一个 Task 最好让用户或测试能够完成一段完整行为，而不是只创建一个 class/file。
+
+例如 Table 推荐：
+
+```text
+不推荐：parser 一个 task、serializer 一个 task、addRow 一个 task、deleteRow 一个 task
+也不推荐：一个 task 实现整个 Table
+推荐：Table Core / Editing Operations / CM6 Editing / Selection+Clipboard / Commands
+```
+
+只有遇到以下高风险边界时才继续拆小：
+
+- 谁拥有 Markdown 数据发生变化。
+- 一次操作会同时修改多个 Document 或多个文件。
+- 保存/rename/delete/external file conflict。
+- async lifecycle（异步加载、关闭、重试）容易造成旧状态覆盖新状态。
+- Git discard 等破坏性操作。
+- 需要修改 Accepted ADR。
+
+普通 UI 菜单、一组相邻命令、同一用户旅程中的几个小组件可以放在同一个 Task。
+
+### Task 开始前的 UX 规则
+
+只要 Task 会改变用户看到/点击/输入的东西，`Read first` 必须包含 `docs/UX_SPEC.md` 对应章节。若该章节还没有决定核心交互，先完成 UX 文档小任务，不允许 Pi 自己冻结产品行为。
 
 ## 24. Pi 执行纪律
 
@@ -714,26 +2274,45 @@ Out of scope
 Read → Inspect → Implement → Test → Update STATUS → Report
 ```
 
-小型实现选择可以自行选择并记录；会改变 ADR 的选择必须停止并提出决策；Legacy 行为不清晰时查 `LEGACY_FEATURE_MAP.md` 和旧测试。不要先无目的搜索整个旧项目，也不要自动开始下一个 Task。
+补充规则：
 
-## 25. 第一批推荐执行顺序
+1. 有 UI/交互时先读 `UX_SPEC.md`。
+2. 每个 Phase 完成前运行 `PHASE_GATE_CHECKLIST.md`，不是只看 tests green。
+3. 小型实现选择可以自行选择并记录；会改变 ADR 或主要用户操作方式的选择必须停止并提出决策。
+4. Legacy 行为不清晰时查 `LEGACY_FEATURE_MAP.md` 和旧测试，不要无目的扫描整个旧项目。
+5. 不自动开始下一个 Task。
+6. 测试通过不是数据安全证明；涉及 rename/delete/save/clipboard/async lifecycle 时必须补失败/恢复路径。
+
+## 25. 推荐执行节奏
+
+### 已完成的前半程
+
+P0~P4 按既有历史和 remediation/gate 记录继续维护，不因为本次 SPEC 调整重写历史任务。
+
+### 当前建议
+
+在 P5 前：
 
 ```text
-P0-01 Repository Inventory
-P0-02 Agent Context Split
-P0-03 Pi Workflow
-P0-04 Legacy Feature Map
-P0-05 Safe Cleanup
-P0-06 Create Initial ADRs
-P0-07 Scaffold writeit-v2
-P1-01 Document Types
-P1-02 DocumentStore
-P1-03 Document History
-P1-04 Event Timeline
-P1-05 FileSystem Port
+完成当前 P4 remediation
+        +
+完善 UX_SPEC 的 Workspace / Editor / Table baseline（可并行，只改文档/原型）
+        ↓
+P4 re-review / gate PASS
+        ↓
+P5-00
+P5-01
+P5-02
+P5-03
+P5-04
+P5-05
+P5-AR1
+        ↓
+P6 ...
 ```
 
-完成 P1 后进行一次 Architecture Review，不要一口气进入 P2。
+每个 Phase 原则上只做一次正式 Phase Gate。只有中途出现新的数据 authority、持久化模型、跨 Document transaction、平台边界或 ADR 修改时，才额外做中途 Architecture Review。
+
 
 ## 26. Definition of Success
 
