@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   copyImageToClipboard,
   imageBytesToBase64,
+  imageResourceDataUriFallback,
   resolveWorkspaceImageCandidates,
   WorkspaceImageProjectionResolver,
 } from '../../../../src/editor/preview'
@@ -46,6 +47,48 @@ describe('workspace image projection', () => {
     expect(resolveWorkspaceImageCandidates('https://example.test/a.png')).toEqual(
       [],
     )
+  })
+
+  it('shares concurrent reads and object URLs across source-backed projections', async () => {
+    let release!: (bytes: Uint8Array) => void
+    const pending = new Promise<Uint8Array>((resolve) => {
+      release = resolve
+    })
+    const readBinary = vi.fn(() => pending)
+    const createObjectUrl = vi.fn(() => 'blob:shared-image')
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: { readBinary },
+      createObjectUrl,
+    })
+
+    const firstRequest = resolver.resolve('images/photo.png', 'readme.md')
+    const secondRequest = resolver.resolve('images/photo.png', 'readme.md')
+    expect(readBinary).toHaveBeenCalledTimes(1)
+
+    release(pngBytes)
+    const [first, second] = await Promise.all([firstRequest, secondRequest])
+
+    expect(first).toMatchObject({ status: 'ready', url: 'blob:shared-image' })
+    expect(second).toMatchObject({ status: 'ready', url: 'blob:shared-image' })
+    expect(createObjectUrl).toHaveBeenCalledTimes(1)
+    resolver.dispose()
+  })
+
+  it('provides a self-contained data URL when a revocable image URL fails', () => {
+    expect(
+      imageResourceDataUriFallback({
+        bytes: pngBytes,
+        mimeType: 'image/png',
+        url: 'blob:revoked-image',
+      }),
+    ).toBe('data:image/png;base64,iVBORw==')
+    expect(
+      imageResourceDataUriFallback({
+        bytes: pngBytes,
+        mimeType: 'image/png',
+        url: 'data:image/png;base64,iVBORw==',
+      }),
+    ).toBeUndefined()
   })
 
   it('reads bytes into a browser URL, caches them, and releases object URLs', async () => {

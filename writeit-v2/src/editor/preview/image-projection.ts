@@ -190,6 +190,20 @@ export function imageBytesToDataUri(
   return `data:${mimeType};base64,${imageBytesToBase64(bytes)}`
 }
 
+/**
+ * Returns a self-contained URL for a source-backed resource when its current
+ * URL is a revocable/host-provided URL. Preview projections use this after a
+ * browser decode error so an object URL lifecycle problem cannot turn valid
+ * bytes into a false unavailable state.
+ */
+export function imageResourceDataUriFallback(
+  resource: Pick<ImageProjectionResource, 'bytes' | 'mimeType' | 'url'>,
+): string | undefined {
+  if (!(resource.bytes instanceof Uint8Array)) return undefined
+  const dataUri = imageBytesToDataUri(resource.bytes, resource.mimeType)
+  return dataUri === resource.url ? undefined : dataUri
+}
+
 function decodeDataUri(source: string): {
   readonly bytes?: Uint8Array
   readonly mimeType: string
@@ -282,6 +296,8 @@ export class WorkspaceImageProjectionResolver
   private readonly revokeObjectUrl: (url: string) => void
   private readonly canCreateObjectUrl: boolean
   private readonly cache = new Map<WorkspacePath, CachedImage>()
+  /** Shares one read/URL creation among concurrent projections of one path. */
+  private readonly pendingReads = new Map<WorkspacePath, Promise<CachedImage>>()
   private disposed = false
 
   constructor(options: ImageProjectionResolverOptions = {}) {
@@ -359,16 +375,22 @@ export class WorkspaceImageProjectionResolver
         return this.readyResource(normalizedSource, alt, candidate, cached)
       }
 
+      let pendingRead = this.pendingReads.get(candidate)
+      if (pendingRead === undefined) {
+        pendingRead = this.readAndCache(candidate)
+        this.pendingReads.set(candidate, pendingRead)
+      }
+
       try {
-        const bytes = await this.reader.readBinary(candidate)
-        if (!(bytes instanceof Uint8Array)) {
-          throw new TypeError('Binary image reader must return Uint8Array')
+        const cachedImage = await pendingRead
+        if (this.disposed) {
+          return unavailableResource(
+            normalizedSource,
+            alt,
+            firstCandidate,
+            'Image projection was disposed',
+          )
         }
-        const cachedImage = this.cacheImage(
-          candidate,
-          bytes,
-          mimeTypeForImagePath(candidate),
-        )
         return this.readyResource(
           normalizedSource,
           alt,
@@ -377,6 +399,10 @@ export class WorkspaceImageProjectionResolver
         )
       } catch (error) {
         lastError = error
+      } finally {
+        if (this.pendingReads.get(candidate) === pendingRead) {
+          this.pendingReads.delete(candidate)
+        }
       }
     }
 
@@ -411,7 +437,36 @@ export class WorkspaceImageProjectionResolver
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.pendingReads.clear()
     this.clearCache()
+  }
+
+  private readAndCache(path: WorkspacePath): Promise<CachedImage> {
+    if (this.reader === undefined) {
+      return Promise.reject(new Error('Binary image reader is unavailable'))
+    }
+
+    let read: Promise<Uint8Array>
+    try {
+      read = this.reader.readBinary(path)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+
+    return read.then((bytes) => {
+      if (!(bytes instanceof Uint8Array)) {
+        throw new TypeError('Binary image reader must return Uint8Array')
+      }
+      if (this.disposed) {
+        throw new Error('Image projection was disposed')
+      }
+
+      return this.cacheImage(
+        path,
+        bytes,
+        mimeTypeForImagePath(path),
+      )
+    })
   }
 
   private cacheImage(

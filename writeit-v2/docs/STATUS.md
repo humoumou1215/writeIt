@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: F-02 — Collision-safe timestamp image attachment compensation (complete; P4-AR2 remains HOLD for F-03)
+Current task: F-02-R1 — Image paste idempotency and preview fidelity (complete; P4-AR2 remains HOLD for F-03)
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -84,9 +84,10 @@ Current task: F-02 — Collision-safe timestamp image attachment compensation (c
 - [x] P4-AR2 — P0–P4 Architecture & Product Boundary Re-review — **CHANGES REQUIRED / HOLD**; findings and evidence are recorded in [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) and the review contract ([Task Contract](./P4_AR2_TASK_CONTRACT.md))
 - [x] F-01 — Dirty delete CAS integration — dirty Save preparation and conditional rollback now use coherent `FileVersionToken` CAS; conflict/rollback race diagnostics and multi-document failure coverage added ([Task Contract](./F_01_TASK_CONTRACT.md)); F-03 and P5 remain blocked
 - [x] F-02 — Collision-safe timestamp image attachment compensation — timestamp-first exclusive create, collision suffixes, ownership-receipt conditional cleanup, source-safe Store/revision gate, and explicit orphan diagnostics with unit/integration/browser coverage ([Task Contract](./F_02_TASK_CONTRACT.md)); F-03 and P5 remain blocked
+- [x] F-02-R1 — Image paste idempotency and preview fidelity — event-scoped once-only paste claim, files/items projection de-duplication, concurrent source-backed image resolution, and blob/data URL decode fallback with unit/integration/browser coverage ([Task Contract](./F_02_R1_TASK_CONTRACT.md)); F-03 and P5 remain blocked
 
 ## Active
-None — F-02 is complete; F-03 production Embed acceptance remains separate and P5 work has not started.
+None — F-02-R1 is complete; F-03 production Embed acceptance remains separate and P5 work has not started.
 
 ## Blocked
 - [ ] P5-01 — HOLD until P4-AR2 blockers, production acceptance decisions, and required evidence are closed.
@@ -148,6 +149,8 @@ None — F-02 is complete; F-03 production Embed acceptance remains separate and
 - P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: successful binary writes retain canonical workspace destinations but persist document-relative Markdown source paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
 - P3-07 keeps image source paths in Markdown authoritative: one shared document-relative resolver maps source to workspace bytes for preview/image widgets, copy and workspace-tree reveal; read/decode/clipboard failures degrade the UI without rewriting source, and system file-manager reveal remains a P11 adapter concern.
 - F-02 keeps attachment transactions source-safe: timestamp-first names use exclusive create, transient ownership receipts scope compensation, conditional cleanup preserves pre-existing/external bytes, and orphan diagnostics include path/reason/document/operation.
+- F-02-R1 keeps one real paste event at one attachment/mutation boundary: files/items are treated as two projections of one clipboard batch, same-event claims are WeakSet-bound without merging separate user events, and explicit multi-image input remains ordered and distinct. Shared source-backed image reads coalesce URL creation; a failed/revoked blob URL can retry from the same bytes through a self-contained data URL without changing Markdown.
+- B9 Embed-card image behavior remains explicitly isolated: this remediation fixes the shared image file/projection resolver only and changes no Embed interaction, editability, ownership, or lifecycle code; any remaining Embed-specific failure belongs to F-03/P4 follow-up.
 - P3-08 keeps template creation outside the tree projection: a future P8 catalog adapts to the injected provider seam, while the application service validates the target and copies provider Markdown through the normal workspace mutation path.
 - P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.

@@ -82,19 +82,48 @@ function makeView(markdown = 'before', options: MakeViewOptions = {}): {
   return { store, locator, projection, rawView, fileSystem, service }
 }
 
-function pasteImage(target: HTMLElement, bytes = [1, 2, 3]): Event {
-  const file = {
-    name: 'clipboard.png',
+function fakeImageFile(
+  bytes: readonly number[],
+  name = 'clipboard.png',
+): File {
+  return {
+    name,
     type: 'image/png',
+    size: bytes.length,
     arrayBuffer: async () => new Uint8Array(bytes).buffer,
   } as unknown as File
+}
+
+function pasteImages(
+  target: HTMLElement,
+  images: readonly {
+    readonly bytes: readonly number[]
+    readonly name?: string
+  }[],
+  includeItemProjection = false,
+): Event {
+  const files = images.map((image) => fakeImageFile(image.bytes, image.name))
+  const items = includeItemProjection
+    ? images.map((image) => ({
+        kind: 'file',
+        type: 'image/png',
+        // A platform may return a fresh File wrapper for the same clipboard
+        // item. The adapter must not mistake that projection for a second
+        // image, while still retaining distinct entries in `files`.
+        getAsFile: () => fakeImageFile(image.bytes, image.name),
+      }))
+    : []
   const event = new Event('paste', { bubbles: true, cancelable: true })
   Object.defineProperty(event, 'clipboardData', {
     configurable: true,
-    value: { files: [file], items: [] },
+    value: { files, items },
   })
   target.dispatchEvent(event)
   return event
+}
+
+function pasteImage(target: HTMLElement, bytes = [1, 2, 3]): Event {
+  return pasteImages(target, [{ bytes }])
 }
 
 async function flush(): Promise<void> {
@@ -102,6 +131,21 @@ async function flush(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await Promise.resolve()
+}
+
+function waitForRevision(
+  store: DocumentStore,
+  locator: ReturnType<typeof documentById>,
+  revision: number,
+): Promise<void> {
+  if (store.getRevision(locator) >= revision) return Promise.resolve()
+  return new Promise((resolve) => {
+    const stop = store.subscribe(locator, (event) => {
+      if (event.type !== 'changed' || event.document.revision < revision) return
+      stop()
+      resolve()
+    })
+  })
 }
 
 afterEach(() => {
@@ -127,6 +171,44 @@ describe('CM6 image attachment paste', () => {
     expect(
       [...await fileSystem.readBinary(createWorkspacePath('notes/images/capture.png'))],
     ).toEqual([1, 2, 3])
+  })
+
+  it('claims one paste event, de-duplicates bridge projections, and preserves explicit multi-image input', async () => {
+    const single = makeView()
+    single.rawView.dispatch({ selection: { anchor: single.rawView.state.doc.length } })
+
+    const singleApplied = waitForRevision(single.store, single.locator, 1)
+    const event = pasteImages(
+      single.rawView.contentDOM,
+      [{ bytes: [1, 2, 3] }],
+      true,
+    )
+    // Re-dispatching the same DOM event models a duplicate bridge/late event.
+    single.rawView.contentDOM.dispatchEvent(event)
+    await singleApplied
+
+    expect(single.store.get(single.locator)?.markdown).toBe(
+      'before![clipboard](./images/capture.png)',
+    )
+    expect(single.store.get(single.locator)?.revision).toBe(1)
+    expect(single.store.getHistory(single.locator).undo).toHaveLength(1)
+    expect(single.fileSystem.snapshotBinary().size).toBe(1)
+
+    const multiple = makeView()
+    multiple.rawView.dispatch({ selection: { anchor: multiple.rawView.state.doc.length } })
+    const multipleApplied = waitForRevision(multiple.store, multiple.locator, 1)
+    pasteImages(
+      multiple.rawView.contentDOM,
+      [{ bytes: [4, 5, 6] }, { bytes: [4, 5, 6] }],
+      true,
+    )
+    await multipleApplied
+
+    const multipleDocument = multiple.store.get(multiple.locator)
+    expect(multipleDocument?.markdown.match(/!\[/gu)).toHaveLength(2)
+    expect(multipleDocument?.revision).toBe(1)
+    expect(multiple.store.getHistory(multiple.locator).undo).toHaveLength(1)
+    expect(multiple.fileSystem.snapshotBinary().size).toBe(2)
   })
 
   it('keeps source, history and attachment bytes after a successful mutation', async () => {

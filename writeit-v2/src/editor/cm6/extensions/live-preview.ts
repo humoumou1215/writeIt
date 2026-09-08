@@ -16,6 +16,7 @@ import {
 } from '@codemirror/view'
 import { isExternalImageSource } from '../../../core/workspace'
 import {
+  imageResourceDataUriFallback,
   mimeTypeForImagePath,
   resolveWorkspaceImagePath,
   type ImageProjectionRenderOptions,
@@ -394,6 +395,7 @@ class LivePreviewImageWidget extends WidgetType {
     wrapper.append(actions)
 
     let resource: ImageProjectionResource | undefined
+    let decodeFallbackAttempted = false
     const apply = (next: ImageProjectionResource): void => {
       resource = Object.freeze({ ...next, alt: this.alt })
       wrapper.dataset.imageStatus = next.status
@@ -436,6 +438,23 @@ class LivePreviewImageWidget extends WidgetType {
     })
     image.addEventListener('error', () => {
       if (!resource || resource.url === '') return
+
+      // If a shared resolver/cache lifecycle revoked the blob URL during
+      // concurrent projection mounting, retry the same bytes without a
+      // revocable URL before declaring the image unavailable.
+      const fallbackUrl = decodeFallbackAttempted
+        ? undefined
+        : imageResourceDataUriFallback(resource)
+      if (fallbackUrl !== undefined) {
+        decodeFallbackAttempted = true
+        resource = Object.freeze({
+          ...resource,
+          url: fallbackUrl,
+        })
+        image.src = fallbackUrl
+        return
+      }
+
       wrapper.dataset.imageStatus = 'unavailable'
       image.dataset.imageStatus = 'unavailable'
       status.hidden = false

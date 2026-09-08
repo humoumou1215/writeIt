@@ -11,6 +11,7 @@ import type {
 } from '../../core/document'
 import { isExternalImageSource } from '../../core/workspace'
 import {
+  imageResourceDataUriFallback,
   mimeTypeForImagePath,
   resolveWorkspaceImagePath,
   type ImageProjectionRenderOptions,
@@ -228,6 +229,7 @@ function appendImageProjection(
   wrapper.append(actions)
 
   let currentResource: ImageProjectionResource | undefined
+  let decodeFallbackAttempted = false
   const applyResource = (resource: ImageProjectionResource): void => {
     if (!wrapper.isConnected && parent !== wrapper.parentElement) return
     currentResource = Object.freeze({ ...resource, alt })
@@ -274,6 +276,23 @@ function appendImageProjection(
   })
   image.addEventListener('error', () => {
     if (!currentResource || currentResource.url === '') return
+
+    // A concurrent projection or cache eviction may have revoked a blob URL
+    // while the bytes are still perfectly valid. Retry once with a
+    // self-contained data URL before reporting a real decode failure.
+    const fallbackUrl = decodeFallbackAttempted
+      ? undefined
+      : imageResourceDataUriFallback(currentResource)
+    if (fallbackUrl !== undefined) {
+      decodeFallbackAttempted = true
+      currentResource = Object.freeze({
+        ...currentResource,
+        url: fallbackUrl,
+      })
+      image.src = fallbackUrl
+      return
+    }
+
     wrapper.dataset.imageStatus = 'unavailable'
     image.dataset.imageStatus = 'unavailable'
     status.hidden = false

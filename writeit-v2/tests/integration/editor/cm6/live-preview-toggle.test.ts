@@ -121,8 +121,7 @@ describe('CM6 raw source / live preview presentation', () => {
     })
     mountedViews.push(projection)
     projection.setPresentationMode('live-preview')
-    await Promise.resolve()
-    await Promise.resolve()
+    await resolver.resolve('images/diagram.png', 'notes/readme.md')
 
     const image = projection.view.contentDOM.querySelector<HTMLImageElement>(
       '.cm-writeit-live-preview-image__content',
@@ -135,6 +134,45 @@ describe('CM6 raw source / live preview presentation', () => {
 
     image?.click()
     expect(previews).toEqual(['notes/images/diagram.png'])
+    resolver.dispose()
+  })
+
+  it('retries a revoked CM6 image URL with the source-backed bytes', async () => {
+    const source = '![diagram](images/diagram.png)'
+    const { store, locator } = makeStore(source)
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem({
+        binaryFiles: {
+          'images/diagram.png': new Uint8Array([1, 2, 3]),
+        },
+      }),
+      createObjectUrl: () => 'blob:revoked-image',
+    })
+    const projection = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor',
+      imageProjection: {
+        imageResolver: resolver,
+        documentPath: 'readme.md',
+      },
+    })
+    mountedViews.push(projection)
+    projection.setPresentationMode('live-preview')
+    await resolver.resolve('images/diagram.png', 'readme.md')
+
+    const image = projection.view.contentDOM.querySelector<HTMLImageElement>(
+      '.cm-writeit-live-preview-image__content',
+    )
+    expect(image?.dataset.imageStatus).toBe('ready')
+    image?.dispatchEvent(new Event('error'))
+
+    expect(image?.dataset.imageStatus).toBe('ready')
+    expect(image?.getAttribute('src')).toBe(
+      'data:image/png;base64,AQID',
+    )
+    expect(store.getRevision(locator)).toBe(0)
     resolver.dispose()
   })
 

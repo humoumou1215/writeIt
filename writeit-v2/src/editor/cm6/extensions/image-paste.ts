@@ -69,33 +69,76 @@ function isEditable(view: EditorView): boolean {
   return !view.state.readOnly && view.state.facet(EditorView.editable)
 }
 
+/**
+ * A single DOM paste event can be observed through both DataTransfer.files and
+ * DataTransfer.items. Some platforms return a different File object for the
+ * item projection, so object identity alone is not enough to de-duplicate it.
+ *
+ * The files list is the primary projection. Item files are only added when
+ * they are not already represented by that list. Counting a stable metadata
+ * key, rather than collapsing all equal files, preserves an explicit batch of
+ * two images with the same name/type/size.
+ */
+function clipboardFileKey(file: File): string {
+  return `${file.name}\u0000${file.type.toLowerCase()}\u0000${file.size}`
+}
+
 function imageFilesFromClipboard(
   clipboardData: DataTransfer | null,
 ): File[] {
   if (!clipboardData) return []
+
   const files: File[] = []
-  const seen = new Set<File>()
+  const seenFiles = new Set<File>()
+  const representedByFiles = new Map<string, number>()
 
   for (const file of Array.from(clipboardData.files)) {
-    if (file.type.startsWith('image/') && !seen.has(file)) {
-      seen.add(file)
-      files.push(file)
-    }
+    if (!file.type.startsWith('image/') || seenFiles.has(file)) continue
+    seenFiles.add(file)
+    files.push(file)
+    const key = clipboardFileKey(file)
+    representedByFiles.set(key, (representedByFiles.get(key) ?? 0) + 1)
   }
 
-  // Chromium and some native clipboard providers expose the image through an
-  // item but leave DataTransfer.files empty. Keep both paths and de-duplicate
-  // object identities so one paste cannot produce the same image twice.
+  // Chromium and some native clipboard providers expose an image through an
+  // item while leaving DataTransfer.files empty. Conversely, some providers
+  // return a fresh File wrapper from getAsFile(). Consume one matching files
+  // projection for each item before appending an unrepresented item. This
+  // prevents one image from becoming two while retaining explicit multi-image
+  // batches, including two equal-looking images.
+  const seenItemFiles = new Set<File>()
   for (const item of Array.from(clipboardData.items)) {
     if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
     const file = item.getAsFile()
-    if (file && !seen.has(file)) {
-      seen.add(file)
-      files.push(file)
+    if (!file || seenItemFiles.has(file)) continue
+    seenItemFiles.add(file)
+
+    const key = clipboardFileKey(file)
+    const represented = representedByFiles.get(key) ?? 0
+    if (represented > 0) {
+      representedByFiles.set(key, represented - 1)
+      continue
     }
+
+    files.push(file)
   }
 
   return files
+}
+
+/**
+ * CM6 may run more than one DOM-event bridge for the same native event. The
+ * claim is module-scoped so separate image-paste extension instances in one
+ * editor still share the same once-only boundary. A WeakSet avoids retaining
+ * completed browser events and deliberately does not deduplicate separate
+ * events: two explicit paste actions remain two user intents.
+ */
+const claimedImagePasteEvents = new WeakSet<Event>()
+
+function claimImagePasteEvent(event: Event): boolean {
+  if (claimedImagePasteEvents.has(event)) return false
+  claimedImagePasteEvents.add(event)
+  return true
 }
 
 async function readClipboardImages(
@@ -307,6 +350,11 @@ export function createImagePasteExtension(
         )
         return true
       }
+
+      // Claim before starting any asynchronous clipboard read or attachment
+      // write. A second bridge seeing this exact event must not start another
+      // pipeline, even if it is a separate extension instance.
+      if (!claimImagePasteEvent(event)) return false
 
       const selection = view.state.selection.main
       const context: ImagePasteHandlerContext = Object.freeze({

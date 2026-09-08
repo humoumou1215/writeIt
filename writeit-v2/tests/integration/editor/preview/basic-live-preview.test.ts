@@ -67,8 +67,9 @@ describe('basic live preview', () => {
       onPreview: (image) => previews.push(image.path ?? image.source),
       onReveal: (path) => reveals.push(path),
     })
-    await Promise.resolve()
-    await Promise.resolve()
+    // Await the resolver's actual read completion rather than a timing guess;
+    // the render callback is registered on the same shared request.
+    await resolver.resolve('images/diagram.png', 'readme.md')
 
     const image = parent.querySelector<HTMLImageElement>('.live-preview-image__content')
     expect(image?.dataset.imagePath).toBe('images/diagram.png')
@@ -101,8 +102,7 @@ describe('basic live preview', () => {
       imageResolver: resolver,
       documentPath: 'notes/readme.md',
     })
-    await Promise.resolve()
-    await Promise.resolve()
+    await resolver.resolve('images/diagram.png', 'notes/readme.md')
 
     const image = parent.querySelector<HTMLImageElement>(
       '.live-preview-image__content',
@@ -110,6 +110,37 @@ describe('basic live preview', () => {
     expect(image?.dataset.imagePath).toBe('notes/images/diagram.png')
     expect(image?.dataset.imageStatus).toBe('ready')
     expect(store.get(locator)?.markdown).toBe(source)
+    resolver.dispose()
+  })
+
+  it('retries a revoked source-backed URL with equivalent bytes before degrading', async () => {
+    const source = '![diagram](images/diagram.png)'
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem({
+        binaryFiles: {
+          'images/diagram.png': new Uint8Array([1, 2, 3]),
+        },
+      }),
+      createObjectUrl: () => 'blob:revoked-image',
+    })
+    const parent = document.createElement('div')
+
+    renderBasicMarkdownPreview(parent, source, {
+      imageResolver: resolver,
+      documentPath: 'readme.md',
+    })
+    await resolver.resolve('images/diagram.png', 'readme.md')
+
+    const image = parent.querySelector<HTMLImageElement>(
+      '.live-preview-image__content',
+    )
+    expect(image?.dataset.imageStatus).toBe('ready')
+    image?.dispatchEvent(new Event('error'))
+
+    expect(image?.dataset.imageStatus).toBe('ready')
+    expect(image?.getAttribute('src')).toBe(
+      'data:image/png;base64,AQID',
+    )
     resolver.dispose()
   })
 
@@ -125,8 +156,7 @@ describe('basic live preview', () => {
       imageResolver: resolver,
       documentPath: 'readme.md',
     })
-    await Promise.resolve()
-    await Promise.resolve()
+    await resolver.resolve('images/missing.png', 'readme.md')
 
     const wrapper = parent.querySelector<HTMLElement>('.live-preview-image')
     expect(wrapper?.dataset.imagePath).toBe('images/missing.png')
