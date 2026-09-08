@@ -11,10 +11,10 @@
 
 P0–P4 的核心 authority、Projection、source-fidelity、依赖边界和 P2-AR-06 的正常 fan-out/history 路径有充分自动化证据；本次完整 gate 全部通过，不能据此伪称 P0–P4 产品边界已经无风险。
 
-本次 Gate 保持 HOLD，原因是仍有会影响数据安全或生产验收的未关闭事项；F-01 的独立 remediation 已在后续 follow-up 中关闭：
+本次 Gate 保持 HOLD，原因是仍有会影响生产验收的未关闭事项；F-01 与 F-02 的独立 remediation 已在后续 follow-up 中关闭：
 
 1. **F-01：已由本任务关闭。** dirty recursive delete 的 Save preparation/rollback 现使用 P3-R03 CAS；race、same-content rewrite、delete-failure rollback conflict 和多文档部分失败均有证据。
-2. **HIGH / blocker：** image attachment 写入先于 DocumentStore mutation，目标路径可被覆盖；cleanup 是 best-effort 且失败结果没有被 editor adapter 充分呈现，存在 orphan 和潜在覆盖已有图片的风险。
+2. **F-02：已关闭。** image attachment 现在使用 timestamp-first + exclusive create，返回 ownership receipt；Store/projection mutation 失败时只做 receipt-scoped conditional cleanup，失败会产生明确 orphan diagnostic，不覆盖或删除既有/外部 bytes。
 3. **HIGH / production acceptance gap：** Embed controller 的 generation/retry/late-result 协议已有证据，但 production App wiring 只间接依赖 workspace/reference refresh 触发 retry；没有针对真实 persistence loader failure 的 production Chromium 用户旅程证据，也没有明确的 embed retry surface。
 
 目录操作的当前批准策略仍然是“影响已打开 descendant Document/path binding 时阻止”，本次不把它改成 transactional path migration。该策略足以保护当前运行时 path binding 的一致性，但不等于完整 directory reference migration；未打开 descendant 的 incoming-reference rewrite、path rebind、rollback 仍是明确 deferred risk。
@@ -76,9 +76,9 @@ compensation 后 graph 从当前 Store snapshot 和当前 filesystem catalog 重
 
 ### P3-R01 — document-relative image paths
 
-**结论：路径语义 PASS；attachment transaction DEFERRED/CHANGES REQUIRED。**
+**结论：PASS（路径语义 + F-02 attachment transaction follow-up）。**
 
-root-images、same-dir、file-images、inline 在 nested document 下的 canonical source path、resolver、preview、copy、tree locate 使用同一 document-relative helper；读取/decode/clipboard failure 不改 source。该结论只覆盖 path semantics，不代表 binary write compensation、exclusive create 或 orphan handling 已完成，见 F-02。
+root-images、same-dir、file-images、inline 在 nested document 下的 canonical source path、resolver、preview、copy、tree locate 使用同一 document-relative helper；读取/decode/clipboard failure 不改 source。F-02 follow-up 已补齐 binary exclusive create、timestamp collision handling、ownership-scoped compensation 和 orphan diagnostics；生产/native binary adapter 仍必须实现同一 port contract。
 
 ### P4-R03 — entity completion modes
 
@@ -120,7 +120,7 @@ request 绑定 host revision/projection generation；missing → appears、trans
 
 **Follow-up evidence：** deletion/persistence unit suites 覆盖不同内容 race、相同 bytes 的 version race、multi-document partial save failure、delete-failure rollback conflict，以及 rollback 后已知 baseline token 的刷新；完整 Vitest 61 files / 362 tests、Chromium 51 tests、typecheck、build、boundary 和 whitespace checks 均通过。图片 attachment、目录 migration 和 Embed production acceptance 不在本 remediation 内。
 
-### F-02 — HIGH / BLOCKER — image attachment compensation/orphan/collision strategy 未闭合
+### F-02 baseline finding — HIGH / BLOCKER — image attachment compensation/orphan/collision strategy 未闭合
 
 **证据：** `ImageAttachmentService.paste()` 在 `src/application/attachments/image-paste.ts:372-382` 先 `writeBinary()`，再由 CM6 adapter 在 `src/editor/cm6/extensions/image-paste.ts:249-267` 尝试 Store mutation；mutation race/rejection 才调用 cleanup。`BinaryFileSystemPort.deleteBinary` 是 optional best-effort（`src/platform/filesystem/binary-port.ts:10-14`），而 `ImageAttachmentService.cleanup()`（`image-paste.ts:405-436`）返回 `failedPaths`，adapter 没有检查该结果。reference validation failure（`image-paste.ts:228-243`）也没有统一 cleanup。MemoryFileSystem 的 `writeBinary` 会覆盖同路径已有 binary；没有 exclusive-create/ownership token。
 
@@ -130,13 +130,21 @@ request 绑定 host revision/projection generation；missing → appears、trans
 - 平台没有 deleteBinary 或 cleanup 失败时，用户只看到 mutation error，无法知道哪些附件已落盘。
 - 当前 tests 只验证正常写入和一个显式 cleanup happy path；没有覆盖 name collision、Store rejection、cleanup failure、部分 batch compensation 和 retry/recovery。
 
-**要求：** 后续必须选择并记录 attachment ownership/compensation 策略（exclusive destination、可验证的 created-version/backup、orphan report 或明确保留策略），并以 unit/integration/browser evidence 证明不能删除/覆盖非本次 paste 所拥有的 bytes。此项在策略确定和证据补齐前保持 blocker。
+**要求：** 后续必须选择并记录 attachment ownership/compensation 策略（exclusive destination、可验证的 created-version/backup、orphan report 或明确保留策略），并以 unit/integration/browser evidence 证明不能删除/覆盖非本次 paste 所拥有的 bytes。此要求已由 F-02 follow-up 独立关闭；以上文字保留为 baseline finding。
+
+### F-02 follow-up — RESOLVED — collision-safe timestamp attachment compensation
+
+- `BinaryFileSystemPort.createBinaryExclusive()` 在 collision 时只返回 `exists`，`MemoryFileSystem` 不覆盖已有 text/binary/directory entry；成功 create 返回 opaque version receipt。
+- 默认文件名以 `YYYYMMDD-HHMMSSmmm` timestamp 开头；相同 timestamp/entropy 或重复粘贴通过序号候选重试。Markdown 仍由 P3-R01 helper 产生 document-relative source。
+- `ImagePasteResult` 携带 transient ownership receipts。CM6 image adapter 在当前 projection mutation capability/revision 检查和 Markdown/reference validation 失败时只补偿这些 receipts；conditional delete 的 version 不匹配会保留外部 bytes。
+- cleanup 返回 path/reason/operation/document 的 `orphan-attachment` diagnostic；App 显示该诊断，不把 best-effort cleanup 伪装成完整 rollback。成功 Store mutation 后附件保留，source/revision/history/dirty 语义保持。
+- 证据见 [F-02 contract](./F_02_TASK_CONTRACT.md)、`tests/unit/application/attachments/image-paste.test.ts`、`tests/integration/editor/cm6/image-paste.test.ts`、`tests/unit/platform/filesystem/binary.test.ts` 和 `tests/browser/image-paste.spec.ts`；follow-up gate 为 Vitest 61 files / 372 tests、Chromium 51 tests、typecheck、build、boundary 和 whitespace checks 全部通过。
 
 ### F-03 — HIGH / TEST/PRODUCTION ACCEPTANCE GAP — Embed production loader failure evidence 不足
 
 **证据：** P4-R05 controlled harness 已覆盖 retry/generation，但 App 的 `ensureEmbeddedDocument()`（`src/App.vue:480-533`）把 persistence load failure 交给 Embed controller；实际 retry 依赖后续 tree/reference refresh event。当前 browser tests 直接注入 `onTargetMissing`/`subscribeTargets`，未验证真实 App loader failure → 用户可见诊断 → Refresh/retry → child mount 的完整旅程。
 
-**要求：** 在不引入 timer 的前提下补真实 production wiring acceptance，或由用户明确接受“Refresh 是 retry surface、controlled harness 足够”的 deferred decision。该项与 F-02 一起使本次 gate 不能宣称 P5-ready。
+**要求：** 在不引入 timer 的前提下补真实 production wiring acceptance，或由用户明确接受“Refresh 是 retry surface、controlled harness 足够”的 deferred decision。该项仍使本次 gate 不能宣称 P5-ready。
 
 ### F-04 — MEDIUM / DEFERRED RISK — directory policy 的语义范围与 preflight race
 
@@ -152,7 +160,6 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 
 ### 必须返工后才能关闭的 blocker
 
-- F-02：image attachment ownership/compensation/orphan/collision gap。
 - F-03：如果用户验收要求 production Embed loader failure/retry 证据，则必须补 production journey；当前不能把 controlled harness 直接冒充 production acceptance。
 
 ### Test/evidence gap（不应伪称 PASS）
@@ -175,14 +182,14 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 
 - `writeit-v2/README.md` 仍写成“下一任务为 P3-08”，与已完成 P4-R05 不一致；已改为当前 P4 gate HOLD，明确 P5 未开始。
 - `STATUS.md` 原本 `Blocked: None` 且 `Next: P5-01`，会错误授权 P5；已改为 P4-AR2 review complete / HOLD，并将 P5-01 标为 blocked。
-- `STATUS.md` 原本把 P3-R02/P3-R03 的 CAS/guarded-save 描述写得过宽；F-01 follow-up 已将 deletion preparation/rollback 的 CAS 边界补齐，并保留 F-02/F-03 风险。
+- `STATUS.md` 原本把 P3-R02/P3-R03 的 CAS/guarded-save 描述写得过宽；F-01 follow-up 已将 deletion preparation/rollback 的 CAS 边界补齐，F-02 follow-up 已记录 attachment transaction closure，并保留 F-03 风险。
 - `LEGACY_FEATURE_MAP.md` 的 `Strategy` 仍是迁移策略，不是 parity completion；本次不把 broad `File CRUD`/`References` 行误标为已完成，也没有创建第二份 Feature Map。
 - P2/P2A 历史 review 中的旧 gate 结论保留为历史证据；P4-AR2 不重写已接受的 PASS，只明确其覆盖边界和本次新增的 evidence gap。
 
 ## 8. 用户验收与决策点
 
-1. F-01 dirty-delete external-overwrite/CAS gap 已由本任务关闭；本报告不再把它作为未关闭 blocker。
-2. 是否批准 attachment 的 ownership/compensation 方案并要求 collision/orphan evidence（本报告建议在关闭前不进入 P5）。
+1. F-01 dirty-delete external-overwrite/CAS gap 已由 follow-up 关闭；本报告不再把它作为未关闭 blocker。
+2. F-02 timestamp-first/exclusive-create/ownership-receipt + best-effort/orphan diagnostic 方案已按用户确认实现并有 unit/integration/browser evidence；本报告不再把 attachment compensation 作为 blocker。
 3. 是否接受当前 Embed 的“controller + explicit workspace/reference refresh retry”作为 production acceptance，还是要求真实 App loader failure/retry journey。
 4. 是否继续批准当前目录策略：有打开 descendant 时阻止；完整 directory migration 明确 deferred。若要改成 transactional migration，必须另立架构决策，本 Task 不自行改变。
 5. 是否需要重新执行并保存 P2A 真实 IME/用户验收记录；历史 P2A-AR1 PASS 不应被自动化 test count 取代。
@@ -192,6 +199,6 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 **CHANGES REQUIRED / HOLD。**
 
 - P0–P4 核心 authority/boundary 和正常 remediation paths 有充分证据。
-- F-01 已关闭；F-02 尚未关闭，F-03 的生产验收证据也未闭合。
+- F-01 与 F-02 已关闭；F-03 的生产验收证据仍未闭合。
 - 因此 `STATUS.md` 不指向 `P5-01`，不开始 P5，不改变 accepted ADR，不改变已批准目录策略。
 - 后续应由用户批准独立 remediation Task；本评审不自动开始下一 Task。

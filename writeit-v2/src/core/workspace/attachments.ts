@@ -1,3 +1,5 @@
+import type { WorkspacePath } from './types'
+
 /**
  * Where pasted image bytes are stored. The value is a data contract shared by
  * the application policy and editor adapter; it does not imply a particular
@@ -54,6 +56,40 @@ export interface ImagePasteReference {
   readonly inputName?: string
 }
 
+/**
+ * Transient ownership proof for one binary created by an image paste. The
+ * version is supplied by the binary filesystem and is never persisted in
+ * Markdown; it lets compensation delete only the bytes created by this paste.
+ */
+export interface ImagePasteAttachmentReceipt {
+  readonly path: WorkspacePath
+  readonly version: string
+}
+
+export interface ImagePasteCleanupContext {
+  readonly operation: string
+  readonly reason: string
+  readonly documentPath?: string | null
+}
+
+/** A visible diagnostic when a newly-created attachment could not be removed. */
+export interface ImagePasteOrphanDiagnostic {
+  readonly kind: 'orphan-attachment'
+  readonly path: WorkspacePath
+  readonly reason: string
+  /** Why the compensation path was entered (for example a revision race). */
+  readonly triggerReason: string
+  readonly operation: string
+  readonly documentPath?: string | null
+  readonly cause?: string
+}
+
+export interface ImagePasteCleanupResult {
+  readonly deletedPaths: readonly WorkspacePath[]
+  readonly failedPaths: readonly WorkspacePath[]
+  readonly diagnostics: readonly ImagePasteOrphanDiagnostic[]
+}
+
 export interface ImagePasteFallback {
   readonly inputName?: string
   /** A diagnostic reason; it is never used as Markdown content. */
@@ -64,12 +100,15 @@ export interface ImagePasteFallback {
 export interface ImagePasteResult {
   readonly references: readonly ImagePasteReference[]
   readonly savedPaths: readonly string[]
+  /** Receipts for files created by this paste and safe to compensate. */
+  readonly createdAttachments: readonly ImagePasteAttachmentReceipt[]
   readonly inlinedCount: number
   readonly fallbacks: readonly ImagePasteFallback[]
 }
 
 export function createImagePasteResult(
-  input: Omit<ImagePasteResult, 'inlinedCount'> & {
+  input: Omit<ImagePasteResult, 'inlinedCount' | 'createdAttachments'> & {
+    readonly createdAttachments?: readonly ImagePasteAttachmentReceipt[]
     readonly inlinedCount?: number
   },
 ): ImagePasteResult {
@@ -82,6 +121,12 @@ export function createImagePasteResult(
   if (!Array.isArray(input.savedPaths)) {
     throw new TypeError('Image paste result savedPaths must be an array')
   }
+  if (
+    input.createdAttachments !== undefined &&
+    !Array.isArray(input.createdAttachments)
+  ) {
+    throw new TypeError('Image paste result createdAttachments must be an array')
+  }
   if (!Array.isArray(input.fallbacks)) {
     throw new TypeError('Image paste result fallbacks must be an array')
   }
@@ -92,9 +137,18 @@ export function createImagePasteResult(
     throw new RangeError('Image paste result inlinedCount must be non-negative')
   }
 
+  const createdAttachments = (input.createdAttachments ?? []).map(
+    (attachment) =>
+      Object.freeze({
+        path: attachment.path,
+        version: attachment.version,
+      }),
+  )
+
   return Object.freeze({
     references: Object.freeze([...input.references]),
     savedPaths: Object.freeze([...input.savedPaths]),
+    createdAttachments: Object.freeze(createdAttachments),
     inlinedCount,
     fallbacks: Object.freeze([...input.fallbacks]),
   })

@@ -13,7 +13,11 @@ import type {
   WorkspaceEntry,
   WorkspacePath,
 } from '../../core/workspace'
-import type { BinaryFileSystemPort } from './binary-port'
+import type {
+  BinaryFileSystemPort,
+  ConditionalBinaryDeleteResult,
+  ExclusiveBinaryCreateResult,
+} from './binary-port'
 import { isFileVersionToken } from './port'
 import type {
   ConditionalWriteResult,
@@ -271,6 +275,62 @@ export class MemoryFileSystem
     this.files.delete(normalizedPath)
     this.binaryFiles.set(normalizedPath, bytes)
     this.versions.set(normalizedPath, this.issueVersion())
+  }
+
+  async createBinaryExclusive(
+    path: WorkspacePath,
+    data: Uint8Array,
+  ): Promise<ExclusiveBinaryCreateResult> {
+    const normalizedPath = requirePath(path)
+    const bytes = requireBinaryContent(data)
+
+    if (
+      this.files.has(normalizedPath) ||
+      this.binaryFiles.has(normalizedPath) ||
+      this.directories.has(normalizedPath)
+    ) {
+      return Object.freeze({ status: 'exists' as const })
+    }
+
+    this.ensureParentDirectories(normalizedPath)
+    this.binaryFiles.set(normalizedPath, bytes)
+    const version = this.issueVersion()
+    this.versions.set(normalizedPath, version)
+    return Object.freeze({
+      status: 'created' as const,
+      atomicity: 'strong' as const,
+      version,
+    })
+  }
+
+  async deleteBinaryIfUnchanged(
+    path: WorkspacePath,
+    expectedVersion: FileVersionToken,
+  ): Promise<ConditionalBinaryDeleteResult> {
+    const normalizedPath = requirePath(path)
+    if (!isFileVersionToken(expectedVersion)) {
+      throw new TypeError('Expected binary version must be a non-empty file version token')
+    }
+
+    const currentVersion = this.versions.get(normalizedPath)
+    if (!this.binaryFiles.has(normalizedPath)) {
+      return Object.freeze({
+        status: 'not-owned' as const,
+        reason: currentVersion === undefined ? 'missing' as const : 'changed' as const,
+        ...(currentVersion === undefined ? {} : { actualVersion: currentVersion }),
+      })
+    }
+    if (currentVersion !== expectedVersion) {
+      return Object.freeze({
+        status: 'not-owned' as const,
+        reason: 'changed' as const,
+        ...(currentVersion === undefined ? {} : { actualVersion: currentVersion }),
+      })
+    }
+
+    this.binaryFiles.delete(normalizedPath)
+    this.versions.delete(normalizedPath)
+    return Object.freeze({ status: 'deleted' as const })
   }
 
   async deleteBinary(path: WorkspacePath): Promise<void> {

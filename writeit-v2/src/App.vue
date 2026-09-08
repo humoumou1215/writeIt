@@ -50,6 +50,7 @@ import {
 import type { DocumentId, DocumentState } from './core/document'
 import type {
   ImagePasteMode,
+  ImagePasteOrphanDiagnostic,
   ImagePasteResult,
   WorkspacePath,
 } from './core/workspace'
@@ -701,6 +702,13 @@ function handleImagePasteError(error: unknown): void {
   imagePasteStatus.value = `Image paste failed: ${workspaceErrorMessage(error)}`
 }
 
+function handleImagePasteDiagnostic(
+  diagnostic: ImagePasteOrphanDiagnostic,
+): void {
+  imagePasteStatus.value =
+    `Orphan attachment ${diagnostic.path}: ${diagnostic.reason}`
+}
+
 function openImagePreview(resource: ImageProjectionResource): void {
   imagePreview.value = resource
   imageActionStatus.value = null
@@ -1035,10 +1043,10 @@ function mountActiveDocument(): void {
               mode: imagePasteMode.value,
               hostPath: context.documentPath,
             }),
-          cleanupSavedPaths: async (paths) => {
-            await imageAttachmentService.cleanup(paths)
-          },
+          cleanupAttachments: (attachments, context) =>
+            imageAttachmentService.cleanup(attachments, context),
           onApplied: handleImagePasteApplied,
+          onDiagnostic: handleImagePasteDiagnostic,
           onError: handleImagePasteError,
         }),
         createReferenceClipboardExtension({

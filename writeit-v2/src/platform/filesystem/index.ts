@@ -14,6 +14,12 @@ export type {
   AttachmentFileSystemPort,
   BinaryFileSystem,
   BinaryFileSystemPort,
+  ConditionalBinaryDeleteNotOwned,
+  ConditionalBinaryDeleteResult,
+  ConditionalBinaryDeleteSuccess,
+  ExclusiveBinaryCreateCollision,
+  ExclusiveBinaryCreateResult,
+  ExclusiveBinaryCreateSuccess,
 } from './binary-port'
 export type {
   WorkspaceDeleteOptions,

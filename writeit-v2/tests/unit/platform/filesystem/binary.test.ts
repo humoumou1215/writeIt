@@ -34,6 +34,46 @@ describe('MemoryFileSystem binary port', () => {
     expect([...await fileSystem.readBinary(imagePath)]).toEqual([3, 4])
   })
 
+  it('creates binary files exclusively and returns an opaque ownership version', async () => {
+    const fileSystem = new MemoryFileSystem({
+      binaryFiles: { 'images/existing.png': new Uint8Array([8]) },
+    })
+
+    const collision = await fileSystem.createBinaryExclusive(
+      createWorkspacePath('images/existing.png'),
+      new Uint8Array([1]),
+    )
+    expect(collision).toEqual({ status: 'exists' })
+    expect(
+      [...await fileSystem.readBinary(createWorkspacePath('images/existing.png'))],
+    ).toEqual([8])
+
+    const created = await fileSystem.createBinaryExclusive(
+      imagePath,
+      new Uint8Array([2]),
+    )
+    expect(created).toMatchObject({ status: 'created', atomicity: 'strong' })
+    if (created.status !== 'created') throw new Error('expected a create')
+
+    await fileSystem.writeBinary(imagePath, new Uint8Array([3]))
+    const changed = await fileSystem.deleteBinaryIfUnchanged(
+      imagePath,
+      created.version,
+    )
+    expect(changed).toMatchObject({ status: 'not-owned', reason: 'changed' })
+
+    await fileSystem.deleteBinary(imagePath)
+    const recreated = await fileSystem.createBinaryExclusive(
+      imagePath,
+      new Uint8Array([4]),
+    )
+    expect(recreated.status).toBe('created')
+    if (recreated.status !== 'created') throw new Error('expected a recreate')
+    await expect(
+      fileSystem.deleteBinaryIfUnchanged(imagePath, recreated.version),
+    ).resolves.toEqual({ status: 'deleted' })
+  })
+
   it('uses one namespace when replacing a text file with binary content', async () => {
     const fileSystem = new MemoryFileSystem({ files: { 'readme.md': 'text' } })
 

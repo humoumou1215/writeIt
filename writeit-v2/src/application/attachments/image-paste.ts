@@ -8,6 +8,9 @@ import {
   workspaceParent,
 } from '../../core/workspace'
 import type {
+  ImagePasteAttachmentReceipt,
+  ImagePasteCleanupContext,
+  ImagePasteCleanupResult,
   ImagePasteFallback,
   ImagePasteInput,
   ImagePasteReference,
@@ -15,7 +18,11 @@ import type {
   ImagePasteMode,
   WorkspacePath,
 } from '../../core/workspace'
-import type { BinaryFileSystemPort } from '../../platform/filesystem'
+import { isFileVersionToken } from '../../platform/filesystem'
+import type {
+  BinaryFileSystemPort,
+  FileVersionToken,
+} from '../../platform/filesystem'
 
 export const IMAGE_PASTE_MODE_OPTIONS = Object.freeze([
   Object.freeze({
@@ -54,15 +61,16 @@ export type ImageAttachmentNameGenerator = (
 
 export interface ImageAttachmentServiceOptions {
   readonly fileSystem?: BinaryFileSystemPort
+  /** Deterministic candidate override used by tests and host policies. */
   readonly nameGenerator?: ImageAttachmentNameGenerator
   readonly now?: () => Date
   readonly random?: () => string
 }
 
-export interface ImageAttachmentCleanupResult {
-  readonly deletedPaths: readonly WorkspacePath[]
-  readonly failedPaths: readonly WorkspacePath[]
-}
+/** Compatibility alias for callers that use the application-layer name. */
+export type ImageAttachmentCleanupResult = ImagePasteCleanupResult
+
+const MAX_COLLISION_ATTEMPTS = 1_000
 
 const MIME_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze({
   'image/avif': 'avif',
@@ -139,10 +147,18 @@ function extensionForMime(mimeType: string): string {
 
 function timestampFor(date: Date): string {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-    return '00000000-000000'
+    return '00000000-000000000'
   }
-  const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  const pad = (value: number, length = 2): string =>
+    String(value).padStart(length, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(), 3)}`
+}
+
+function appendCollisionSuffix(fileName: string, attempt: number): string {
+  if (attempt === 0) return fileName
+  const extensionIndex = fileName.lastIndexOf('.')
+  if (extensionIndex <= 0) return `${fileName}-${attempt}`
+  return `${fileName.slice(0, extensionIndex)}-${attempt}${fileName.slice(extensionIndex)}`
 }
 
 function defaultNameGenerator(
@@ -155,7 +171,9 @@ function defaultNameGenerator(
     .replace(/[^a-z0-9]/giu, '')
     .slice(0, 8)
     .padEnd(4, String(index % 10))
-  return `Pasted-${timestampFor(now())}-${token}.${extensionForMime(input.mimeType)}`
+  // Timestamp comes first so attachment order remains inspectable even when
+  // entropy/sequence suffixes are added for a collision.
+  return `${timestampFor(now())}-${token}.${extensionForMime(input.mimeType)}`
 }
 
 function altTextFor(input: ImagePasteInput): string {
@@ -256,6 +274,33 @@ function safeReason(error: unknown, fallback: string): string {
   }
 }
 
+function isExistingCollision(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false
+  const candidate = error as { readonly name?: unknown }
+  return candidate.name === 'WorkspaceEntryAlreadyExistsError'
+}
+
+function orphanDiagnostic(
+  path: WorkspacePath,
+  context: ImagePasteCleanupContext,
+  reason: string,
+  cause?: unknown,
+) {
+  return Object.freeze({
+    kind: 'orphan-attachment' as const,
+    path,
+    reason,
+    triggerReason: context.reason,
+    operation: context.operation,
+    ...(context.documentPath === undefined
+      ? {}
+      : { documentPath: context.documentPath }),
+    ...(cause === undefined
+      ? {}
+      : { cause: safeReason(cause, 'unknown cleanup error') }),
+  })
+}
+
 function fallback(
   input: ImagePasteInput,
   reason: string,
@@ -319,6 +364,7 @@ export class ImageAttachmentService {
     const normalizedInputs = request.images.map(normalizeInput)
     const references: ImagePasteReference[] = []
     const savedPaths: WorkspacePath[] = []
+    const createdAttachments: ImagePasteAttachmentReceipt[] = []
     const fallbacks: ImagePasteFallback[] = []
 
     for (const [index, input] of normalizedInputs.entries()) {
@@ -328,19 +374,12 @@ export class ImageAttachmentService {
         continue
       }
 
-      let target: WorkspacePath | undefined
-      let sourcePath: string | undefined
+      let generatedName: string
       try {
-        const generatedName = this.nameGenerator(input, index)
+        generatedName = this.nameGenerator(input, index)
         if (typeof generatedName !== 'string' || generatedName.length === 0) {
           throw new TypeError('Image attachment name must be non-empty')
         }
-        target = computeImageAttachmentPath(mode, hostPath, generatedName)
-        sourcePath = computeImageAttachmentSourcePath(
-          mode,
-          hostPath,
-          generatedName,
-        )
       } catch (error) {
         const inlined = inlineReference(
           input,
@@ -351,12 +390,8 @@ export class ImageAttachmentService {
         continue
       }
 
-      if (target === undefined || sourcePath === undefined) {
-        const reason =
-          hostPath === undefined
-            ? 'document has no workspace path'
-            : 'document-relative image path is unavailable'
-        const inlined = inlineReference(input, reason)
+      if (hostPath === undefined) {
+        const inlined = inlineReference(input, 'document has no workspace path')
         references.push(inlined.reference)
         fallbacks.push(inlined.fallback)
         continue
@@ -369,30 +404,104 @@ export class ImageAttachmentService {
         continue
       }
 
-      try {
-        await this.fileSystem.writeBinary(target, input.bytes)
-        references.push(
-          Object.freeze({
-            markdown: imageMarkdownReference(input, sourcePath),
-            source: 'file' as const,
-            path: target,
-            ...(input.name === undefined ? {} : { inputName: input.name }),
-          }),
-        )
-        savedPaths.push(target)
-      } catch (error) {
-        const inlined = inlineReference(
-          input,
-          `binary write failed: ${safeReason(error, 'unknown filesystem error')}`,
-        )
+      let created:
+        | {
+            readonly target: WorkspacePath
+            readonly sourcePath: string
+            readonly version: string
+          }
+        | undefined
+      let writeFailure: unknown
+      let collisionExhausted = false
+
+      for (let attempt = 0; attempt < MAX_COLLISION_ATTEMPTS; attempt += 1) {
+        const candidateName = appendCollisionSuffix(generatedName, attempt)
+        let target: WorkspacePath | undefined
+        let sourcePath: string | undefined
+        try {
+          target = computeImageAttachmentPath(mode, hostPath, candidateName)
+          sourcePath = computeImageAttachmentSourcePath(
+            mode,
+            hostPath,
+            candidateName,
+          )
+        } catch (error) {
+          writeFailure = error
+          break
+        }
+
+        if (target === undefined || sourcePath === undefined) {
+          writeFailure = new Error(
+            'document-relative image path is unavailable',
+          )
+          break
+        }
+
+        try {
+          const write = await this.fileSystem.createBinaryExclusive(
+            target,
+            input.bytes,
+          )
+          if (write.status === 'exists') continue
+          if (
+            write.status !== 'created' ||
+            write.atomicity !== 'strong' ||
+            !isFileVersionToken(write.version)
+          ) {
+            throw new TypeError(
+              'Binary filesystem did not return a strong attachment ownership receipt',
+            )
+          }
+          created = Object.freeze({
+            target,
+            sourcePath,
+            version: write.version,
+          })
+          break
+        } catch (error) {
+          if (isExistingCollision(error)) continue
+          writeFailure = error
+          break
+        }
+      }
+
+      if (created === undefined && writeFailure === undefined) {
+        collisionExhausted = true
+      }
+      if (created === undefined) {
+        const reason = collisionExhausted
+          ? `attachment destination collision after ${MAX_COLLISION_ATTEMPTS} attempts`
+          : `binary write failed: ${safeReason(
+              writeFailure,
+              'unknown filesystem error',
+            )}`
+        const inlined = inlineReference(input, reason)
         references.push(inlined.reference)
         fallbacks.push(inlined.fallback)
+        continue
       }
+
+      references.push(
+        Object.freeze({
+          markdown: imageMarkdownReference(input, created.sourcePath),
+          source: 'file' as const,
+          path: created.target,
+          ...(input.name === undefined ? {} : { inputName: input.name }),
+        }),
+      )
+      savedPaths.push(created.target)
+      createdAttachments.push(
+        Object.freeze({
+          path: created.target,
+          version: created.version,
+        }),
+      )
     }
 
     return createImagePasteResult({
       references,
       savedPaths,
+      createdAttachments,
       fallbacks,
     })
   }
@@ -402,37 +511,116 @@ export class ImageAttachmentService {
     return this.paste(request)
   }
 
-  /** Removes files written by a batch that could not be committed to Markdown. */
-  async cleanup(paths: readonly string[]): Promise<ImageAttachmentCleanupResult> {
-    const deletedPaths: WorkspacePath[] = []
-    const failedPaths: WorkspacePath[] = []
-    if (this.fileSystem?.deleteBinary === undefined) {
-      return Object.freeze({ deletedPaths, failedPaths: paths.map((path) => {
-        try {
-          return createWorkspacePath(path)
-        } catch {
-          return undefined
-        }
-      }).filter((path): path is WorkspacePath => path !== undefined) })
+  /**
+   * Best-effort compensation for files created by this paste. Cleanup accepts
+   * only ownership receipts; it never deletes an arbitrary pre-existing path.
+   */
+  async cleanup(
+    attachments: readonly ImagePasteAttachmentReceipt[],
+    context: ImagePasteCleanupContext = {
+      operation: 'image-paste',
+      reason: 'Document mutation failed',
+    },
+  ): Promise<ImageAttachmentCleanupResult> {
+    if (!Array.isArray(attachments)) {
+      throw new TypeError('Image attachment cleanup receipts must be an array')
+    }
+    if (context === null || typeof context !== 'object') {
+      throw new TypeError('Image attachment cleanup context is required')
     }
 
-    for (const path of paths) {
+    const deletedPaths: WorkspacePath[] = []
+    const failedPaths: WorkspacePath[] = []
+    const diagnostics: ReturnType<typeof orphanDiagnostic>[] = []
+
+    for (const attachment of attachments) {
       let normalized: WorkspacePath
       try {
-        normalized = createWorkspacePath(path)
-      } catch {
+        if (
+          attachment === null ||
+          typeof attachment !== 'object' ||
+          typeof attachment.path !== 'string'
+        ) {
+          throw new TypeError('invalid attachment ownership receipt')
+        }
+        normalized = createWorkspacePath(attachment.path)
+        if (!isFileVersionToken(attachment.version)) {
+          throw new TypeError('invalid attachment ownership version')
+        }
+      } catch (error) {
+        // Internal callers only receive receipts produced by this service, so
+        // an invalid receipt has no safe path to delete. Keep the failure
+        // explicit rather than guessing a destination.
+        const candidatePath =
+          attachment !== null &&
+          typeof attachment === 'object' &&
+          typeof (attachment as { readonly path?: unknown }).path === 'string'
+            ? (attachment as { readonly path: string }).path
+            : '<unknown>'
+        try {
+          const path = createWorkspacePath(candidatePath)
+          failedPaths.push(path)
+          diagnostics.push(
+            orphanDiagnostic(
+              path,
+              context,
+              'attachment ownership receipt was invalid; no deletion attempted',
+              error,
+            ),
+          )
+        } catch {
+          // There is no canonical workspace path to report or delete.
+        }
         continue
       }
-      try {
-        await this.fileSystem.deleteBinary(normalized)
-        deletedPaths.push(normalized)
-      } catch {
+
+      if (this.fileSystem?.deleteBinaryIfUnchanged === undefined) {
         failedPaths.push(normalized)
+        diagnostics.push(
+          orphanDiagnostic(
+            normalized,
+            context,
+            'binary filesystem has no conditional attachment cleanup capability',
+          ),
+        )
+        continue
+      }
+
+      try {
+        const outcome = await this.fileSystem.deleteBinaryIfUnchanged(
+          normalized,
+          attachment.version as FileVersionToken,
+        )
+        if (outcome.status === 'deleted') {
+          deletedPaths.push(normalized)
+          continue
+        }
+
+        failedPaths.push(normalized)
+        diagnostics.push(
+          orphanDiagnostic(
+            normalized,
+            context,
+            `attachment ownership was not confirmed during cleanup (${outcome.reason})`,
+          ),
+        )
+      } catch (error) {
+        failedPaths.push(normalized)
+        diagnostics.push(
+          orphanDiagnostic(
+            normalized,
+            context,
+            'conditional attachment cleanup failed',
+            error,
+          ),
+        )
       }
     }
+
     return Object.freeze({
       deletedPaths: Object.freeze(deletedPaths),
       failedPaths: Object.freeze(failedPaths),
+      diagnostics: Object.freeze(diagnostics),
     })
   }
 }

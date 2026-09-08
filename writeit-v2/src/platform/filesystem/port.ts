@@ -3,7 +3,7 @@ import type { DocumentPath } from '../../core/document'
 declare const fileVersionTokenBrand: unique symbol
 
 /**
- * An opaque version of one logical text file.
+ * An opaque version of one logical workspace file (text or binary).
  *
  * Tokens are immutable primitive values produced by the filesystem adapter.
  * Callers may only compare a token for exact equality; they must not parse,

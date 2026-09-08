@@ -1,9 +1,14 @@
 import type { Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import {
-  createImagePasteResult,
   createDocumentOrigin,
+  createImagePasteResult,
+  createWorkspacePath,
+  type ImagePasteAttachmentReceipt,
+  type ImagePasteCleanupContext,
+  type ImagePasteCleanupResult,
   type ImagePasteInput,
+  type ImagePasteOrphanDiagnostic,
   type ImagePasteResult,
   type Revision,
 } from '../../../core'
@@ -39,10 +44,13 @@ export interface ImagePasteExtensionOptions {
     result: ImagePasteResult,
     context: ImagePasteHandlerContext,
   ) => void
-  /** A filesystem policy may remove files when a revision race rejects apply. */
-  readonly cleanupSavedPaths?: (
-    paths: readonly string[],
-  ) => void | Promise<void>
+  /** Compensates only receipts created by this paste operation. */
+  readonly cleanupAttachments?: (
+    attachments: readonly ImagePasteAttachmentReceipt[],
+    context: ImagePasteCleanupContext,
+  ) => ImagePasteCleanupResult | Promise<ImagePasteCleanupResult>
+  /** Explicitly surfaces an attachment that could not be compensated. */
+  readonly onDiagnostic?: (diagnostic: ImagePasteOrphanDiagnostic) => void
   /** Errors are reported without changing the authoritative Markdown. */
   readonly onError?: (error: unknown) => void
   readonly originSource?: string
@@ -133,6 +141,128 @@ function notifyError(
   }
 }
 
+function diagnosticMessage(diagnostic: ImagePasteOrphanDiagnostic): string {
+  const document = diagnostic.documentPath
+    ? ` for ${diagnostic.documentPath}`
+    : ''
+  return `Orphan attachment ${diagnostic.path}${document}: ${diagnostic.reason}`
+}
+
+function notifyDiagnostic(
+  options: ImagePasteExtensionOptions,
+  diagnostic: ImagePasteOrphanDiagnostic,
+): void {
+  if (options.onDiagnostic) {
+    try {
+      options.onDiagnostic(diagnostic)
+    } catch {
+      // Diagnostics must not interrupt cleanup or source mutation handling.
+    }
+    return
+  }
+  notifyError(options.onError, new Error(diagnosticMessage(diagnostic)))
+}
+
+function diagnosticForPath(
+  path: string,
+  context: ImagePasteCleanupContext,
+  reason: string,
+  cause?: unknown,
+): ImagePasteOrphanDiagnostic | undefined {
+  let normalizedPath: ReturnType<typeof createWorkspacePath>
+  try {
+    normalizedPath = createWorkspacePath(path)
+  } catch {
+    return undefined
+  }
+  return Object.freeze({
+    kind: 'orphan-attachment' as const,
+    path: normalizedPath,
+    reason,
+    triggerReason: context.reason,
+    operation: context.operation,
+    documentPath: context.documentPath,
+    ...(cause === undefined
+      ? {}
+      : { cause: formatError(cause) }),
+  })
+}
+
+async function compensatePastedAttachments(
+  result: ImagePasteResult,
+  context: ImagePasteHandlerContext,
+  options: ImagePasteExtensionOptions,
+  reason: string,
+): Promise<readonly ImagePasteOrphanDiagnostic[]> {
+  const cleanupContext: ImagePasteCleanupContext = Object.freeze({
+    operation: 'image-paste',
+    reason,
+    documentPath: context.documentPath,
+  })
+  const diagnostics: ImagePasteOrphanDiagnostic[] = []
+  const receipts = result.createdAttachments ?? []
+  const ownedPaths = new Set<string>(
+    receipts.map((attachment) => attachment.path),
+  )
+
+  // A handler that reports a saved path without an ownership receipt cannot be
+  // safely compensated. Report it rather than falling back to path deletion.
+  for (const path of result.savedPaths) {
+    if (ownedPaths.has(path)) continue
+    const diagnostic = diagnosticForPath(
+      path,
+      cleanupContext,
+      'attachment was reported as saved without an ownership receipt; no deletion attempted',
+    )
+    if (diagnostic) diagnostics.push(diagnostic)
+  }
+
+  if (receipts.length > 0) {
+    if (!options.cleanupAttachments) {
+      for (const attachment of receipts) {
+        const diagnostic = diagnosticForPath(
+          attachment.path,
+          cleanupContext,
+          'attachment cleanup capability is unavailable; no deletion attempted',
+        )
+        if (diagnostic) diagnostics.push(diagnostic)
+      }
+    } else {
+      try {
+        const cleanup = await options.cleanupAttachments(receipts, cleanupContext)
+        if (cleanup === null || typeof cleanup !== 'object') {
+          throw new TypeError('Attachment cleanup did not return a result')
+        }
+        diagnostics.push(...cleanup.diagnostics)
+        const diagnosedPaths = new Set(
+          cleanup.diagnostics.map((diagnostic) => diagnostic.path),
+        )
+        for (const path of cleanup.failedPaths) {
+          if (diagnosedPaths.has(path)) continue
+          const diagnostic = diagnosticForPath(
+            path,
+            cleanupContext,
+            'attachment cleanup failed without a diagnostic',
+          )
+          if (diagnostic) diagnostics.push(diagnostic)
+        }
+      } catch (error) {
+        for (const attachment of receipts) {
+          const diagnostic = diagnosticForPath(
+            attachment.path,
+            cleanupContext,
+            'attachment cleanup callback failed; bytes may remain orphaned',
+            error,
+          )
+          if (diagnostic) diagnostics.push(diagnostic)
+        }
+      }
+    }
+  }
+
+  return Object.freeze(diagnostics)
+}
+
 /**
  * CM6-only clipboard adapter. Clipboard/File/DOM concerns stop here; the
  * application handler decides whether bytes become workspace files or data
@@ -214,14 +344,14 @@ async function applyPastedImages(
   }
 
   if (result.references.length === 0) {
-    if (result.savedPaths.length > 0 && options.cleanupSavedPaths) {
-      try {
-        await options.cleanupSavedPaths(result.savedPaths)
-      } catch (cleanupError) {
-        notifyError(options.onError, cleanupError)
-      }
-    }
+    const diagnostics = await compensatePastedAttachments(
+      result,
+      context,
+      options,
+      'Image paste produced no Markdown references',
+    )
     notifyError(options.onError, new Error('Image paste produced no Markdown references'))
+    for (const diagnostic of diagnostics) notifyDiagnostic(options, diagnostic)
     return
   }
 
@@ -238,7 +368,14 @@ async function applyPastedImages(
       return reference.markdown
     }).join('\n')
   } catch (error) {
+    const diagnostics = await compensatePastedAttachments(
+      result,
+      context,
+      options,
+      `Image paste Markdown reference validation failed: ${formatError(error)}`,
+    )
     notifyError(options.onError, error)
+    for (const diagnostic of diagnostics) notifyDiagnostic(options, diagnostic)
     return
   }
   const nextProjectedSource =
@@ -256,14 +393,14 @@ async function applyPastedImages(
       expectedRevision: context.expectedRevision,
     })
   } catch (error) {
-    if (result.savedPaths.length > 0 && options.cleanupSavedPaths) {
-      try {
-        await options.cleanupSavedPaths(result.savedPaths)
-      } catch (cleanupError) {
-        notifyError(options.onError, cleanupError)
-      }
-    }
+    const diagnostics = await compensatePastedAttachments(
+      result,
+      context,
+      options,
+      `Image paste Markdown mutation failed: ${formatError(error)}`,
+    )
     notifyError(options.onError, error)
+    for (const diagnostic of diagnostics) notifyDiagnostic(options, diagnostic)
     return
   }
 

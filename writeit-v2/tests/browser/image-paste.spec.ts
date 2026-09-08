@@ -32,13 +32,13 @@ test('pastes an image to a workspace destination with a document-relative source
   await page.keyboard.press('Control+End')
 
   expect(await dispatchImagePaste(page)).toBe(true)
-  await expect(page.locator('.cm-content')).toContainText('images/Pasted-')
+  await expect(page.locator('.cm-content')).toContainText(/images\/\d{8}-\d{9}-/u)
   await expect(page.getByTestId('image-paste-status')).toContainText(
     'to the workspace',
   )
   await expect(page.getByRole('button', { name: 'Expand images' })).toBeVisible()
   await page.getByRole('button', { name: 'Expand images' }).click()
-  await expect(page.locator('[data-workspace-path^="images/Pasted-"]')).toBeVisible()
+  await expect(page.locator('[data-workspace-path^="images/"]')).toBeVisible()
 })
 
 test('stores nested-document paste sources relative to the document directory', async ({
@@ -53,9 +53,9 @@ test('stores nested-document paste sources relative to the document directory', 
   await page.keyboard.press('Control+End')
   expect(await dispatchImagePaste(page)).toBe(true)
 
-  await expect(page.locator('.cm-content')).toContainText('../images/Pasted-')
+  await expect(page.locator('.cm-content')).toContainText(/\.\.\/images\/\d{8}-\d{9}-/u)
   const image = page.locator('.preview-host .live-preview-image__content')
-  await expect(image).toHaveAttribute('data-image-path', /^images\/Pasted-/)
+  await expect(image).toHaveAttribute('data-image-path', /^images\/\d{8}-\d{9}-/u)
   const path = await image.getAttribute('data-image-path')
   if (!path) throw new Error('nested image path was not projected')
 
@@ -84,7 +84,7 @@ test('resolves, previews, and locates a workspace image without changing Markdow
 
   const image = page.locator('.preview-host .live-preview-image__content')
   await expect(image).toHaveAttribute('data-image-status', 'ready')
-  await expect(image).toHaveAttribute('data-image-path', /^images\/Pasted-/)
+  await expect(image).toHaveAttribute('data-image-path', /^images\/\d{8}-\d{9}-/u)
   const path = await image.getAttribute('data-image-path')
   if (!path) throw new Error('image path was not projected')
   await expect(image).toHaveAttribute('src', /^(blob:|data:)/)

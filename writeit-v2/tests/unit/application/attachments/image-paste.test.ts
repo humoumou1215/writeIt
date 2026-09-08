@@ -9,7 +9,10 @@ import {
 import { createDocumentPath } from '../../../../src/core/document'
 import { createWorkspacePath } from '../../../../src/core/workspace'
 import { MemoryFileSystem } from '../../../../src/platform/filesystem'
-import type { BinaryFileSystemPort } from '../../../../src/platform/filesystem'
+import type {
+  BinaryFileSystemPort,
+  FileVersionToken,
+} from '../../../../src/platform/filesystem'
 
 const image = {
   name: 'clipboard.png',
@@ -104,9 +107,17 @@ describe('ImageAttachmentService', () => {
   })
 
   it('keeps inline mode explicit and does not touch the binary filesystem', async () => {
-    const writeBinary = vi.fn<BinaryFileSystemPort['writeBinary']>()
+    const createBinaryExclusive = vi.fn<BinaryFileSystemPort['createBinaryExclusive']>(
+      async () => ({
+        status: 'created',
+        atomicity: 'strong',
+        version: 'test:inline' as FileVersionToken,
+      }),
+    )
     const result = await service({
-      writeBinary,
+      writeBinary: vi.fn<BinaryFileSystemPort['writeBinary']>(),
+      createBinaryExclusive,
+      deleteBinaryIfUnchanged: vi.fn<BinaryFileSystemPort['deleteBinaryIfUnchanged']>(),
       readBinary: vi.fn<BinaryFileSystemPort['readBinary']>(),
     }).paste({
       images: [image],
@@ -114,7 +125,7 @@ describe('ImageAttachmentService', () => {
       hostPath: 'readme.md',
     })
 
-    expect(writeBinary).not.toHaveBeenCalled()
+    expect(createBinaryExclusive).not.toHaveBeenCalled()
     expect(result.inlinedCount).toBe(1)
     expect(result.references[0]?.markdown).toBe(
       '![clipboard](data:image/png;base64,SGVsbG8=)',
@@ -132,11 +143,13 @@ describe('ImageAttachmentService', () => {
     expect(noHost.references[0]?.source).toBe('inline')
     expect(noHost.fallbacks[0]?.reason).toBe('document has no workspace path')
 
-    const writeBinary = vi.fn(async () => {
+    const createBinaryExclusive = vi.fn(async () => {
       throw new Error('read-only workspace')
     })
     const failedWrite = await service({
-      writeBinary,
+      writeBinary: vi.fn<BinaryFileSystemPort['writeBinary']>(),
+      createBinaryExclusive,
+      deleteBinaryIfUnchanged: vi.fn<BinaryFileSystemPort['deleteBinaryIfUnchanged']>(),
       readBinary: vi.fn<BinaryFileSystemPort['readBinary']>(),
     }).paste({
       images: [image],
@@ -151,17 +164,143 @@ describe('ImageAttachmentService', () => {
     expect(failedWrite.fallbacks[0]?.reason).toContain('binary write failed')
   })
 
-  it('cleans up files when a later editor mutation is rejected', async () => {
+  it('uses timestamp-first names and collision suffixes for repeated pastes', async () => {
     const fileSystem = new MemoryFileSystem()
-    const attachmentService = service(fileSystem)
-    await attachmentService.paste({
+    const attachmentService = new ImageAttachmentService({
+      fileSystem,
+      now: () => new Date(2026, 8, 8, 12, 34, 56, 789),
+      random: () => 'same-entropy',
+    })
+
+    const first = await attachmentService.paste({
+      images: [image],
+      mode: 'root-images',
+      hostPath: 'readme.md',
+    })
+    const second = await attachmentService.paste({
       images: [image],
       mode: 'root-images',
       hostPath: 'readme.md',
     })
 
-    const cleanup = await attachmentService.cleanup(['images/capture.png'])
+    expect(first.savedPaths[0]).toMatch(/^images\/20260908-123456789-sameentr\.png$/u)
+    expect(second.savedPaths[0]).toBe(`${first.savedPaths[0]?.replace('.png', '')}-1.png`)
+    expect(first.createdAttachments).toHaveLength(1)
+    expect(second.createdAttachments).toHaveLength(1)
+  })
+
+  it('never overwrites a pre-existing candidate when the exclusive create collides', async () => {
+    const fileSystem = new MemoryFileSystem({
+      binaryFiles: {
+        'images/20260908-123456789-fixed.png': new Uint8Array([9, 9]),
+      },
+    })
+    const result = await new ImageAttachmentService({
+      fileSystem,
+      nameGenerator: () => '20260908-123456789-fixed.png',
+    }).paste({
+      images: [image],
+      mode: 'root-images',
+      hostPath: 'readme.md',
+    })
+
+    expect(result.savedPaths).toEqual(['images/20260908-123456789-fixed-1.png'])
+    expect(result.references[0]?.markdown).toBe(
+      '![clipboard](./images/20260908-123456789-fixed-1.png)',
+    )
+    expect(
+      [...await fileSystem.readBinary(createWorkspacePath('images/20260908-123456789-fixed.png'))],
+    ).toEqual([9, 9])
+  })
+
+  it('reports an orphan and preserves replacement bytes when ownership is lost', async () => {
+    const fileSystem = new MemoryFileSystem()
+    const attachmentService = service(fileSystem)
+    const result = await attachmentService.paste({
+      images: [image],
+      mode: 'root-images',
+      hostPath: 'readme.md',
+    })
+    const path = result.createdAttachments[0]
+    if (!path) throw new Error('expected an attachment receipt')
+
+    await fileSystem.writeBinary(path.path, new Uint8Array([7, 7]))
+    const cleanup = await attachmentService.cleanup(result.createdAttachments, {
+      operation: 'image-paste',
+      reason: 'Markdown mutation failed',
+      documentPath: 'readme.md',
+    })
+
+    expect(cleanup.deletedPaths).toEqual([])
+    expect(cleanup.failedPaths).toEqual([path.path])
+    expect(cleanup.diagnostics).toMatchObject([
+      {
+        kind: 'orphan-attachment',
+        path: path.path,
+        operation: 'image-paste',
+        documentPath: 'readme.md',
+      },
+    ])
+    expect([...await fileSystem.readBinary(path.path)]).toEqual([7, 7])
+  })
+
+  it('records cleanup failure with path, document and operation', async () => {
+    class CleanupFailureFileSystem extends MemoryFileSystem {
+      override async deleteBinaryIfUnchanged(
+        path: Parameters<MemoryFileSystem['deleteBinaryIfUnchanged']>[0],
+        version: Parameters<MemoryFileSystem['deleteBinaryIfUnchanged']>[1],
+      ): Promise<never> {
+        void path
+        void version
+        throw new Error('permission denied')
+      }
+    }
+
+    const fileSystem = new CleanupFailureFileSystem()
+    const attachmentService = service(fileSystem)
+    const result = await attachmentService.paste({
+      images: [image],
+      mode: 'root-images',
+      hostPath: 'readme.md',
+    })
+    const cleanup = await attachmentService.cleanup(result.createdAttachments, {
+      operation: 'image-paste',
+      reason: 'projection destroyed',
+      documentPath: 'readme.md',
+    })
+
+    expect(cleanup.failedPaths).toEqual(['images/capture.png'])
+    expect(cleanup.diagnostics).toMatchObject([
+      {
+        path: 'images/capture.png',
+        reason: 'conditional attachment cleanup failed',
+        operation: 'image-paste',
+        documentPath: 'readme.md',
+        cause: 'Error: permission denied',
+      },
+    ])
+    expect(fileSystem.hasFile(createDocumentPath('images/capture.png'))).toBe(true)
+  })
+
+  it('cleans up files when a later editor mutation is rejected', async () => {
+    const fileSystem = new MemoryFileSystem()
+    const attachmentService = service(fileSystem)
+    const result = await attachmentService.paste({
+      images: [image],
+      mode: 'root-images',
+      hostPath: 'readme.md',
+    })
+
+    const cleanup = await attachmentService.cleanup(
+      result.createdAttachments,
+      {
+        operation: 'image-paste',
+        reason: 'revision race',
+        documentPath: 'readme.md',
+      },
+    )
     expect(cleanup.deletedPaths).toEqual(['images/capture.png'])
+    expect(cleanup.diagnostics).toEqual([])
     expect(fileSystem.hasFile(createDocumentPath('images/capture.png'))).toBe(false)
   })
 })

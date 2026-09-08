@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: F-01 — Dirty delete CAS integration (complete; P4-AR2 remains HOLD for F-02/F-03)
+Current task: F-02 — Collision-safe timestamp image attachment compensation (complete; P4-AR2 remains HOLD for F-03)
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -82,10 +82,11 @@ Current task: F-01 — Dirty delete CAS integration (complete; P4-AR2 remains HO
 - [x] P4-R04 — Clipboard fallback freshness protocol — current plain-text-only paste evidence must match the latest internal copy fingerprint/binding; changed, empty, ambiguous, or unreadable clipboard payloads fail closed while custom MIME/file URI and existing reference modes remain intact ([Task Contract](./P4_R04_TASK_CONTRACT.md))
 - [x] P4-R05 — Embed failure/recovery lifecycle coverage — generation-bound missing/load requests now support explicit retry after transient failure or target appearance, drop late results after detach, and cover nested rebuild plus close/reopen recovery ([Task Contract](./P4_R05_TASK_CONTRACT.md))
 - [x] P4-AR2 — P0–P4 Architecture & Product Boundary Re-review — **CHANGES REQUIRED / HOLD**; findings and evidence are recorded in [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) and the review contract ([Task Contract](./P4_AR2_TASK_CONTRACT.md))
-- [x] F-01 — Dirty delete CAS integration — dirty Save preparation and conditional rollback now use coherent `FileVersionToken` CAS; conflict/rollback race diagnostics and multi-document failure coverage added ([Task Contract](./F_01_TASK_CONTRACT.md)); F-02/F-03 and P5 remain blocked
+- [x] F-01 — Dirty delete CAS integration — dirty Save preparation and conditional rollback now use coherent `FileVersionToken` CAS; conflict/rollback race diagnostics and multi-document failure coverage added ([Task Contract](./F_01_TASK_CONTRACT.md)); F-03 and P5 remain blocked
+- [x] F-02 — Collision-safe timestamp image attachment compensation — timestamp-first exclusive create, collision suffixes, ownership-receipt conditional cleanup, source-safe Store/revision gate, and explicit orphan diagnostics with unit/integration/browser coverage ([Task Contract](./F_02_TASK_CONTRACT.md)); F-03 and P5 remain blocked
 
 ## Active
-None — F-01 is complete; no image remediation or P5 work has started.
+None — F-02 is complete; F-03 production Embed acceptance remains separate and P5 work has not started.
 
 ## Blocked
 - [ ] P5-01 — HOLD until P4-AR2 blockers, production acceptance decisions, and required evidence are closed.
@@ -146,6 +147,7 @@ None — F-01 is complete; no image remediation or P5 work has started.
 - P3-05 keeps shared shortcut command metadata and assignments outside DocumentStore: the Settings UI projects the command catalog over an independent KeybindingRegistry, persists only validated overrides through SettingsStoragePort, and rejects Mod/Ctrl/Meta-equivalent conflicts atomically. `editor.table.add-row` is exposed in the catalog but remains unavailable until the table editor phase.
 - P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: successful binary writes retain canonical workspace destinations but persist document-relative Markdown source paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
 - P3-07 keeps image source paths in Markdown authoritative: one shared document-relative resolver maps source to workspace bytes for preview/image widgets, copy and workspace-tree reveal; read/decode/clipboard failures degrade the UI without rewriting source, and system file-manager reveal remains a P11 adapter concern.
+- F-02 keeps attachment transactions source-safe: timestamp-first names use exclusive create, transient ownership receipts scope compensation, conditional cleanup preserves pre-existing/external bytes, and orphan diagnostics include path/reason/document/operation.
 - P3-08 keeps template creation outside the tree projection: a future P8 catalog adapts to the injected provider seam, while the application service validates the target and copies provider Markdown through the normal workspace mutation path.
 - P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
@@ -155,7 +157,7 @@ None — F-01 is complete; no image remediation or P5 work has started.
 - P4-R01 makes directory rename/move fail closed before filesystem mutation when any nested runtime Document or recovery path binding would be stranded. The typed diagnostic includes operation/source/target, affected paths, DocumentIds and dirty state; unaffected directories retain the existing filesystem-refresh behavior.
 - P3-R03 makes normal text persistence, incoming reference rewrites, and now F-01 dirty-delete Save/rollback use coherent snapshot versions plus atomic conditional writes; expected changed/deleted outcomes are explicit conflicts, and adapters without strong compare-and-write must return degraded instead of claiming a safe write. MemoryFileSystem preserves logical text tokens across workspace moves so rename path rebinds remain conditional-safe.
 
-- P4-AR2 re-review result is **CHANGES REQUIRED / HOLD**: normal P0–P4 authority/boundary/fidelity gates pass, F-01 is closed, but image attachment ownership/compensation and production Embed acceptance evidence remain open; P5-01 is not authorized.
+- P4-AR2 re-review result is **CHANGES REQUIRED / HOLD**: normal P0–P4 authority/boundary/fidelity gates pass, F-01/F-02 are closed, but production Embed acceptance evidence remains open; P5-01 is not authorized.
 - The approved directory policy remains fail-closed blocking for open descendant Document/recovery path bindings. Full directory path migration and closed-document incoming-reference rewrite are explicitly deferred, not completed.
 
 ## Known risks
@@ -174,7 +176,7 @@ None — F-01 is complete; no image remediation or P5 work has started.
 - P2A-06 established the DOM-independent keybinding contract; P3-05 now provides browser application-command dispatch and the Settings UI, while native/global OS handling and CM6/table-specific actions remain later work.
 - P3-01 currently uses `MemoryFileSystem` for the browser workspace surface; real platform filesystem adapters and push-based external-change notification remain later work.
 - P3-02/P3-03 close confirmation and persistence use the browser/mock filesystem path; native dialogs and real filesystem watching remain later work, while a native adapter must not claim conditional-write safety until it can provide the contract's atomic compare-and-write guarantee.
-- The P3-06 binary port is implemented by `MemoryFileSystem` for browser/unit coverage; real filesystem binary adapters and system file-manager reveal remain P11 adapter work. Image projection/read/decode behavior is covered by P3-07 but still depends on the later platform binary adapter outside the mock filesystem. Attachment write-before-Store compensation remains unresolved: cleanup is best-effort, collision ownership is not explicit, and orphan/collision evidence is a P4-AR2 blocker (F-02).
+- The P3-06 binary port is implemented by `MemoryFileSystem` for browser/unit coverage; real filesystem binary adapters and system file-manager reveal remain P11 adapter work. Image projection/read/decode behavior is covered by P3-07 but still depends on the later platform binary adapter outside the mock filesystem. F-02 now requires native adapters to honor exclusive create and ownership-checked conditional cleanup; failed compensation remains visible as an orphan diagnostic rather than a false rollback.
 - P3-04 recovery currently stores one browser session in localStorage and the demo filesystem is recreated on page load; durable multi-workspace identity and native desktop restore remain P11 adapter work.
 - Shortcut dispatch currently covers the browser application commands registered by P3-05; native/global OS shortcut behavior and the real table-row action remain later platform/table work.
 - P3-R01 standardizes persisted file-image sources as document-relative paths: `root-images` computes `../` segments for nested documents, `same-dir` emits an explicit `./` same-directory name, and `file-images` emits an explicit `./images/` child path when it stays under the document directory. Resolution is document-relative only—legacy workspace-root-first fallback is not used—while missing/invalid/read failures remain visibly unavailable without changing Markdown.
@@ -202,4 +204,4 @@ None — F-01 is complete; no image remediation or P5 work has started.
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes. Unrepresentable source/projection mappings still use a contiguous fallback and need explicit failure-path selection/degraded coverage.
 
 ## Next
-F-02 — Image attachment ownership/compensation is the next separately approved remediation candidate; it has not started. F-03 production Embed acceptance remains a decision/evidence item, and P5-01 remains unauthorized while the gate is HOLD.
+F-03 production Embed acceptance remains a separate decision/evidence item; P5-01 remains unauthorized while the gate is HOLD. Do not start the next task automatically.
