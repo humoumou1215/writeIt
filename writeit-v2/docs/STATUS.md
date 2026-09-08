@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-- **Current phase:** G1 — Phase 5 Table Engine
-- **Current task:** P6-00 — Annotation & Mermaid UX / Port Contract
+- **Current phase:** G3 — Phase 7 Git + Diff + Provenance
+- **Current task:** P7-00 — Git / Diff UX & Port Contract
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
@@ -19,6 +19,7 @@
 - [x] F-01/F-02/F-03 integration and follow-up fixes
 - [x] P4-AR2 — PASS after user decision B ([review](./P4_ARCHITECTURE_REVIEW.md))
 - [x] Goal preparation — contracts, decisions, ADR-0007/0008, task-ID normalization and unified verification commands; 396 Vitest + 63 Chromium + typecheck/build PASS
+- [x] P6 Annotation + Mermaid — gate PASS ([review](./P6_ARCHITECTURE_REVIEW.md)); sidecar anchors/threads/drawer and source-backed Mermaid preview/commands/reference fallback complete
 
 ## Goal progress
 
@@ -26,8 +27,8 @@
 |---|---|---|
 | G0 | PASS | P4-UX01/P4-UX02 and production Embed retry reconciliation |
 | G1 | PASS | P5 Table |
-| G2 | ACTIVE | P6 Annotation + Mermaid |
-| G3 | PENDING | P7 Git + Diff + Provenance |
+| G2 | PASS | P6 Annotation + Mermaid |
+| G3 | ACTIVE | P7 Git + Diff + Provenance |
 | G4 | PENDING | P8 Derived Services + Template Intelligence |
 | G5 | PENDING | P9 Export |
 | G6 | PENDING | P10 Diagnostics |
@@ -40,6 +41,7 @@
 - P4-UX01/P4-UX02: **PASS** in [G0 reconciliation](./G0_P4_UX_RECONCILIATION.md).
 - production Embed loader failure/retry: closed in G0 with real App browser evidence.
 - P5: **PASS** in [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); core, projection, clipboard/IME, commands, resize and reorder are complete.
+- P6: **PASS** in [P6 Annotation + Mermaid Architecture Review](./P6_ARCHITECTURE_REVIEW.md); annotation sidecar/anchors/drawer and source-backed Mermaid preview/commands/reference fallback are complete.
 
 ## Active decisions
 
@@ -61,4 +63,4 @@
 
 ## Next
 
-Execute P6-00, then continue G2 in SPEC order through P6-AR1.
+Execute P7-00, then continue G3 in SPEC order through P7-AR1.

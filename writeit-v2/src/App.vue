@@ -24,10 +24,12 @@ import {
   DEFAULT_SHORTCUT_COMMANDS,
   KeybindingConflictError,
   KeybindingSettingsStore,
+  registerMermaidQuickInsertCommands,
   type ShortcutSettingsEntry,
 } from './application/commands'
 import { createTableCommands } from './application/table'
 import type { TableCommandId } from './core/table'
+import { AnnotationService, MemoryAnnotationRepository } from './application/annotation'
 import {
   createDocumentId,
   createDocumentPath,
@@ -58,8 +60,10 @@ import type {
 } from './core/workspace'
 import {
   createCompletionExtension,
+  createAnnotationExtension,
   createEmbedProjectionExtension,
   createImagePasteExtension,
+  createLivePreviewExtension,
   createReferenceClipboardExtension,
   createReferenceNavigationExtension,
   createSlashQuickInsertExtension,
@@ -98,6 +102,7 @@ import {
 } from './ui/workspace'
 import { ShortcutSettings as ShortcutSettingsPanel } from './ui/settings'
 import { ImagePreviewModal } from './ui/media'
+import { AnnotationDrawer } from './ui/review'
 
 const documentId = createDocumentId('welcome')
 const documentPath = createDocumentPath('welcome.md')
@@ -152,6 +157,7 @@ const persistence = new DocumentPersistenceService(store, workspaceFileSystem, {
   autoSaveDelayMs: initialSettings.autoSaveDelayMs,
 })
 const quickInsertRegistry = createBasicMarkdownCommandRegistry()
+registerMermaidQuickInsertCommands(quickInsertRegistry)
 const completionRegistry = new CompletionProviderRegistry()
 completionRegistry.register(
   createReferenceCompletionProvider({
@@ -170,6 +176,7 @@ interface ApplicationCommandContext {
   readonly source: 'shortcut' | 'settings'
 }
 const applicationCommandRegistry = new CommandRegistry<ApplicationCommandContext>()
+const annotationService = new AnnotationService(new MemoryAnnotationRepository())
 const initialDocument = store.load({
   id: documentId,
   path: documentPath,
@@ -296,6 +303,11 @@ const pendingWorkspaceDeletion = ref<{
 const imagePasteStatus = ref<string | null>(null)
 const imageActionStatus = ref<string | null>(null)
 const imagePreview = ref<ImageProjectionResource | null>(null)
+const annotationItems = ref<readonly import('./core/annotation').Annotation[]>([])
+const activeAnnotationId = ref<string | null>(null)
+const annotationDrawerOpen = ref(false)
+const annotationDrawerWidth = ref(360)
+let annotationSequence = 0
 let pendingFragmentNavigation: {
   readonly documentId: DocumentId
   readonly fragment: string
@@ -387,6 +399,18 @@ function observeDocument(documentIdToObserve: DocumentId): void {
     store.subscribe(documentById(documentIdToObserve), (event) => {
       if (event.type === 'changed' || event.type === 'renamed') {
         indexReferenceDocument(event.document)
+        if (event.type === 'changed') {
+          void annotationService
+            .reanchor(event.document.path, event.document, event.change)
+            .then((annotations) => {
+              if (activeDocument.value?.id !== event.document.id) return
+              annotationItems.value = annotations
+              projection.value?.updateAnnotations(annotations)
+            })
+            .catch((error: unknown) => {
+              workspaceError.value = workspaceErrorMessage(error)
+            })
+        }
       }
     }),
   )
@@ -440,6 +464,13 @@ const activeBrokenReferenceCount = computed(
   () => activeReferenceHealth.value.filter((fact) => fact.broken).length,
 )
 
+const canAddAnnotation = computed(() => {
+  const view = projection.value?.view
+  if (!view) return false
+  const { from, to } = view.state.selection.main
+  return to > from
+})
+
 function workspacePathForDocument(
   document: DocumentState | undefined,
 ): WorkspacePath | undefined {
@@ -449,6 +480,134 @@ function workspacePathForDocument(
   } catch {
     return undefined
   }
+}
+
+async function refreshActiveAnnotations(
+  document: DocumentState | undefined = activeDocument.value,
+): Promise<void> {
+  if (!document) {
+    annotationItems.value = []
+    activeAnnotationId.value = null
+    return
+  }
+  const annotations = await annotationService.list(document.path)
+  if (activeDocument.value?.id !== document.id) return
+  annotationItems.value = annotations
+  if (activeAnnotationId.value && !annotations.some((item) => item.id === activeAnnotationId.value)) {
+    activeAnnotationId.value = null
+  }
+  projection.value?.updateAnnotations(annotations)
+}
+
+function selectAnnotation(annotationId: string): void {
+  const annotation = annotationItems.value.find((item) => item.id === annotationId)
+  if (!annotation) return
+  activeAnnotationId.value = annotationId
+  annotationDrawerOpen.value = true
+  void nextTick(() => {
+    const mark = document.querySelector<HTMLElement>(
+      `[data-annotation-id="${CSS.escape(annotationId)}"]`,
+    )
+    mark?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
+
+function activateAnnotation(
+  annotation: import('./core/annotation').Annotation,
+  _view: EditorView,
+): void {
+  selectAnnotation(annotation.id)
+}
+
+async function addAnnotationFromSelection(): Promise<void> {
+  const document = activeDocument.value
+  const view = projection.value?.view
+  if (!document || !view) return
+  const { from, to } = view.state.selection.main
+  if (to <= from) {
+    workspaceError.value = 'Select a non-empty range before adding an annotation.'
+    return
+  }
+  const selectedText = view.state.doc.sliceString(from, to)
+  const first = document.markdown.indexOf(selectedText)
+  const last = document.markdown.lastIndexOf(selectedText)
+  const sourceFrom = first >= 0 && first === last
+    ? first
+    : document.markdown.slice(from, to) === selectedText
+      ? from
+      : -1
+  if (sourceFrom < 0 || sourceFrom + selectedText.length > document.markdown.length) {
+    workspaceError.value = 'The selected range is not source-backed.'
+    return
+  }
+  const now = new Date().toISOString()
+  const sequence = ++annotationSequence
+  try {
+    const annotation = await annotationService.create({
+      id: `annotation-${sequence}`,
+      document,
+      from: sourceFrom,
+      to: sourceFrom + selectedText.length,
+      comment: {
+        id: `comment-${sequence}`,
+        author: 'You',
+        body: 'Review this selection.',
+        createdAt: now,
+      },
+    })
+    annotationItems.value = [...annotationItems.value, annotation]
+    activeAnnotationId.value = annotation.id
+    annotationDrawerOpen.value = true
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function replyAnnotation(annotationId: string, body: string): Promise<void> {
+  const document = activeDocument.value
+  if (!document || !body.trim()) return
+  try {
+    const sequence = ++annotationSequence
+    const updated = await annotationService.reply(document.path, annotationId, {
+      id: `comment-${sequence}`,
+      author: 'You',
+      body: body.trim(),
+      createdAt: new Date().toISOString(),
+    })
+    annotationItems.value = annotationItems.value.map((item) =>
+      item.id === annotationId ? updated : item,
+    )
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function resolveAnnotation(annotationId: string, resolved: boolean): Promise<void> {
+  const document = activeDocument.value
+  if (!document) return
+  try {
+    const updated = await annotationService.setResolved(
+      document.path,
+      annotationId,
+      resolved ? 'resolved' : 'open',
+      new Date().toISOString(),
+    )
+    annotationItems.value = annotationItems.value.map((item) =>
+      item.id === annotationId ? updated : item,
+    )
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+function resizeAnnotationDrawer(width: number): void {
+  annotationDrawerWidth.value = Math.max(280, Math.min(560, Math.round(width)))
 }
 
 const documentTabViews = computed(() => {
@@ -1082,6 +1241,9 @@ function destroyActiveProjections(): void {
   preview.value = null
   imagePreview.value = null
   imageActionStatus.value = null
+  annotationItems.value = []
+  activeAnnotationId.value = null
+  annotationDrawerOpen.value = false
   mountedDocumentId.value = null
   try {
     activeProjection?.destroy()
@@ -1148,6 +1310,29 @@ function mountActiveDocument(): void {
       editable: true,
       presentationMode: initialPresentationMode,
       extensions: [
+        createLivePreviewExtension({
+          ...imageProjectionOptions,
+          initialMode: initialPresentationMode,
+          onOpenMermaidReference: (path, event) => {
+            try {
+              const target = createWorkspacePath(path)
+              if (event.shiftKey) void openWorkspaceFileInSplit(target)
+              else void openWorkspaceFile(target)
+            } catch (error) {
+              workspaceError.value = workspaceErrorMessage(error)
+            }
+          },
+          isMermaidReferenceAvailable: (path) => {
+            try {
+              return findWorkspaceNode(
+                workspaceTreeSnapshot.value.tree,
+                createWorkspacePath(path),
+              )?.kind === 'file'
+            } catch {
+              return false
+            }
+          },
+        }),
         EditorView.updateListener.of(() => {
           if (
             projection.value &&
@@ -1159,6 +1344,10 @@ function mountActiveDocument(): void {
         createImagePasteExtension({
           ...createImagePasteBridgeOptions(),
           getDocumentPath: () => activeDocument.value?.path ?? null,
+        }),
+        createAnnotationExtension({
+          getAnnotations: () => annotationItems.value,
+          onActivate: activateAnnotation,
         }),
         createReferenceClipboardExtension({
           store: referenceClipboard.store,
@@ -1232,6 +1421,9 @@ function mountActiveDocument(): void {
     projection.value = nextProjection
     mountedDocumentId.value = document.id
     presentationMode.value = nextProjection.presentationMode
+    void refreshActiveAnnotations(document).catch((error: unknown) => {
+      workspaceError.value = workspaceErrorMessage(error)
+    })
     preview.value = mountBasicLivePreview({
       store,
       locator,
@@ -2271,7 +2463,12 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <section v-if="activeDocument" class="surface-grid" aria-label="Document surfaces">
+        <section
+          v-if="activeDocument"
+          class="surface-grid"
+          :class="{ 'surface-grid--annotations': annotationDrawerOpen }"
+          aria-label="Document surfaces"
+        >
           <section class="editor-card" aria-label="Markdown editor projection">
             <div class="surface-heading">
               <div>
@@ -2333,6 +2530,15 @@ onBeforeUnmount(() => {
                 >
                   {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
                   <kbd>Ctrl/Cmd+E</kbd>
+                </button>
+                <button
+                  type="button"
+                  class="persistence-action"
+                  data-testid="annotation-add"
+                  :disabled="!canAddAnnotation"
+                  @click="addAnnotationFromSelection"
+                >
+                  Add annotation
                 </button>
               </div>
             </div>
@@ -2408,6 +2614,18 @@ onBeforeUnmount(() => {
               Preview 只读消费 Markdown；未知语法保留为普通文本。
             </p>
           </section>
+
+          <AnnotationDrawer
+            :annotations="annotationItems"
+            :active-id="activeAnnotationId"
+            :open="annotationDrawerOpen"
+            :width="annotationDrawerWidth"
+            @close="annotationDrawerOpen = false"
+            @select="selectAnnotation"
+            @reply="replyAnnotation"
+            @resolve="resolveAnnotation"
+            @resize="resizeAnnotationDrawer"
+          />
         </section>
 
         <section v-else class="workspace-empty" data-testid="workspace-empty" aria-label="No open document">

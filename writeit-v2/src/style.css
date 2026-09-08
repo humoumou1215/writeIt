@@ -1151,6 +1151,10 @@ h1 {
   gap: 1rem;
 }
 
+.surface-grid--annotations {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(280px, 360px);
+}
+
 .editor-card,
 .preview-card {
   overflow: hidden;
@@ -1940,6 +1944,10 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .surface-grid--annotations {
+    grid-template-columns: 1fr;
+  }
+
   .document-meta {
     margin-top: 1.25rem;
   }
@@ -2334,6 +2342,274 @@ h1 {
   font: inherit;
   line-height: 1.4;
   text-align: inherit;
+}
+
+.editor-host .cm-writeit-mermaid {
+  width: 100%;
+  margin: 0.7rem 0;
+  overflow: hidden;
+  border: 1px solid #dce1eb;
+  border-radius: 0.6rem;
+  background: #fff;
+  box-shadow: 0 0.35rem 1rem rgb(45 57 82 / 6%);
+}
+
+.editor-host .cm-writeit-mermaid__header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid #edf0f5;
+  color: #536076;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.editor-host .cm-writeit-mermaid__header span {
+  margin-right: auto;
+}
+
+.editor-host .cm-writeit-mermaid__action,
+.editor-host .cm-writeit-mermaid__references button {
+  padding: 0.22rem 0.42rem;
+  border: 1px solid #dce1eb;
+  border-radius: 0.3rem;
+  color: #3146b8;
+  background: #fff;
+  font: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+
+.editor-host .cm-writeit-mermaid__diagram {
+  min-height: 5rem;
+  padding: 0.8rem;
+  overflow-x: auto;
+}
+
+.editor-host .cm-writeit-mermaid__svg {
+  display: block;
+  width: 100%;
+  min-width: 20rem;
+  height: 9rem;
+}
+
+.editor-host .cm-writeit-mermaid[data-mermaid-fit="true"] .cm-writeit-mermaid__svg {
+  min-width: 0;
+}
+
+.editor-host .cm-writeit-mermaid__status {
+  padding: 0.75rem;
+  color: #536076;
+  font-size: 0.76rem;
+}
+
+.editor-host .cm-writeit-mermaid__status--error {
+  color: #a32437;
+  background: #fff3f5;
+}
+
+.editor-host .cm-writeit-mermaid__source {
+  border-top: 1px solid #edf0f5;
+  padding: 0.35rem 0.55rem 0.55rem;
+  color: #536076;
+  font-size: 0.7rem;
+}
+
+.editor-host .cm-writeit-mermaid__editor {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 5rem;
+  margin-top: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid #dce1eb;
+  border-radius: 0.35rem;
+  color: #263044;
+  background: #fbfcff;
+  font: 0.75rem/1.45 "SFMono-Regular", Consolas, monospace;
+  resize: vertical;
+}
+
+.editor-host .cm-writeit-mermaid__references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0 0.8rem 0.7rem;
+}
+
+.editor-host .cm-writeit-mermaid__reference--missing {
+  color: #9a3f3f;
+  border-color: #e4b2b2;
+  background: #fff4f4;
+}
+
+.cm-writeit-annotation-mark {
+  border-bottom: 2px solid #f0ad4e;
+  background: rgb(255 214 128 / 35%);
+  cursor: pointer;
+}
+
+.cm-writeit-annotation-mark--resolved {
+  border-bottom-color: #aeb7c7;
+  background: rgb(174 183 199 / 25%);
+}
+
+.annotation-drawer {
+  position: relative;
+  display: flex;
+  min-width: 280px;
+  max-width: min(560px, 45vw);
+  flex-direction: column;
+  border-left: 1px solid #dce1eb;
+  background: #fff;
+  box-shadow: -0.35rem 0 1rem rgb(45 57 82 / 6%);
+}
+
+.annotation-drawer__header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 3rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.annotation-drawer__header h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.annotation-drawer__count {
+  color: #7b8496;
+  font-size: 0.72rem;
+}
+
+.annotation-drawer__close {
+  margin-left: auto;
+  border: 0;
+  color: #536076;
+  background: transparent;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.annotation-drawer__body {
+  display: grid;
+  gap: 0.65rem;
+  overflow: auto;
+  padding: 0.75rem;
+}
+
+.annotation-drawer__empty {
+  margin: 0;
+  color: #7b8496;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.annotation-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem;
+  border: 1px solid #e3e7ef;
+  border-radius: 0.5rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.annotation-card--active {
+  border-color: #6d7df2;
+  box-shadow: 0 0 0 2px rgb(109 125 242 / 15%);
+}
+
+.annotation-card--resolved {
+  opacity: 0.68;
+}
+
+.annotation-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #536076;
+  font-size: 0.7rem;
+}
+
+.annotation-card__status {
+  color: #6b7280;
+  font-size: 0.64rem;
+}
+
+.annotation-card__status--error {
+  color: #a32437;
+}
+
+.annotation-card__resolve {
+  margin-left: auto;
+  padding: 0.18rem 0.32rem;
+  border: 1px solid #dce1eb;
+  border-radius: 0.25rem;
+  color: #3146b8;
+  background: #fff;
+  font: inherit;
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.annotation-card__anchor,
+.annotation-card__comment {
+  margin: 0;
+  color: #263044;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.annotation-card__anchor {
+  padding: 0.3rem 0.4rem;
+  border-left: 3px solid #f0ad4e;
+  background: #fff9ed;
+}
+
+.annotation-card__comments {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.annotation-card__reply {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.4rem;
+  border: 1px solid #dce1eb;
+  border-radius: 0.3rem;
+  font: inherit;
+  font-size: 0.72rem;
+  resize: vertical;
+}
+
+.annotation-drawer__resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.annotation-connectors {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.annotation-connectors line {
+  stroke: #d9a441;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
 }
 
 .editor-host .cm-writeit-table__cell-button {

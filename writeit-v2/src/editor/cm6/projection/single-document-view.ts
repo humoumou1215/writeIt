@@ -47,10 +47,12 @@ import {
 } from '../extensions/live-preview'
 import type { ImageProjectionRenderOptions } from '../../preview/image-projection'
 import type { TableCommandId } from '../../../core/table'
+import type { Annotation as DocumentAnnotation } from '../../../core/annotation'
 import {
   canExecuteActiveTableCommand,
   executeActiveTableCommand,
 } from '../widgets/table'
+import { updateAnnotations as updateAnnotationDecorations } from '../extensions/annotation'
 
 export const DEFAULT_SINGLE_DOCUMENT_PROJECTION_ID: ProjectionId =
   'cm6-main-editor'
@@ -134,6 +136,7 @@ export interface SingleDocumentViewSurface {
   togglePresentationMode(): PresentationMode
   canExecuteTableCommand(commandId: TableCommandId): boolean
   executeTableCommand(commandId: TableCommandId): boolean
+  updateAnnotations(annotations: readonly DocumentAnnotation[]): void
 }
 
 export interface SingleDocumentUserTransaction {
@@ -295,6 +298,9 @@ function createPublicEditorSurface(
     executeTableCommand(commandId: TableCommandId): boolean {
       return executeActiveTableCommand(editorView, commandId)
     },
+    updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
+      updateAnnotationDecorations(editorView, annotations)
+    },
   })
 }
 
@@ -372,6 +378,10 @@ export class SingleDocumentView {
 
   executeTableCommand(commandId: TableCommandId): boolean {
     return !this.destroyed && executeActiveTableCommand(this.editorView, commandId)
+  }
+
+  updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
+    if (!this.destroyed) updateAnnotationDecorations(this.editorView, annotations)
   }
 
   /** Current authoritative document state, never the CM6 document. */

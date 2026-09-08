@@ -26,6 +26,11 @@ import {
   tableDecorationRanges,
   tableSourceRanges,
 } from '../widgets/table'
+import {
+  mermaidDecorationRanges,
+  mermaidSourceRanges,
+  type MermaidRenderer,
+} from '../widgets/mermaid'
 
 /** The two presentations share one CM6 document and one source authority. */
 export type PresentationMode = 'source' | 'live-preview'
@@ -528,12 +533,16 @@ function decorationForSpec(
 function buildDecorations(
   markdownSource: string,
   imageOptions: ImageProjectionRenderOptions,
+  mermaidOptions: { readonly renderer?: MermaidRenderer; readonly onOpenReference?: (path: string, event: MouseEvent) => void; readonly isReferenceAvailable?: (path: string) => boolean },
 ): DecorationSet {
   const tableRanges = tableSourceRanges(markdownSource)
+  const mermaidRanges = mermaidSourceRanges(markdownSource)
   const insideTable = (from: number, to: number): boolean =>
     tableRanges.some((range) => from >= range.from && to <= range.to)
+  const insideMermaid = (from: number, to: number): boolean =>
+    mermaidRanges.some((range) => from >= range.from && to <= range.to)
   const specs = findLivePreviewDecorations(markdownSource).filter(
-    (spec) => !insideTable(spec.from, spec.to),
+    (spec) => !insideTable(spec.from, spec.to) && !insideMermaid(spec.from, spec.to),
   )
   const ranges: Range<Decoration>[] = specs.map((spec) => ({
     from: spec.from,
@@ -541,6 +550,7 @@ function buildDecorations(
     value: decorationForSpec(spec, imageOptions),
   }))
   ranges.push(...tableDecorationRanges(markdownSource))
+  ranges.push(...mermaidDecorationRanges(markdownSource, mermaidOptions))
 
   // Link widgets are zero-width additions at the end of safe link labels. A
   // separate pass keeps the source-position parser independent from DOM.
@@ -564,7 +574,7 @@ function buildDecorations(
         const label = match[6]
         if (label === undefined) continue
         const labelEnd = lineStart + match.index + 1 + label.length
-        if (!insideTable(labelEnd, labelEnd)) ranges.push({
+        if (!insideTable(labelEnd, labelEnd) && !insideMermaid(labelEnd, labelEnd)) ranges.push({
           from: labelEnd,
           to: labelEnd,
           value: Decoration.widget({
@@ -609,10 +619,11 @@ class LivePreviewController {
 
 function createLivePreviewDecorationField(
   imageOptions: ImageProjectionRenderOptions,
+  mermaidOptions: { readonly renderer?: MermaidRenderer; readonly onOpenReference?: (path: string, event: MouseEvent) => void; readonly isReferenceAvailable?: (path: string) => boolean },
 ): StateField<DecorationSet> {
   const decorationsFor = (state: EditorState): DecorationSet =>
     getPresentationMode(state) === 'live-preview'
-      ? buildDecorations(state.doc.toString(), imageOptions)
+      ? buildDecorations(state.doc.toString(), imageOptions, mermaidOptions)
       : Decoration.none
   return StateField.define<DecorationSet>({
     create: decorationsFor,
@@ -628,6 +639,9 @@ function createLivePreviewDecorationField(
 export interface LivePreviewExtensionOptions
   extends ImageProjectionRenderOptions {
   readonly initialMode?: PresentationMode
+  readonly mermaidRenderer?: MermaidRenderer
+  readonly onOpenMermaidReference?: (path: string, event: MouseEvent) => void
+  readonly isMermaidReferenceAvailable?: (path: string) => boolean
 }
 
 const livePreviewExtensionMarker = Symbol('writeit-live-preview-extension')
@@ -685,9 +699,14 @@ export function createLivePreviewExtension(
     onCopy: options.onCopy,
     onReveal: options.onReveal,
   }
+  const mermaidOptions = {
+    renderer: options.mermaidRenderer,
+    onOpenReference: options.onOpenMermaidReference,
+    isReferenceAvailable: options.isMermaidReferenceAvailable,
+  }
   const extension = [
     presentationModeField.init(() => initialMode),
-    createLivePreviewDecorationField(imageOptions),
+    createLivePreviewDecorationField(imageOptions, mermaidOptions),
     ViewPlugin.define(
       (view) => new LivePreviewController(view),
     ),

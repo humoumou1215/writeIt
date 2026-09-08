@@ -42,6 +42,11 @@ describe('completion trigger core', () => {
     expect(findCompletionTrigger('email@example.com', 17)).toBeUndefined()
     expect(findCompletionTrigger('word@file', 9)).toBeUndefined()
     expect(findCompletionTrigger('[[done]]', 8)).toBeUndefined()
+    const mermaid = '```mermaid\nflowchart LR\n  A --> @arch'
+    expect(findCompletionTrigger(mermaid, mermaid.length)).toMatchObject({
+      kind: '@',
+      query: 'arch',
+    })
   })
 
   it('normalizes full-width trigger punctuation without changing source offsets', () => {

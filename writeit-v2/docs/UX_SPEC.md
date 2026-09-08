@@ -888,6 +888,8 @@ P5-00 已确认并实现：表格 hover/focus 时显示轻量 contextual control
 - resolve 后默认弱化/隐藏，但可重新查看；
 - anchor 失效时显示“无法可靠定位”，不能把线或卡片指向看似接近但错误的文字。
 
+P6-00 已冻结入口与交互细节：选区通过 context action 创建，右侧 drawer 默认 `360px` 且可收纳/resize；回复 `Enter` 发送、`Shift+Enter` 换行；Resolve/Unresolve 只改变 sidecar review data；正文 mark 与卡片由当前 anchor 几何重新连线，无法唯一重定位时显示“无法可靠定位”。详见 [P6-00 contract](./P6_00_ANNOTATION_MERMAID_UX_CONTRACT.md)。
+
 ## 12. Mermaid UX Baseline
 
 ### 12.1 Live Preview
@@ -900,6 +902,8 @@ P5-00 已确认并实现：表格 hover/focus 时显示轻量 contextual control
 - hover 图时显示轻量按钮；
 - 单击非链接区域只做 focus/光斑反馈；
 - `/` 可以插入常用 Mermaid 模板；
+
+P6-00 已确认 Mermaid fenced source 的 renderer lifecycle：图默认显示、source 默认折叠；loading/error 均保留可见 source；关闭或新 revision 到达后旧 render 结果不得覆盖；内部 Reference 继续按普通 tab/split 策略导航。详见 [P6-00 contract](./P6_00_ANNOTATION_MERMAID_UX_CONTRACT.md)。
 - fenced block 内 `@` 引用继续使用统一 Reference popup。
 
 ### 12.2 Mermaid 中的 Reference
