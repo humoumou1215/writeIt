@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-- **Current phase:** G5 — Phase 9 Export
-- **Current task:** P9-00 — Export provider contract and snapshot pipeline
+- **Current phase:** G6 — Phase 10 Observability / Diagnostics
+- **Current task:** P10-00 — Diagnostics & Privacy Contract
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
@@ -31,8 +31,8 @@
 | G2 | PASS | P6 Annotation + Mermaid |
 | G3 | PASS | P7 Git + Diff + Provenance |
 | G4 | PASS | P8 Derived Services + Template Intelligence |
-| G5 | ACTIVE | P9 Export |
-| G6 | PENDING | P10 Diagnostics |
+| G5 | PASS | P9 Export |
+| G6 | ACTIVE | P10 Diagnostics |
 | G7 | PENDING | P11 Tauri/Desktop |
 | G8 | PENDING | P12 parity + RC audit |
 
@@ -46,6 +46,7 @@
 - P7: **PASS** in [P7 Git + Diff + Provenance Architecture Review](./P7_ARCHITECTURE_REVIEW.md); structured ports/workbench, raw diff guarantee, semantic fallback and blame projection are complete.
 
 - P8: **PASS** in [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md); search/replace, derived outline/backlinks/stats, validation gate and template catalog/provider contracts are complete.
+- P9: **PASS** in [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md); snapshot-based Markdown/PDF/DOCX/custom export and itemized batch failures are complete.
 
 ## Active decisions
 

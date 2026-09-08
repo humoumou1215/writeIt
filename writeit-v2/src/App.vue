@@ -34,6 +34,7 @@ import { GitWorkbenchService } from './application/git'
 import { SearchService, type SearchQuery } from './application/search'
 import { ValidationService } from './application/validation'
 import { TemplateCatalog, TemplateService } from './application/template'
+import { ExportService, type ExportFormat } from './application/export'
 import { CreateFromTemplateService } from './application/workspace'
 import { MemoryGitAdapter, type GitDiffResult, type GitFileStatus, type GitRepositoryInfo } from './platform/git'
 import {
@@ -169,6 +170,7 @@ const templateCreationService = new CreateFromTemplateService(workspaceTreeServi
     return template ? { markdown: template.markdown } : undefined
   } },
 })
+const exportService = new ExportService()
 const imageAttachmentService = new ImageAttachmentService({
   fileSystem: workspaceFileSystem,
 })
@@ -358,6 +360,8 @@ const templateRecords = ref<readonly import('./application/template').TemplateRe
 const selectedTemplateId = ref('meeting')
 const templateName = ref('new-note.md')
 const templateError = ref<string | null>(null)
+const exportFormat = ref<ExportFormat>('markdown')
+const exportStatus = ref<string | null>(null)
 let annotationSequence = 0
 let pendingFragmentNavigation: {
   readonly documentId: DocumentId
@@ -1457,6 +1461,15 @@ async function saveActiveDocument(): Promise<void> {
   } finally {
     persistenceBusy.value = false
   }
+}
+
+async function exportActiveDocument(): Promise<void> {
+  const document = activeDocument.value
+  if (!document) return
+  const result = await exportService.export(exportService.snapshot(store, documentById(document.id)), { format: exportFormat.value })
+  exportStatus.value = result.success
+    ? `Exported ${result.output?.path} (${result.output?.bytes.length ?? 0} bytes).`
+    : `Export failed: ${result.failure?.message}`
 }
 
 async function checkActiveExternalFile(): Promise<void> {
@@ -2824,6 +2837,8 @@ onBeforeUnmount(() => {
                 >
                   {{ persistenceBusy ? 'Saving…' : 'Save' }}
                 </button>
+                <label class="autosave-control"><span>Export</span><select v-model="exportFormat" data-testid="export-format"><option value="markdown">Markdown</option><option value="pdf">PDF</option><option value="docx">DOCX</option></select></label>
+                <button type="button" class="persistence-action" data-testid="workspace-export" @click="exportActiveDocument">Export</button>
                 <label class="autosave-control">
                   <span>Auto-save</span>
                   <select
@@ -2886,6 +2901,7 @@ onBeforeUnmount(() => {
             <p v-if="persistenceError" class="persistence-error" data-testid="persistence-error">
               {{ persistenceError }}
             </p>
+            <p v-if="exportStatus" class="persistence-hint" data-testid="export-status">{{ exportStatus }}</p>
             <p v-if="referenceClipboardStatus" class="persistence-hint" data-testid="reference-clipboard-status">
               {{ referenceClipboardStatus }}
             </p>
