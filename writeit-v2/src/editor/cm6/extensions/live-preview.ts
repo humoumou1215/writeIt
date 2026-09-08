@@ -22,6 +22,10 @@ import {
   type ImageProjectionRenderOptions,
   type ImageProjectionResource,
 } from '../../preview/image-projection'
+import {
+  tableDecorationRanges,
+  tableSourceRanges,
+} from '../widgets/table'
 
 /** The two presentations share one CM6 document and one source authority. */
 export type PresentationMode = 'source' | 'live-preview'
@@ -525,12 +529,18 @@ function buildDecorations(
   markdownSource: string,
   imageOptions: ImageProjectionRenderOptions,
 ): DecorationSet {
-  const specs = findLivePreviewDecorations(markdownSource)
+  const tableRanges = tableSourceRanges(markdownSource)
+  const insideTable = (from: number, to: number): boolean =>
+    tableRanges.some((range) => from >= range.from && to <= range.to)
+  const specs = findLivePreviewDecorations(markdownSource).filter(
+    (spec) => !insideTable(spec.from, spec.to),
+  )
   const ranges: Range<Decoration>[] = specs.map((spec) => ({
     from: spec.from,
     to: spec.to,
     value: decorationForSpec(spec, imageOptions),
   }))
+  ranges.push(...tableDecorationRanges(markdownSource))
 
   // Link widgets are zero-width additions at the end of safe link labels. A
   // separate pass keeps the source-position parser independent from DOM.
@@ -554,7 +564,7 @@ function buildDecorations(
         const label = match[6]
         if (label === undefined) continue
         const labelEnd = lineStart + match.index + 1 + label.length
-        ranges.push({
+        if (!insideTable(labelEnd, labelEnd)) ranges.push({
           from: labelEnd,
           to: labelEnd,
           value: Decoration.widget({
@@ -571,14 +581,9 @@ function buildDecorations(
 }
 
 class LivePreviewController {
-  decorations: DecorationSet = Decoration.none
-
   private mode: PresentationMode
 
-  constructor(
-    private readonly view: EditorView,
-    private readonly imageOptions: ImageProjectionRenderOptions,
-  ) {
+  constructor(private readonly view: EditorView) {
     this.mode = getPresentationMode(view.state)
     this.refresh()
   }
@@ -597,13 +602,27 @@ class LivePreviewController {
   }
 
   private refresh(): void {
-    this.decorations =
-      this.mode === 'live-preview'
-        ? buildDecorations(this.view.state.doc.toString(), this.imageOptions)
-        : Decoration.none
     this.view.dom.dataset.presentationMode = this.mode
     this.view.dom.dataset.livePreview = String(this.mode === 'live-preview')
   }
+}
+
+function createLivePreviewDecorationField(
+  imageOptions: ImageProjectionRenderOptions,
+): StateField<DecorationSet> {
+  const decorationsFor = (state: EditorState): DecorationSet =>
+    getPresentationMode(state) === 'live-preview'
+      ? buildDecorations(state.doc.toString(), imageOptions)
+      : Decoration.none
+  return StateField.define<DecorationSet>({
+    create: decorationsFor,
+    update: (decorations, transaction) =>
+      transaction.docChanged ||
+      transaction.effects.some((effect) => effect.is(setPresentationModeEffect))
+        ? decorationsFor(transaction.state)
+        : decorations,
+    provide: (field) => EditorView.decorations.from(field),
+  })
 }
 
 export interface LivePreviewExtensionOptions
@@ -659,18 +678,18 @@ export function createLivePreviewExtension(
   const initialMode = requirePresentationMode(
     options.initialMode ?? DEFAULT_PRESENTATION_MODE,
   )
+  const imageOptions: ImageProjectionRenderOptions = {
+    imageResolver: options.imageResolver,
+    documentPath: options.documentPath,
+    onPreview: options.onPreview,
+    onCopy: options.onCopy,
+    onReveal: options.onReveal,
+  }
   const extension = [
     presentationModeField.init(() => initialMode),
+    createLivePreviewDecorationField(imageOptions),
     ViewPlugin.define(
-      (view) =>
-        new LivePreviewController(view, {
-          imageResolver: options.imageResolver,
-          documentPath: options.documentPath,
-          onPreview: options.onPreview,
-          onCopy: options.onCopy,
-          onReveal: options.onReveal,
-        }),
-      { decorations: (controller) => controller.decorations },
+      (view) => new LivePreviewController(view),
     ),
     keymap.of([{ key: 'Mod-e', run: togglePresentationMode }]),
   ] as unknown as MarkedLivePreviewExtension

@@ -16,7 +16,7 @@
 | D-002 | FROZEN | 左侧栏自动收纳默认关闭；开启后仅在打开文件或焦点进入中央编辑区后收起，并保留明显展开入口。 | Search/Git 切换、resize、菜单/弹窗不触发自动收起。 |
 | D-003 | FROZEN | 内部 Reference 默认普通标签打开；Settings 可改为 split，右键/修饰键可临时选另一方式。 | split 仍共享同一 DocumentStore authority。 |
 | D-004 | FROZEN | Table 编辑态 Tab/Shift+Tab 提交 cell 并前后移动；IME composition 期间不提交。 | 含显示换行的 cell 规则相同。 |
-| D-005 | MAY ADAPT | Table cell 显示换行默认持久化为可见的 `<br>`；P5-00 必须用 renderer 与 legacy fixture 验证。 | 若证据不兼容，可换成另一种公开、可读、可 round-trip 的 Markdown/HTML 表示；不得藏在 DOM/二进制/第二 authority。 |
+| D-005 | MAY ADAPT | Table cell 显示换行默认持久化为可见的 `<br>`；P5-00 必须用 renderer 与 legacy fixture 验证。 | 已确认采用 `<br>`：CM6 spike 与 legacy clipboard 均使用该公开格式；legacy Milkdown 的 `<nbr />` 是其 parser workaround，不带入 v2。v2 Table Core 显式解析 `<br>` 并保证 round-trip。见 [P5-00 contract](./P5_00_TABLE_UX_CONTRACT.md)。 |
 | D-006 | FROZEN | Table column width 首版仅是运行时/工作区视图状态，不跨应用重启持久化，永不写入 Markdown。 | row/column reorder 仍是 P5 必须完成的 source mutation。 |
 | D-007 | FROZEN | Annotation drawer 默认 `360px`、可 resize；窄窗口需限制宽度。 | Annotation 本体持久化遵守 ADR-0007。 |
 | D-008 | FROZEN | Git Diff 默认 unified；支持 split toggle。Blame gutter 显示作者短名 + 相对日期，完整 metadata 在详情中。 | 不确定/本地行显示 Unknown 或 Local，不猜 provenance。 |
@@ -54,4 +54,5 @@
 
 ## Change log
 
+- **2026-09-09:** P5-00 closed D-005 evidence review; `<br>` is the accepted v2 table-cell newline representation and legacy `<nbr />` remains unmodified source unless an explicit future migration is requested.
 - **2026-09-08:** Goal preparation created; D-001～D-014 and PD-001～PD-006 accepted for the upcoming Codex Goal.

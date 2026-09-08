@@ -827,7 +827,7 @@ P5-00 必须用实际 Markdown renderer 与 legacy fixture 验证 `<br>` 的兼�
 - `/` 或命令系统；
 - 可配置快捷键。
 
-具体最终采用哪些，由 P5-00 + 可选 Figma 确认。
+P5-00 已确认并实现：表格 hover/focus 时显示轻量 contextual controls；活动 cell 的命令菜单提供 insert-before/after、delete 与 move；工具栏仅在表格上下文出现，命令系统提供相同 command id。row/column grip 也可直接进入整行/整列选择。
 
 ### 10.7 Resize / Reorder
 
@@ -844,6 +844,8 @@ P5-00 必须用实际 Markdown renderer 与 legacy fixture 验证 `<br>` 的兼�
 - 首版列宽只保存在当前运行时的视图/工作区 UI 状态，不跨应用重启持久化，也不得写入 Markdown；长期保存列宽如未来需要，必须单独设计；
 - 拖拽过程中要有清楚的插入位置提示；
 - 表格内容很多时仍应能横向查看/调整，不能因为强行平均列宽导致文字完全不可读。
+
+具体键盘、矩形选择、clipboard MIME、IME 与 malformed fallback 合同见 [P5-00 Table UX & Behavior Contract](./P5_00_TABLE_UX_CONTRACT.md)。
 
 ### 10.8 错误表格
 

@@ -46,6 +46,11 @@ import {
   type PresentationMode,
 } from '../extensions/live-preview'
 import type { ImageProjectionRenderOptions } from '../../preview/image-projection'
+import type { TableCommandId } from '../../../core/table'
+import {
+  canExecuteActiveTableCommand,
+  executeActiveTableCommand,
+} from '../widgets/table'
 
 export const DEFAULT_SINGLE_DOCUMENT_PROJECTION_ID: ProjectionId =
   'cm6-main-editor'
@@ -127,6 +132,8 @@ export interface SingleDocumentViewSurface {
   dispatch(spec: SingleDocumentUserTransaction): void
   setPresentationMode(mode: PresentationMode): void
   togglePresentationMode(): PresentationMode
+  canExecuteTableCommand(commandId: TableCommandId): boolean
+  executeTableCommand(commandId: TableCommandId): boolean
 }
 
 export interface SingleDocumentUserTransaction {
@@ -282,6 +289,12 @@ function createPublicEditorSurface(
       }
       return getPresentationMode(editorView.state)
     },
+    canExecuteTableCommand(commandId: TableCommandId): boolean {
+      return canExecuteActiveTableCommand(editorView, commandId)
+    },
+    executeTableCommand(commandId: TableCommandId): boolean {
+      return executeActiveTableCommand(editorView, commandId)
+    },
   })
 }
 
@@ -351,6 +364,14 @@ export class SingleDocumentView {
       throw new Error('Live preview presentation extension is not installed')
     }
     return this.presentationMode
+  }
+
+  canExecuteTableCommand(commandId: TableCommandId): boolean {
+    return !this.destroyed && canExecuteActiveTableCommand(this.editorView, commandId)
+  }
+
+  executeTableCommand(commandId: TableCommandId): boolean {
+    return !this.destroyed && executeActiveTableCommand(this.editorView, commandId)
   }
 
   /** Current authoritative document state, never the CM6 document. */

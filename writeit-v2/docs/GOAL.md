@@ -112,8 +112,8 @@ The Goal is complete only when all of the following are true:
 |---|---|---|---|
 | Goal preparation | COMPLETE | `docs(v2): prepare Codex goal workflow` | Baseline `03975a7`; contract check, 396 Vitest, 63 Chromium tests, typecheck and build PASS |
 | G0 | PASS | `feat(v2): close G0 P4 UX reconciliation` | [P4 UX reconciliation](./G0_P4_UX_RECONCILIATION.md) PASS；397 Vitest + 72 Chromium；production retry closed |
-| G1 | ACTIVE | — | Starting P5-00 table representation verification |
-| G2 | PENDING | — | — |
+| G1 | PASS | `g1` checkpoint pending local commit | [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); 434 Vitest + 74 Chromium; typecheck/build PASS |
+| G2 | ACTIVE | — | Starting P6-00 Annotation + Mermaid UX / Port Contract |
 | G3 | PENDING | — | — |
 | G4 | PENDING | — | — |
 | G5 | PENDING | — | — |

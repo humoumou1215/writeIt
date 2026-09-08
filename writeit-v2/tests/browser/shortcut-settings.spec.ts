@@ -9,10 +9,10 @@ test('shortcut settings display, record, reject conflicts, persist, and reset bi
   const settings = page.getByTestId('shortcut-settings')
   await expect(settings).toBeVisible()
   await expect(
-    settings.locator('[data-shortcut-command="editor.table.add-row"]'),
+    settings.locator('[data-shortcut-command="editor.table.add-row-after"]'),
   ).toContainText('Add table row')
   await expect(
-    settings.locator('[data-shortcut-command="editor.table.add-row"] [data-testid="shortcut-current"]'),
+    settings.locator('[data-shortcut-command="editor.table.add-row-after"] [data-testid="shortcut-current"]'),
   ).toHaveText('Shift+Enter')
 
   const saveRow = settings.locator('[data-shortcut-command="document.save"]')

@@ -54,7 +54,7 @@ export const DEFAULT_SHORTCUT_COMMANDS: readonly ShortcutCommandDefinition[] =
       defaultKeybinding: 'Mod+Alt+ArrowLeft',
     },
     {
-      commandId: 'editor.table.add-row',
+      commandId: 'editor.table.add-row-after',
       label: 'Add table row',
       group: 'Table',
       keywords: ['table', 'row', 'insert'],

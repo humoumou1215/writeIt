@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 - **Current phase:** G1 — Phase 5 Table Engine
-- **Current task:** P5-00 — Table Representation Verification
+- **Current task:** P6-00 — Annotation & Mermaid UX / Port Contract
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
@@ -25,8 +25,8 @@
 | Checkpoint | State | Scope |
 |---|---|---|
 | G0 | PASS | P4-UX01/P4-UX02 and production Embed retry reconciliation |
-| G1 | ACTIVE | P5 Table |
-| G2 | PENDING | P6 Annotation + Mermaid |
+| G1 | PASS | P5 Table |
+| G2 | ACTIVE | P6 Annotation + Mermaid |
 | G3 | PENDING | P7 Git + Diff + Provenance |
 | G4 | PENDING | P8 Derived Services + Template Intelligence |
 | G5 | PENDING | P9 Export |
@@ -39,7 +39,7 @@
 - P4-AR2: **PASS**. The earlier architecture blocker is cleared.
 - P4-UX01/P4-UX02: **PASS** in [G0 reconciliation](./G0_P4_UX_RECONCILIATION.md).
 - production Embed loader failure/retry: closed in G0 with real App browser evidence.
-- P5～P12: not started.
+- P5: **PASS** in [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); core, projection, clipboard/IME, commands, resize and reorder are complete.
 
 ## Active decisions
 
@@ -56,9 +56,9 @@
 - Node 22 is the CI/release baseline; current local Node 23 is inside the supported `>=22 <24` development range.
 - Browser/mock filesystem coverage is strong, but native CAS/binary/exclusive-create semantics still need P11 adapter evidence.
 - Office clipboard evidence does not cover every target application; the bounded deferral policy is in `GOAL.md`.
-- P5 starts from P5-00 renderer/legacy-fixture verification of visible `<br>` cell line breaks.
+- P5 follow-up is bounded to approved `PD-004` Office matrix expansion and larger-table performance samples; neither blocks P6.
 - Production build passes but the main JS chunk is about `899.86 kB` (`283.16 kB` gzip), above Vite's warning threshold; address from measured startup/runtime evidence rather than hiding the warning.
 
 ## Next
 
-Execute P5-00, then continue G1 in SPEC order through P5-AR1.
+Execute P6-00, then continue G2 in SPEC order through P6-AR1.

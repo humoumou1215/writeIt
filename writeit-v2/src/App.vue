@@ -26,6 +26,8 @@ import {
   KeybindingSettingsStore,
   type ShortcutSettingsEntry,
 } from './application/commands'
+import { createTableCommands } from './application/table'
+import type { TableCommandId } from './core/table'
 import {
   createDocumentId,
   createDocumentPath,
@@ -1749,14 +1751,17 @@ function registerApplicationCommands(): void {
     availability: () => tabSnapshot.value.tabs.length > 1,
     execute: () => navigateTabs(-1),
   })
-  applicationCommandRegistry.register({
-    id: 'editor.table.add-row',
-    label: 'Add table row',
-    group: 'Table',
-    keywords: ['table', 'row', 'insert'],
-    availability: () => false,
-    execute: () => undefined,
-  })
+  for (const tableCommand of createTableCommands()) {
+    const commandId = tableCommand.id as TableCommandId
+    applicationCommandRegistry.register({
+      id: commandId,
+      label: tableCommand.label,
+      group: tableCommand.group,
+      keywords: tableCommand.keywords,
+      availability: () => projection.value?.canExecuteTableCommand(commandId) ?? false,
+      execute: () => projection.value?.executeTableCommand(commandId),
+    })
+  }
 }
 
 function handleShortcutKeydown(event: KeyboardEvent): void {
