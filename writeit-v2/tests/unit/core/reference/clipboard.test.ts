@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createReferenceClipboardEdit,
   createReferenceClipboardPayload,
+  createReferenceClipboardTextFingerprint,
   extractReferenceClipboardItems,
   fileUriToAbsolute,
   parseFileUriList,
@@ -27,6 +28,9 @@ describe('reference clipboard core contract', () => {
 
     expect(JSON.parse(payload.json)).toEqual(items)
     expect(payload.text).toBe('notes/one.md\nassets')
+    expect(payload.textFingerprint).toBe(
+      createReferenceClipboardTextFingerprint(payload.text),
+    )
     expect(splitReferenceClipboardItems(items)).toMatchObject({
       files: ['notes/one.md'],
       dirs: ['assets'],
@@ -108,13 +112,67 @@ describe('reference clipboard core contract', () => {
     ).toBe('![[notes/one.md|ro]]\nassets')
   })
 
-  it('uses the app-local fallback without making it Document authority', () => {
+  it('uses the app-local fallback only for a matching plain-text copy binding', () => {
     const store = new ReferenceClipboardStore()
     store.set([{ kind: 'file', path: 'copied.md' }])
-    expect(extractReferenceClipboardItems(null, { store })).toEqual([
-      { kind: 'file', path: 'copied.md' },
-    ])
-    store.clear()
+
+    expect(
+      extractReferenceClipboardItems(data({ 'text/plain': 'copied.md' }), {
+        store,
+      }),
+    ).toEqual([{ kind: 'file', path: 'copied.md' }])
+    expect(store.getFallbackBinding()).toMatchObject({
+      plainText: 'copied.md',
+      fingerprint: createReferenceClipboardTextFingerprint('copied.md'),
+    })
+
+    expect(
+      extractReferenceClipboardItems(data({ 'text/plain': 'ordinary text' }), {
+        store,
+      }),
+    ).toBeUndefined()
     expect(store.get()).toBeUndefined()
+  })
+
+  it('fails closed for empty or ambiguous clipboard payloads', () => {
+    const store = new ReferenceClipboardStore()
+    store.set([{ kind: 'file', path: 'copied.md' }])
+
+    expect(extractReferenceClipboardItems(data({}), { store })).toBeUndefined()
+    expect(store.get()).toBeUndefined()
+
+    store.set([{ kind: 'file', path: 'copied.md' }])
+    expect(
+      extractReferenceClipboardItems(
+        data({
+          'text/plain': 'copied.md',
+          'text/html': '<strong>copied.md</strong>',
+        }),
+        { store },
+      ),
+    ).toBeUndefined()
+    expect(store.get()).toBeUndefined()
+  })
+
+  it('compares plain text after line-ending normalization without trimming content', () => {
+    const store = new ReferenceClipboardStore()
+    store.set([
+      { kind: 'file', path: 'one.md' },
+      { kind: 'file', path: 'two.md' },
+    ])
+
+    expect(
+      extractReferenceClipboardItems(data({ 'text/plain': 'one.md\r\ntwo.md' }), {
+        store,
+      }),
+    ).toEqual([
+      { kind: 'file', path: 'one.md' },
+      { kind: 'file', path: 'two.md' },
+    ])
+    expect(
+      extractReferenceClipboardItems(data({ 'text/plain': 'one.md\ntwo.md ' }), {
+        store,
+      }),
+    ).toBeUndefined()
   })
 })

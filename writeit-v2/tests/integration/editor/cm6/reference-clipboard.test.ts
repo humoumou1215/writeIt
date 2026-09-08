@@ -46,7 +46,12 @@ function makeView(markdown = ''): {
     editable: true,
     extensions: [
       capture,
-      createReferenceClipboardExtension({ store: clipboard }),
+      createReferenceClipboardExtension({
+        store: clipboard,
+        // The adapter has already compared the current clipboard text in this
+        // standalone context-menu fixture.
+        readClipboard: () => clipboard.getIfPlainTextMatches('target.md'),
+      }),
     ],
   })
   mounted.push(projection)
@@ -77,6 +82,42 @@ afterEach(() => {
 })
 
 describe('CM6 reference clipboard projection', () => {
+  it('requires fresh plain-text evidence before using the internal fallback', async () => {
+    const { store, locator, rawView, clipboard } = makeView()
+    clipboard.set([{ kind: 'file', path: 'target.md' }])
+    rawView.dispatch({ selection: { anchor: 0 } })
+
+    const internal = paste(rawView.contentDOM, {
+      'text/plain': 'target.md',
+    })
+    await flush()
+    expect(internal.defaultPrevented).toBe(true)
+    expect(store.get(locator)?.markdown).toBe('[[target.md]]')
+
+    paste(rawView.contentDOM, {
+      'text/plain': 'ordinary external text',
+    })
+    await flush()
+    // CM6's normal paste handler may prevent the DOM default as well; the
+    // authority/source result proves that ordinary text won the fallback.
+    expect(store.get(locator)?.markdown).toBe(
+      '[[target.md]]ordinary external text',
+    )
+  })
+
+  it('does not consume an empty paste after an internal copy', async () => {
+    const { store, locator, rawView, clipboard } = makeView('source')
+    clipboard.set([{ kind: 'file', path: 'target.md' }])
+
+    paste(rawView.contentDOM, {})
+    await flush()
+
+    // An empty event is allowed to be consumed by CM6's normal paste path,
+    // but it must not be converted into a reference or source mutation.
+    expect(store.get(locator)?.markdown).toBe('source')
+    expect(clipboard.get()).toBeUndefined()
+  })
+
   it('uses Ctrl+V/file paste as a normal link and keeps directories as text', async () => {
     const { store, locator, rawView } = makeView('prefix ')
     rawView.dispatch({ selection: { anchor: rawView.state.doc.length } })

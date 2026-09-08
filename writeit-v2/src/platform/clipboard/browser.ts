@@ -2,6 +2,7 @@ import {
   extractReferenceClipboardItems,
   parseReferenceClipboardData,
   type ReferenceClipboardData,
+  type ReferenceClipboardFallbackBinding,
   type ReferenceClipboardNode,
   type ReferenceClipboardParseOptions,
   type ReferenceClipboardPayload,
@@ -45,8 +46,15 @@ export function createBrowserReferenceClipboardWriter(): BrowserReferenceClipboa
           }),
           'text/plain': new Blob([payload.text], { type: 'text/plain' }),
         })
-        await clipboard.write([item])
-        return
+        try {
+          await clipboard.write([item])
+          return
+        } catch (error) {
+          // Some browsers expose ClipboardItem but reject custom MIME. Fall
+          // through to text/plain so the freshness-bound fallback can still
+          // prove the copy when the platform accepts text only.
+          if (typeof clipboard.writeText !== 'function') throw error
+        }
       }
       if (typeof clipboard.writeText === 'function') {
         await clipboard.writeText(payload.text)
@@ -72,6 +80,7 @@ function dataFromTextMap(
 async function readClipboardItem(
   item: ClipboardItem,
   options: BrowserReferenceClipboardOptions,
+  expectedFallbackBinding: ReferenceClipboardFallbackBinding | null,
 ): Promise<readonly ReferenceClipboardNode[] | undefined> {
   const values = new Map<string, string>()
   const types = [...item.types]
@@ -91,9 +100,12 @@ async function readClipboardItem(
     }
   }
   if (values.size === 0) return undefined
-  return parseReferenceClipboardData(
+  return extractReferenceClipboardItems(
     dataFromTextMap(values, types),
-    options,
+    {
+      ...options,
+      expectedFallbackBinding,
+    },
   )
 }
 
@@ -103,15 +115,17 @@ export async function readBrowserReferenceClipboard(
 ): Promise<readonly ReferenceClipboardNode[] | undefined> {
   const clipboard =
     typeof navigator === 'undefined' ? undefined : navigator.clipboard
+  const expectedFallbackBinding = options.store?.getFallbackBinding() ?? null
   if (clipboard && typeof clipboard.read === 'function') {
     try {
       const entries = await clipboard.read()
       for (const entry of entries) {
-        const parsed = await readClipboardItem(entry, options)
-        if (parsed) {
-          options.store?.set(parsed)
-          return parsed
-        }
+        const parsed = await readClipboardItem(
+          entry,
+          options,
+          expectedFallbackBinding,
+        )
+        if (parsed) return parsed
       }
     } catch {
       // Permissions and WebView clipboard implementations may reject read().
@@ -128,16 +142,19 @@ export async function readBrowserReferenceClipboard(
         },
         options,
       )
-      if (parsed) {
-        options.store?.set(parsed)
-        return parsed
-      }
+      if (parsed) return parsed
+      return options.store?.getIfPlainTextMatches(
+        text,
+        expectedFallbackBinding,
+      )
     } catch {
-      // Fall through to the app-local fallback.
+      // A permission/read failure cannot prove that the local fallback is
+      // still current. Expire it rather than returning a stale reference.
+      options.store?.clearIfCurrent(expectedFallbackBinding)
     }
   }
 
-  return options.store?.get()
+  return undefined
 }
 
 /** Convenience object used by application composition. */

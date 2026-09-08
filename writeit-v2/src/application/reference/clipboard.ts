@@ -25,8 +25,8 @@ export interface ReferenceClipboardCopyResult {
 
 /**
  * Application policy for copying workspace entries. The local store is
- * updated before the platform write so an unavailable browser clipboard does
- * not make an in-app copy unusable.
+ * updated before the platform write so a text-only paste can still be
+ * freshness-checked when the browser cannot preserve custom MIME data.
  */
 export class ReferenceClipboardService {
   readonly store: ReferenceClipboardStore

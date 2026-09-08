@@ -83,7 +83,7 @@ export interface ReferenceContextActionOptions {
 export interface ReferenceClipboardExtensionOptions {
   /** Optional direct capability for standalone EditorView tests/adapters. */
   readonly mutation?: ProjectionMutationCapability
-  /** Shared in-app fallback for platforms that cannot expose clipboard data. */
+  /** Freshness-bound in-app fallback for text-only clipboard events. */
   readonly store?: ReferenceClipboardStore
   /** Maps system file-manager paths to workspace-relative reference paths. */
   readonly clipboardParseOptions?: ReferenceClipboardParseOptions
@@ -609,12 +609,13 @@ export class ReferenceClipboardController {
   }
 
   private async readClipboard(): Promise<readonly ReferenceClipboardNode[] | undefined> {
-    const result = this.options.readClipboard?.()
+    const reader = this.options.readClipboard
+    if (!reader) return undefined
+    const result = reader()
     if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
       return await result
     }
-    if (result) return result
-    return this.store.get()
+    return result
   }
 
   private async apply(

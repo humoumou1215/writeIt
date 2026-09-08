@@ -64,8 +64,14 @@ export interface ReferenceClipboardParseOptions {
 
 export interface ReferenceClipboardExtractOptions
   extends ReferenceClipboardParseOptions {
-  /** Application-local fallback when the browser cannot expose clipboard data. */
+  /** Freshness-bound application-local fallback for text-only clipboard data. */
   readonly store?: ReferenceClipboardStore
+  /**
+   * Optional binding captured before an asynchronous clipboard read. `null`
+   * records that no binding existed then and prevents a late read from
+   * invalidating a newer copy.
+   */
+  readonly expectedFallbackBinding?: ReferenceClipboardFallbackBinding | null
 }
 
 export interface ReferenceClipboardInsertItems {
@@ -103,7 +109,51 @@ export interface ReferenceClipboardPayload {
   readonly mimeType: typeof REFERENCE_CLIPBOARD_MIME
   readonly json: string
   readonly text: string
+  /** Comparable binding used when the platform exposes only text/plain. */
+  readonly textFingerprint: string
   readonly nodes: readonly ReferenceClipboardNode[]
+}
+
+export interface ReferenceClipboardFallbackBinding {
+  readonly items: readonly ReferenceClipboardNode[]
+  /** The exact human-readable text written alongside an internal copy. */
+  readonly plainText: string
+  /** Deterministic guard checked before the fallback can intercept a paste. */
+  readonly fingerprint: string
+}
+
+/**
+ * Normalizes only line separators for comparison with browser clipboard text.
+ * Paths, whitespace, and ordering remain significant so an unrelated text
+ * copy cannot accidentally retain the internal reference fallback.
+ */
+export function normalizeReferenceClipboardPlainText(value: string): string {
+  if (typeof value !== 'string') {
+    throw new TypeError('Reference clipboard plain text must be a string')
+  }
+  return value.replace(/\r\n?/gu, '\n')
+}
+
+/**
+ * Creates a deterministic plain-text fingerprint without making the
+ * fingerprint itself a source/content authority. Exact text comparison is
+ * performed as well, so this is a cheap guard rather than a collision-prone
+ * substitute for the clipboard payload.
+ */
+export function createReferenceClipboardTextFingerprint(value: string): string {
+  const normalized = normalizeReferenceClipboardPlainText(value)
+  let hash = 2166136261
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${normalized.length}:${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function referenceClipboardTextForNodes(
+  nodes: readonly ReferenceClipboardNode[],
+): string {
+  return nodes.map((node) => node.path).join('\n')
 }
 
 function requireString(value: unknown, name: string): string {
@@ -151,6 +201,82 @@ function safeGetData(
   } catch {
     return ''
   }
+}
+
+/** Reads DataTransfer.types across DOMStringList and test-double shapes. */
+function clipboardTypeNames(
+  data: ReferenceClipboardData | null | undefined,
+): readonly string[] | undefined {
+  const types = data?.types
+  if (types === undefined || types === null) return undefined
+  if (typeof types === 'string') return Object.freeze([types])
+  if (Array.isArray(types)) {
+    return Object.freeze(
+      types.filter((value): value is string => typeof value === 'string'),
+    )
+  }
+
+  const arrayLike = types as {
+    readonly length?: unknown
+    readonly item?: (index: number) => unknown
+    readonly [index: number]: unknown
+  }
+  if (
+    typeof arrayLike.length === 'number' &&
+    Number.isSafeInteger(arrayLike.length) &&
+    arrayLike.length >= 0
+  ) {
+    const names: string[] = []
+    for (let index = 0; index < arrayLike.length; index += 1) {
+      let value: unknown
+      try {
+        value =
+          typeof arrayLike.item === 'function'
+            ? arrayLike.item(index)
+            : arrayLike[index]
+      } catch {
+        return Object.freeze([])
+      }
+      if (typeof value === 'string') names.push(value)
+    }
+    return Object.freeze(names)
+  }
+
+  try {
+    return Object.freeze(
+      Array.from(types as Iterable<unknown>).filter(
+        (value): value is string => typeof value === 'string',
+      ),
+    )
+  } catch {
+    return Object.freeze([])
+  }
+}
+
+/**
+ * A text fallback is trustworthy only for a plain-text-only clipboard shape.
+ * If a custom/URI/HTML or otherwise uninspectable payload is present, the
+ * event is ambiguous and must continue through normal CM6 paste handling.
+ */
+function isPlainTextFallbackCandidate(
+  data: ReferenceClipboardData | null | undefined,
+): boolean {
+  const types = clipboardTypeNames(data)
+  if (
+    types !== undefined &&
+    (types.length !== 1 || types[0] !== 'text/plain')
+  ) {
+    return false
+  }
+
+  if (
+    safeGetData(data, REFERENCE_CLIPBOARD_MIME).trim() ||
+    safeGetData(data, 'text/uri-list').trim() ||
+    safeGetData(data, 'text/html').trim()
+  ) {
+    return false
+  }
+  return true
 }
 
 function normalizedPathFromExternal(
@@ -330,17 +456,26 @@ export function parseReferenceClipboardData(
   return externalNodesFromText(safeGetData(data, 'text/plain'), options)
 }
 
-/** Extracts clipboard data and then uses the app-local copy fallback. */
+/**
+ * Extracts recognized clipboard data and uses the local copy only after its
+ * plain-text freshness binding matches the current payload.
+ */
 export function extractReferenceClipboardItems(
   data: ReferenceClipboardData | null | undefined,
   options: ReferenceClipboardExtractOptions = {},
 ): readonly ReferenceClipboardNode[] | undefined {
   const parsed = parseReferenceClipboardData(data, options)
-  if (parsed) {
-    options.store?.set(parsed)
-    return parsed
+  if (parsed) return parsed
+
+  if (!isPlainTextFallbackCandidate(data)) {
+    options.store?.clearIfCurrent(options.expectedFallbackBinding)
+    return undefined
   }
-  return options.store?.get()
+
+  return options.store?.getIfPlainTextMatches(
+    safeGetData(data, 'text/plain'),
+    options.expectedFallbackBinding,
+  )
 }
 
 /** Splits a copy payload while retaining the original order separately. */
@@ -369,12 +504,14 @@ export function createReferenceClipboardPayload(
   values: readonly ReferenceClipboardNodeValue[],
 ): ReferenceClipboardPayload {
   const nodes = normalizeReferenceClipboardNodes(values)
+  const text = referenceClipboardTextForNodes(nodes)
   return Object.freeze({
     mimeType: REFERENCE_CLIPBOARD_MIME,
     json: JSON.stringify(
       nodes.map((node) => ({ kind: node.kind, path: node.path })),
     ),
-    text: nodes.map((node) => node.path).join('\n'),
+    text,
+    textFingerprint: createReferenceClipboardTextFingerprint(text),
     nodes,
   })
 }
@@ -462,21 +599,83 @@ export function createReferenceClipboardEdit(
 /** Compatibility alias for editor/application adapters. */
 export const createReferencePasteEdit = createReferenceClipboardEdit
 
-/** A small application-local fallback for platforms that reject clipboard.write. */
+/**
+ * A small application-local fallback for platforms that reject clipboard.write.
+ * It is intentionally bound to the plain text emitted by the copy operation;
+ * callers must prove that text binding before using the stored nodes.
+ */
 export class ReferenceClipboardStore {
-  private itemsValue: readonly ReferenceClipboardNode[] | undefined
+  private bindingValue: ReferenceClipboardFallbackBinding | undefined
 
   set(values: readonly ReferenceClipboardNodeValue[]): readonly ReferenceClipboardNode[] {
-    this.itemsValue = Object.freeze(normalizeReferenceClipboardNodes(values))
-    return this.itemsValue
+    const items = Object.freeze(normalizeReferenceClipboardNodes(values))
+    if (items.length === 0) {
+      this.clear()
+      return items
+    }
+
+    const plainText = referenceClipboardTextForNodes(items)
+    this.bindingValue = Object.freeze({
+      items,
+      plainText,
+      fingerprint: createReferenceClipboardTextFingerprint(plainText),
+    })
+    return items
   }
 
   get(): readonly ReferenceClipboardNode[] | undefined {
-    return this.itemsValue
+    return this.bindingValue?.items
+  }
+
+  /** Returns the current binding for diagnostics/tests without exposing mutability. */
+  getFallbackBinding(): ReferenceClipboardFallbackBinding | undefined {
+    return this.bindingValue
+  }
+
+  /**
+   * Returns fallback nodes only when the current plain-text clipboard payload
+   * still matches the most recent WriteIt copy. A mismatch expires the
+   * binding so a later data-less paste cannot reuse it.
+   */
+  getIfPlainTextMatches(
+    plainText: string,
+    expectedBinding?: ReferenceClipboardFallbackBinding | null,
+  ): readonly ReferenceClipboardNode[] | undefined {
+    if (typeof plainText !== 'string') {
+      this.clearIfCurrent(expectedBinding)
+      return undefined
+    }
+
+    const binding = this.bindingValue
+    if (expectedBinding !== undefined && binding !== expectedBinding) {
+      return undefined
+    }
+    if (!binding) return undefined
+    const normalized = normalizeReferenceClipboardPlainText(plainText)
+    if (
+      normalized.length === 0 ||
+      binding.plainText !== normalized ||
+      binding.fingerprint !== createReferenceClipboardTextFingerprint(normalized)
+    ) {
+      this.clear()
+      return undefined
+    }
+    return binding.items
+  }
+
+  /** Expires a binding only if it is still the one captured by a reader. */
+  clearIfCurrent(expectedBinding?: ReferenceClipboardFallbackBinding | null): void {
+    if (
+      expectedBinding !== undefined &&
+      this.bindingValue !== expectedBinding
+    ) {
+      return
+    }
+    this.clear()
   }
 
   clear(): void {
-    this.itemsValue = undefined
+    this.bindingValue = undefined
   }
 }
 

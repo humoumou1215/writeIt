@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P3-R03 — Complete
+Current task: P4-R04 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -79,6 +79,7 @@ Current task: P3-R03 — Complete
 - [x] P4-R03 — Entity completion across reference modes — file-self/object/heading child candidates now use one provider contract for link, editable embed, and readonly embed modes, with source-safe CM6 navigation and trigger-normalization coverage ([Task Contract](./P4_R03_TASK_CONTRACT.md))
 - [x] P3-R02 — Dirty-aware recursive workspace deletion — unified file/directory application deletion, nested dirty Save/Discard/Cancel protection, guarded save rollback, projection/tab/persistence/recovery/ReferenceIndex cleanup, and unit/integration/Chromium coverage ([Task Contract](./P3_R02_TASK_CONTRACT.md))
 - [x] P3-R03 — Conditional filesystem writes / conflict-safe mutation — coherent text snapshots, immutable version tokens, deterministic MemoryFileSystem CAS, guarded persistence save, and rename rewrite/rollback conflict diagnostics ([Task Contract](./P3_R03_TASK_CONTRACT.md))
+- [x] P4-R04 — Clipboard fallback freshness protocol — current plain-text-only paste evidence must match the latest internal copy fingerprint/binding; changed, empty, ambiguous, or unreadable clipboard payloads fail closed while custom MIME/file URI and existing reference modes remain intact ([Task Contract](./P4_R04_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -182,14 +183,15 @@ None
 - P4-05 keeps navigation and health derived from ReferenceGraph plus target-content reads: source tokens remain unchanged, heading/object fragments are verified before opening, broken facts become diagnostics, and re-selection replaces only the selected token through the projection mutation capability.
 - P4-05 object health uses an application adapter for the existing suggestion contract; full template catalog/doctype discovery remains deferred to P8.
 - P4-06 file linkage covers individual file rename/move; directory rename/move descendant linkage remains a later explicit policy decision.
-- P4-07 browser/system clipboard behavior depends on platform permission and custom MIME support; outside-workspace file URLs degrade to a basename unless a platform resolver can map them to a workspace-relative path. Native Tauri clipboard/root-path adapters remain future platform work.
+- P4-07 browser/system clipboard behavior depends on platform permission and custom MIME support; native paste fallback now requires a current plain-text binding match and never relies on an external copy event. Outside-workspace file URLs degrade to a basename unless a platform resolver can map them to a workspace-relative path. Native Tauri clipboard/root-path adapters remain future platform work.
 - P4-08 text clipboard copy currently depends on the injected browser/platform writer; a native Tauri text-clipboard adapter and richer context-menu command integration remain future platform work.
 - P4-09 keeps embed child projections source-backed and bounded: target loading is delegated to the application persistence seam, nested content uses the current basic live-preview subset, and a depth limit degrades presentation without changing Markdown.
 - Directory operations containing a Store-loaded Document remain intentionally blocked for the lifetime of that runtime path binding; this conservative policy avoids adding a directory-wide path rebind/unload protocol in P4-R01.
 - P4-06 uses a preserve-when-unambiguous reference spelling policy (with workspace-relative fallback), rejects dirty/external incoming sources and existing targets before mutation, and compensates post-rename filesystem/Store failures without silently leaving broken links.
 - P4-R02 never reuses rollback snapshots as graph revision authority: compensation rebuilds from current Store documents and the current filesystem catalog, while store/filesystem/graph compensation failures remain explicit in `ReferenceRenameTransactionError`.
-- P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is a fallback when browser clipboard permissions or custom MIME support are unavailable. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
+- P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is used only when the current plain-text payload matches the latest internal-copy binding. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
 - P4-08 keeps context actions source-backed: copy returns the exact token, open delegates to the application with an optional resolved target, and mode changes replace only the selected token through the projection mutation capability without creating an embed authority.
+- P4-R04 makes internal reference fallback freshness explicit: the event/platform extractor prioritizes recognized custom MIME/file URI, accepts local nodes only when plain-text-only data matches the latest copy's exact normalized text and deterministic fingerprint, and fails closed on changed, empty, ambiguous, or permission-unreadable payloads.
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes.
 
 ## Next
