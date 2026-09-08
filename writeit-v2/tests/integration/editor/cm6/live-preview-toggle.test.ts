@@ -22,13 +22,16 @@ afterEach(() => {
   for (const view of mountedViews.splice(0)) view.destroy()
 })
 
-function makeStore(markdown: string): {
+function makeStore(
+  markdown: string,
+  pathValue = 'presentation-document.md',
+): {
   store: DocumentStore
   locator: ReturnType<typeof documentById>
 } {
   const store = new DocumentStore()
   const id = createDocumentId('presentation-document')
-  const path = createDocumentPath('presentation-document.md')
+  const path = createDocumentPath(pathValue)
   store.load({ id, path, markdown })
   return { store, locator: documentById(id) }
 }
@@ -93,13 +96,13 @@ describe('CM6 raw source / live preview presentation', () => {
     expect(store.getRevision(locator)).toBe(revisionBeforeToggle)
   })
 
-  it('renders workspace images in the same CM6 live presentation without changing source', async () => {
+  it('resolves nested document images in the same CM6 live presentation without changing source', async () => {
     const source = '![diagram](images/diagram.png)'
-    const { store, locator } = makeStore(source)
+    const { store, locator } = makeStore(source, 'notes/readme.md')
     const resolver = new WorkspaceImageProjectionResolver({
       reader: new MemoryFileSystem({
         binaryFiles: {
-          'images/diagram.png': new Uint8Array([1, 2, 3]),
+          'notes/images/diagram.png': new Uint8Array([1, 2, 3]),
         },
       }),
     })
@@ -112,7 +115,7 @@ describe('CM6 raw source / live preview presentation', () => {
       editable: true,
       imageProjection: {
         imageResolver: resolver,
-        documentPath: 'presentation-document.md',
+        documentPath: 'notes/readme.md',
         onPreview: (image) => previews.push(image.path ?? image.source),
       },
     })
@@ -124,14 +127,14 @@ describe('CM6 raw source / live preview presentation', () => {
     const image = projection.view.contentDOM.querySelector<HTMLImageElement>(
       '.cm-writeit-live-preview-image__content',
     )
-    expect(image?.dataset.imagePath).toBe('images/diagram.png')
+    expect(image?.dataset.imagePath).toBe('notes/images/diagram.png')
     expect(image?.src).toContain('data:image/png;base64,AQID')
     expect(projection.view.state.doc.toString()).toBe(source)
     expect(store.get(locator)?.markdown).toBe(source)
     expect(store.getRevision(locator)).toBe(0)
 
     image?.click()
-    expect(previews).toEqual(['images/diagram.png'])
+    expect(previews).toEqual(['notes/images/diagram.png'])
     resolver.dispose()
   })
 

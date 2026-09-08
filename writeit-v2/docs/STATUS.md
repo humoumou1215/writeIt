@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P4-R02 — Complete
+Current task: P3-R01 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -75,6 +75,7 @@ Current task: P4-R02 — Complete
 - [x] P2-AR-06 remediation — CM6-independent source deltas, minimal selection-preserving Store fan-out, explicit typing history grouping, and byte-aware delta history budgets
 - [x] P4-R01 — Directory rename/move safety for open Documents — fail-closed nested-directory preflight, typed displayable diagnostics, and unit/integration/Chromium coverage ([Task Contract](./P4_R01_TASK_CONTRACT.md))
 - [x] P4-R02 — ReferenceGraph rollback safety — compensation re-syncs graph facts from the current Store/filesystem state, preserves revision consistency, and exposes rollback-step diagnostics ([Task Contract](./P4_R02_TASK_CONTRACT.md))
+- [x] P3-R01 — Standard document-relative image paths — nested attachment source paths, document-relative resolution, source-backed preview/copy, and workspace-tree location share one path semantics ([Task Contract](./P3_R01_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -136,8 +137,8 @@ None
 - P3-03 keeps persistence as an application policy over FileSystemPort: saves validate the last known external Markdown baseline, never overwrite an external conflict implicitly, and reload/discard are explicit Store mutations. Auto-save timers only schedule the same guarded save path.
 - P3-04 keeps recovery metadata and shell preferences outside DocumentStore: only workspace/document paths, active/selected entries, and validated UI settings are persisted; reopening reads Markdown through the filesystem and a desktop adapter can replace the browser storage port later.
 - P3-05 keeps shared shortcut command metadata and assignments outside DocumentStore: the Settings UI projects the command catalog over an independent KeybindingRegistry, persists only validated overrides through SettingsStoragePort, and rejects Mod/Ctrl/Meta-equivalent conflicts atomically. `editor.table.add-row` is exposed in the catalog but remains unavailable until the table editor phase.
-- P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: only successful binary writes produce workspace-relative Markdown paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
-- P3-07 keeps image destinations in Markdown authoritative: workspace-relative and document-relative candidates are resolved only for display, image bytes are projected through object/data URLs, and read/decode/clipboard failures degrade the UI without rewriting source. Preview actions can open a modal, copy bytes, or reveal the path in the workspace tree; system file-manager reveal remains a P11 adapter concern.
+- P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: successful binary writes retain canonical workspace destinations but persist document-relative Markdown source paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
+- P3-07 keeps image source paths in Markdown authoritative: one shared document-relative resolver maps source to workspace bytes for preview/image widgets, copy and workspace-tree reveal; read/decode/clipboard failures degrade the UI without rewriting source, and system file-manager reveal remains a P11 adapter concern.
 - P3-08 keeps template creation outside the tree projection: a future P8 catalog adapts to the injected provider seam, while the application service validates the target and copies provider Markdown through the normal workspace mutation path.
 - P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
@@ -163,7 +164,7 @@ None
 - The P3-06 binary port is implemented by `MemoryFileSystem` for browser/unit coverage; real filesystem binary adapters and system file-manager reveal remain P11 adapter work. Image projection/read/decode behavior is covered by P3-07 but still depends on the later platform binary adapter outside the mock filesystem.
 - P3-04 recovery currently stores one browser session in localStorage and the demo filesystem is recreated on page load; durable multi-workspace identity and native desktop restore remain P11 adapter work.
 - Shortcut dispatch currently covers the browser application commands registered by P3-05; native/global OS shortcut behavior and the real table-row action remain later platform/table work.
-- P3-06 uses workspace-relative attachment paths and defaults to `root-images`; a binary write failure or unavailable document host falls back to an explicit `data:` image reference without losing the paste. P3-07 resolves bare paths workspace-first and then document-relative as a display-only compatibility fallback; ambiguous/missing paths remain visibly unavailable without changing Markdown.
+- P3-R01 standardizes persisted file-image sources as document-relative paths: `root-images` computes `../` segments for nested documents, `same-dir` emits an explicit `./` same-directory name, and `file-images` emits an explicit `./images/` child path when it stays under the document directory. Resolution is document-relative only—legacy workspace-root-first fallback is not used—while missing/invalid/read failures remain visibly unavailable without changing Markdown.
 - Git blame on a dirty Live Preview document needs a source-line mapping policy: committed lines should retain provenance while local/unsaved edits are marked local/uncommitted; Widget-collapsed source ranges must not create false line attribution. Phase 7 now carries this as an explicit design/acceptance risk.
 - Active instructions and SPEC now consistently point to the root `LEGACY_FEATURE_MAP.md`; historical architecture-review evidence may still mention the former path.
 - P3-08 intentionally has no catalog scan, placeholder interpolation, template picker, or default provider; those behaviors belong to P8 and the hook reports unavailable/not-found without creating a partial file.

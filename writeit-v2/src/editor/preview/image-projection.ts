@@ -1,7 +1,8 @@
 import {
   createWorkspacePath,
+  isExternalImageSource,
+  resolveDocumentRelativeImagePath,
   workspaceName,
-  workspaceParent,
 } from '../../core/workspace'
 import type { WorkspacePath } from '../../core/workspace'
 
@@ -16,7 +17,7 @@ export type ImageProjectionResourceStatus =
   | 'unavailable'
 
 export interface ImageProjectionResource {
-  /** The exact destination written in the Markdown source. */
+  /** The exact image source spelling retained in the Markdown source. */
   readonly source: string
   /** Blob/data/external URL used by an image element, or an empty string. */
   readonly url: string
@@ -111,121 +112,26 @@ function sourceWithoutQueryOrFragment(source: string): string {
   return cutAt === undefined ? source : source.slice(0, cutAt)
 }
 
-function normalizedHostPath(hostPath: string | null | undefined): WorkspacePath | undefined {
-  if (hostPath === null || hostPath === undefined || hostPath.trim() === '') {
-    return undefined
-  }
-  try {
-    const path = createWorkspacePath(hostPath)
-    return path === '' ? undefined : path
-  } catch {
-    return undefined
-  }
-}
-
-function pathSegments(path: WorkspacePath): string[] {
-  return path === '' ? [] : path.split('/')
-}
-
-function resolveSegments(
-  base: readonly string[],
-  source: string,
-): WorkspacePath | undefined {
-  const result = [...base]
-  for (const rawSegment of source.replaceAll('\\', '/').split('/')) {
-    const segment = decodePathPart(rawSegment)
-    if (segment === '' || segment === '.') continue
-    if (segment === '..') {
-      if (result.length === 0) return undefined
-      result.pop()
-      continue
-    }
-    result.push(segment)
-  }
-
-  if (result.length === 0) return undefined
-  try {
-    return createWorkspacePath(result.join('/'))
-  } catch {
-    return undefined
-  }
-}
-
-function isExternalImageSource(source: string): boolean {
-  const normalized = source.toLowerCase()
-  return (
-    normalized.startsWith('data:') ||
-    normalized.startsWith('blob:') ||
-    normalized.startsWith('http://') ||
-    normalized.startsWith('https://') ||
-    source.startsWith('//')
-  )
-}
-
-function isUnsupportedImageSource(source: string): boolean {
-  return source.startsWith('/') || /^[a-z][a-z\d+.-]*:/iu.test(source)
-}
-
 /**
- * Returns the workspace paths that may represent a Markdown image destination.
- *
- * P3-06 writes workspace-relative paths (for example `notes/images/a.png`).
- * Existing Markdown commonly uses document-relative `./a.png` or `../a.png`,
- * so bare paths first try the v2 workspace contract and then the document's
- * directory. The reader decides which candidate exists; no candidate is ever
- * written back to the source.
+ * Returns the one workspace path represented by a Markdown image source.
+ * Every source spelling is interpreted relative to the current document's
+ * containing directory; workspace-root-first fallback is intentionally not a
+ * valid compatibility rule.
  */
 export function resolveWorkspaceImageCandidates(
   source: string,
   hostPath?: string | null,
 ): readonly WorkspacePath[] {
-  const normalizedSource = requireSource(source)
-  if (
-    normalizedSource === '' ||
-    isExternalImageSource(normalizedSource) ||
-    isUnsupportedImageSource(normalizedSource)
-  ) {
-    return Object.freeze([])
-  }
-
-  const decodedSource = decodePathPart(
-    sourceWithoutQueryOrFragment(normalizedSource),
-  )
-  if (decodedSource === '' || decodedSource.startsWith('/')) {
-    return Object.freeze([])
-  }
-
-  const host = normalizedHostPath(hostPath)
-  const hostDirectory = host === undefined ? undefined : workspaceParent(host)
-  const sourceUsesRelativePrefix = /^(?:\.\/|\.\.\/)/u.test(decodedSource)
-  const candidates: WorkspacePath[] = []
-
-  const add = (candidate: WorkspacePath | undefined): void => {
-    if (candidate !== undefined && !candidates.includes(candidate)) {
-      candidates.push(candidate)
-    }
-  }
-
-  if (sourceUsesRelativePrefix) {
-    add(
-      resolveSegments(
-        pathSegments(hostDirectory ?? ('' as WorkspacePath)),
-        decodedSource,
-      ),
-    )
-  } else {
-    // P3-06's path contract is workspace-relative and must win when both a
-    // root path and a same-named document-relative path exist.
-    add(resolveSegments([], decodedSource))
-    if (hostDirectory !== undefined) {
-      add(resolveSegments(pathSegments(hostDirectory), decodedSource))
-    }
-  }
-
-  return Object.freeze(candidates)
+  const resolved = resolveDocumentRelativeImagePath(source, hostPath)
+  return resolved === undefined
+    ? Object.freeze([])
+    : Object.freeze([resolved])
 }
 
-/** Returns the first canonical workspace candidate, if one can be formed. */
+/**
+ * Returns the workspace destination addressed by the document-relative source,
+ * if one can be formed.
+ */
 export function resolveWorkspaceImagePath(
   source: string,
   hostPath?: string | null,
@@ -363,9 +269,9 @@ interface CachedImage {
 }
 
 /**
- * Resolves workspace-relative Markdown image destinations to browser-loadable
+ * Resolves document-relative Markdown image destinations to browser-loadable
  * URLs. It is an editor projection helper: it reads bytes but never mutates a
- * DocumentStore or changes the Markdown destination after a read failure.
+ * DocumentStore or changes the Markdown source after a read failure.
  */
 export class WorkspaceImageProjectionResolver
   implements ImageProjectionResolver
@@ -423,7 +329,7 @@ export class WorkspaceImageProjectionResolver
         normalizedSource,
         alt,
         undefined,
-        'Image destination is not a workspace-relative path',
+        'Image destination is not a document-relative path',
       )
     }
     if (this.reader === undefined) {

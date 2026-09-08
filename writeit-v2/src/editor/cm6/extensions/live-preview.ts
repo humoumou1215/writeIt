@@ -14,6 +14,7 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from '@codemirror/view'
+import { isExternalImageSource } from '../../../core/workspace'
 import {
   mimeTypeForImagePath,
   resolveWorkspaceImagePath,
@@ -294,19 +295,13 @@ class LivePreviewLinkWidget extends WidgetType {
 }
 
 function directImageSource(source: string): boolean {
-  const normalized = source.toLowerCase()
-  return (
-    normalized.startsWith('data:') ||
-    normalized.startsWith('blob:') ||
-    normalized.startsWith('http://') ||
-    normalized.startsWith('https://') ||
-    source.startsWith('//')
-  )
+  return isExternalImageSource(source)
 }
 
 function imageResourceWithoutResolver(
   source: string,
   alt: string,
+  documentPath?: string | null,
 ): ImageProjectionResource {
   if (directImageSource(source)) {
     return Object.freeze({
@@ -321,7 +316,7 @@ function imageResourceWithoutResolver(
     })
   }
 
-  const path = resolveWorkspaceImagePath(source)
+  const path = resolveWorkspaceImagePath(source, documentPath)
   return Object.freeze({
     source,
     url: '',
@@ -455,12 +450,22 @@ class LivePreviewImageWidget extends WidgetType {
         .then(apply)
         .catch((error: unknown) => {
           apply({
-            ...imageResourceWithoutResolver(this.source, this.alt),
+            ...imageResourceWithoutResolver(
+              this.source,
+              this.alt,
+              this.options.documentPath,
+            ),
             error: `Image read failed: ${String(error)}`,
           })
         })
     } else {
-      apply(imageResourceWithoutResolver(this.source, this.alt))
+      apply(
+        imageResourceWithoutResolver(
+          this.source,
+          this.alt,
+          this.options.documentPath,
+        ),
+      )
     }
 
     return wrapper

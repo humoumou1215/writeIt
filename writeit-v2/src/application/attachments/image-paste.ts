@@ -2,6 +2,7 @@ import {
   createImagePasteResult,
   createWorkspacePath,
   DEFAULT_IMAGE_PASTE_MODE,
+  documentRelativeImageSourcePath,
   requireImagePasteMode,
   workspaceJoin,
   workspaceParent,
@@ -20,12 +21,12 @@ export const IMAGE_PASTE_MODE_OPTIONS = Object.freeze([
   Object.freeze({
     id: 'root-images' as const,
     label: 'Workspace images/',
-    description: 'Store pasted images in images/ at the workspace root.',
+    description: 'Store pasted images in images/ at the workspace root; Markdown uses a document-relative path.',
   }),
   Object.freeze({
     id: 'same-dir' as const,
     label: 'Same directory',
-    description: 'Store pasted images next to the Markdown document.',
+    description: 'Store pasted images next to the Markdown document and reference them relatively.',
   }),
   Object.freeze({
     id: 'file-images' as const,
@@ -195,10 +196,9 @@ export function bytesToDataUri(bytes: Uint8Array, mimeType = DEFAULT_MIME_TYPE):
 }
 
 /**
- * Computes the workspace-relative path written to the binary port and then
- * referenced from Markdown. The path is deliberately relative to the
- * workspace root, matching the workspace tree and attachment adapter
- * contract; it never contains an absolute or parent traversal segment.
+ * Computes the canonical workspace destination written to the binary port.
+ * Markdown uses `computeImageAttachmentSourcePath` below instead of this
+ * workspace path.
  */
 export function computeImageAttachmentPath(
   mode: ImagePasteMode,
@@ -221,6 +221,22 @@ export function computeImageAttachmentPath(
     case 'file-images':
       return workspaceJoin(workspaceJoin(parent, 'images'), name)
   }
+}
+
+/**
+ * Computes the Markdown source spelling for an attachment destination. The
+ * destination remains a canonical workspace path for filesystem operations;
+ * only the persisted source is relative to the current document directory.
+ */
+export function computeImageAttachmentSourcePath(
+  mode: ImagePasteMode,
+  hostPath: WorkspacePath | string | null | undefined,
+  fileName: string,
+): string | undefined {
+  const target = computeImageAttachmentPath(mode, hostPath, fileName)
+  const host = normalizeHostPath(hostPath)
+  if (target === undefined || host === undefined) return undefined
+  return documentRelativeImageSourcePath(target, host)
 }
 
 export function imageMarkdownReference(
@@ -313,12 +329,18 @@ export class ImageAttachmentService {
       }
 
       let target: WorkspacePath | undefined
+      let sourcePath: string | undefined
       try {
         const generatedName = this.nameGenerator(input, index)
         if (typeof generatedName !== 'string' || generatedName.length === 0) {
           throw new TypeError('Image attachment name must be non-empty')
         }
         target = computeImageAttachmentPath(mode, hostPath, generatedName)
+        sourcePath = computeImageAttachmentSourcePath(
+          mode,
+          hostPath,
+          generatedName,
+        )
       } catch (error) {
         const inlined = inlineReference(
           input,
@@ -329,11 +351,11 @@ export class ImageAttachmentService {
         continue
       }
 
-      if (target === undefined) {
+      if (target === undefined || sourcePath === undefined) {
         const reason =
           hostPath === undefined
             ? 'document has no workspace path'
-            : 'binary filesystem is unavailable'
+            : 'document-relative image path is unavailable'
         const inlined = inlineReference(input, reason)
         references.push(inlined.reference)
         fallbacks.push(inlined.fallback)
@@ -351,7 +373,7 @@ export class ImageAttachmentService {
         await this.fileSystem.writeBinary(target, input.bytes)
         references.push(
           Object.freeze({
-            markdown: imageMarkdownReference(input, target),
+            markdown: imageMarkdownReference(input, sourcePath),
             source: 'file' as const,
             path: target,
             ...(input.name === undefined ? {} : { inputName: input.name }),

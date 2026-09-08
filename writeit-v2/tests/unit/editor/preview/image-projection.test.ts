@@ -24,16 +24,25 @@ function reader(files: Readonly<Record<string, Uint8Array>>): {
 }
 
 describe('workspace image projection', () => {
-  it('resolves workspace and document-relative candidates without rewriting the source', () => {
+  it('resolves image sources only relative to the current document directory', () => {
     expect(
       resolveWorkspaceImageCandidates('images/photo.png', 'notes/readme.md'),
-    ).toEqual(['images/photo.png', 'notes/images/photo.png'])
+    ).toEqual(['notes/images/photo.png'])
     expect(
       resolveWorkspaceImageCandidates('./photo.png', 'notes/readme.md'),
     ).toEqual(['notes/photo.png'])
     expect(
       resolveWorkspaceImageCandidates('../photo.png', 'notes/drafts/readme.md'),
     ).toEqual(['notes/photo.png'])
+    expect(
+      resolveWorkspaceImageCandidates(
+        'images/photo%20one.png?cache=1#preview',
+        'notes/readme.md',
+      ),
+    ).toEqual(['notes/images/photo one.png'])
+    expect(
+      resolveWorkspaceImageCandidates('../../photo.png', 'notes/readme.md'),
+    ).toEqual([])
     expect(resolveWorkspaceImageCandidates('https://example.test/a.png')).toEqual(
       [],
     )
@@ -70,18 +79,31 @@ describe('workspace image projection', () => {
     resolver.dispose()
   })
 
-  it('returns a visible unavailable result on read failure and retains the original path', async () => {
+  it('returns a visible unavailable result on read failure and retains the original source path', async () => {
     const source = reader({})
     const resolver = new WorkspaceImageProjectionResolver({ reader: source })
     const result = await resolver.resolve('images/missing.png', 'notes/readme.md')
 
     expect(result).toMatchObject({
       source: 'images/missing.png',
-      path: 'images/missing.png',
+      path: 'notes/images/missing.png',
       url: '',
       status: 'unavailable',
     })
-    expect(result.error).toContain('Could not read image images/missing.png')
+    expect(result.error).toContain('Could not read image notes/images/missing.png')
+    resolver.dispose()
+  })
+
+  it('does not silently fall back to a same-named workspace-root image', async () => {
+    const source = reader({ 'images/photo.png': pngBytes })
+    const resolver = new WorkspaceImageProjectionResolver({ reader: source })
+
+    const result = await resolver.resolve('images/photo.png', 'notes/readme.md')
+
+    expect(result.status).toBe('unavailable')
+    expect(result.path).toBe('notes/images/photo.png')
+    expect(source.readBinary).toHaveBeenCalledWith('notes/images/photo.png')
+    expect(source.readBinary).toHaveBeenCalledTimes(1)
     resolver.dispose()
   })
 

@@ -24,7 +24,7 @@ async function dispatchImagePaste(
   }, bytes)
 }
 
-test('pastes an image to a workspace-relative attachment and refreshes the tree', async ({
+test('pastes an image to a workspace destination with a document-relative source', async ({
   page,
 }) => {
   await page.goto('/')
@@ -39,6 +39,30 @@ test('pastes an image to a workspace-relative attachment and refreshes the tree'
   await expect(page.getByRole('button', { name: 'Expand images' })).toBeVisible()
   await page.getByRole('button', { name: 'Expand images' }).click()
   await expect(page.locator('[data-workspace-path^="images/Pasted-"]')).toBeVisible()
+})
+
+test('stores nested-document paste sources relative to the document directory', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Expand notes' }).click()
+  await page.locator('[data-workspace-path="notes/architecture.md"] .workspace-tree__row').click()
+  await expect(page.locator('.cm-content')).toContainText('# Architecture notes')
+
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('Control+End')
+  expect(await dispatchImagePaste(page)).toBe(true)
+
+  await expect(page.locator('.cm-content')).toContainText('../images/Pasted-')
+  const image = page.locator('.preview-host .live-preview-image__content')
+  await expect(image).toHaveAttribute('data-image-path', /^images\/Pasted-/)
+  const path = await image.getAttribute('data-image-path')
+  if (!path) throw new Error('nested image path was not projected')
+
+  await page.locator('.preview-host [data-image-action="reveal"]').click()
+  await expect(
+    page.locator(`[data-workspace-path="${path}"]`),
+  ).toHaveAttribute('aria-selected', 'true')
 })
 
 test('resolves, previews, and locates a workspace image without changing Markdown', async ({

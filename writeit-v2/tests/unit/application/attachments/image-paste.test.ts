@@ -4,6 +4,7 @@ import {
   bytesToBase64,
   bytesToDataUri,
   computeImageAttachmentPath,
+  computeImageAttachmentSourcePath,
 } from '../../../../src/application/attachments'
 import { createDocumentPath } from '../../../../src/core/document'
 import { createWorkspacePath } from '../../../../src/core/workspace'
@@ -45,30 +46,61 @@ describe('ImageAttachmentService', () => {
     ).toBe(expected)
   })
 
-  it('writes a relative workspace path and preserves the exact bytes', async () => {
-    const fileSystem = new MemoryFileSystem({ directories: ['notes'] })
-    const result = await service(fileSystem).paste({
-      images: [image],
-      mode: 'file-images',
-      hostPath: 'notes/readme.md',
-    })
+  it.each([
+    ['root-images', 'images/capture.png', '../images/capture.png'],
+    ['same-dir', 'notes/capture.png', './capture.png'],
+    ['file-images', 'notes/images/capture.png', './images/capture.png'],
+  ] as const)(
+    'persists %s at a workspace destination but stores a document-relative source',
+    async (mode, savedPath, sourcePath) => {
+      const fileSystem = new MemoryFileSystem({ directories: ['notes'] })
+      const result = await service(fileSystem).paste({
+        images: [image],
+        mode,
+        hostPath: 'notes/readme.md',
+      })
 
-    expect(result).toMatchObject({
-      savedPaths: ['notes/images/capture.png'],
-      inlinedCount: 0,
-      fallbacks: [],
-    })
-    expect(result.references).toEqual([
-      {
-        markdown: '![clipboard](notes/images/capture.png)',
-        source: 'file',
-        path: 'notes/images/capture.png',
-        inputName: 'clipboard.png',
-      },
-    ])
+      expect(result).toMatchObject({
+        savedPaths: [savedPath],
+        inlinedCount: 0,
+        fallbacks: [],
+      })
+      expect(result.references).toEqual([
+        {
+          markdown: `![clipboard](${sourcePath})`,
+          source: 'file',
+          path: savedPath,
+          inputName: 'clipboard.png',
+        },
+      ])
+      expect(
+        [...(await fileSystem.readBinary(createWorkspacePath(savedPath)))],
+      ).toEqual([...image.bytes])
+    },
+  )
+
+  it('computes document-relative paths for nested destinations', () => {
     expect(
-      [...(await fileSystem.readBinary(createWorkspacePath('notes/images/capture.png')))],
-    ).toEqual([...image.bytes])
+      computeImageAttachmentSourcePath(
+        'root-images',
+        createWorkspacePath('notes/deep/readme.md'),
+        'capture.png',
+      ),
+    ).toBe('../../images/capture.png')
+    expect(
+      computeImageAttachmentSourcePath(
+        'same-dir',
+        createWorkspacePath('notes/deep/readme.md'),
+        'capture.png',
+      ),
+    ).toBe('./capture.png')
+    expect(
+      computeImageAttachmentSourcePath(
+        'file-images',
+        createWorkspacePath('notes/deep/readme.md'),
+        'capture.png',
+      ),
+    ).toBe('./images/capture.png')
   })
 
   it('keeps inline mode explicit and does not touch the binary filesystem', async () => {

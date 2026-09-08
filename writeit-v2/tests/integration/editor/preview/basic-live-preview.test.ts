@@ -15,13 +15,16 @@ import {
 } from '../../../../src/editor/preview'
 import { MemoryFileSystem } from '../../../../src/platform/filesystem'
 
-function makeStore(markdown: string): {
+function makeStore(
+  markdown: string,
+  pathValue = 'preview-document.md',
+): {
   store: DocumentStore
   locator: ReturnType<typeof documentById>
 } {
   const store = new DocumentStore()
   const id = createDocumentId('preview-document')
-  const path = createDocumentPath('preview-document.md')
+  const path = createDocumentPath(pathValue)
   store.load({ id, path, markdown })
   return { store, locator: documentById(id) }
 }
@@ -79,6 +82,34 @@ describe('basic live preview', () => {
     parent.querySelector<HTMLButtonElement>('[data-image-action="reveal"]')?.click()
     expect(previews).toEqual(['images/diagram.png'])
     expect(reveals).toEqual(['images/diagram.png'])
+    resolver.dispose()
+  })
+
+  it('resolves a nested document image against its containing directory', async () => {
+    const source = '![diagram](images/diagram.png)'
+    const { store, locator } = makeStore(source, 'notes/readme.md')
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem({
+        binaryFiles: {
+          'notes/images/diagram.png': new Uint8Array([1, 2, 3]),
+        },
+      }),
+    })
+    const parent = document.createElement('div')
+
+    renderBasicMarkdownPreview(parent, source, {
+      imageResolver: resolver,
+      documentPath: 'notes/readme.md',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const image = parent.querySelector<HTMLImageElement>(
+      '.live-preview-image__content',
+    )
+    expect(image?.dataset.imagePath).toBe('notes/images/diagram.png')
+    expect(image?.dataset.imageStatus).toBe('ready')
+    expect(store.get(locator)?.markdown).toBe(source)
     resolver.dispose()
   })
 

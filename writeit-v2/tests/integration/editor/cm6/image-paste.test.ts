@@ -105,11 +105,11 @@ describe('CM6 image attachment paste', () => {
 
     expect(event.defaultPrevented).toBe(true)
     expect(store.get(locator)?.markdown).toBe(
-      'before![clipboard](notes/images/capture.png)',
+      'before![clipboard](./images/capture.png)',
     )
     expect(store.get(locator)?.revision).toBe(1)
     expect(projection.view.state.doc.toString()).toBe(
-      'before![clipboard](notes/images/capture.png)',
+      'before![clipboard](./images/capture.png)',
     )
     expect(
       [...await fileSystem.readBinary(createWorkspacePath('notes/images/capture.png'))],

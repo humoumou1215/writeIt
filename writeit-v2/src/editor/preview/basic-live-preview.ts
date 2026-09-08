@@ -9,6 +9,7 @@ import type {
   DocumentState,
   Revision,
 } from '../../core/document'
+import { isExternalImageSource } from '../../core/workspace'
 import {
   mimeTypeForImagePath,
   resolveWorkspaceImagePath,
@@ -144,19 +145,13 @@ const pattern =
   /!\[([^\]\n]*)\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|_([^_\n]+)_|\[([^\]\n]+)\]\(([^)\s]+)\)/g
 
 function isDirectImageSource(source: string): boolean {
-  const normalized = source.toLowerCase()
-  return (
-    normalized.startsWith('data:') ||
-    normalized.startsWith('blob:') ||
-    normalized.startsWith('http://') ||
-    normalized.startsWith('https://') ||
-    source.startsWith('//')
-  )
+  return isExternalImageSource(source)
 }
 
 function imageResourceWithoutResolver(
   source: string,
   alt: string,
+  documentPath?: string | null,
 ): ImageProjectionResource {
   if (isDirectImageSource(source)) {
     return Object.freeze({
@@ -171,7 +166,7 @@ function imageResourceWithoutResolver(
     })
   }
 
-  const path = resolveWorkspaceImagePath(source)
+  const path = resolveWorkspaceImagePath(source, documentPath)
   return Object.freeze({
     source,
     url: '',
@@ -288,7 +283,7 @@ function appendImageProjection(
   parent.append(wrapper)
   const initialResource = options.imageResolver
     ? undefined
-    : imageResourceWithoutResolver(source, alt)
+    : imageResourceWithoutResolver(source, alt, options.documentPath)
   if (initialResource) {
     applyResource(initialResource)
   } else if (options.imageResolver) {
@@ -302,7 +297,11 @@ function appendImageProjection(
       .catch((error: unknown) => {
         if (!wrapper.isConnected && !parent.contains(wrapper)) return
         applyResource({
-          ...imageResourceWithoutResolver(source, alt),
+          ...imageResourceWithoutResolver(
+            source,
+            alt,
+            options.documentPath,
+          ),
           error: `Image read failed: ${String(error)}`,
         })
       })
