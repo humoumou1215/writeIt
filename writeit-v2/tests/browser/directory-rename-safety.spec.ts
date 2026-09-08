@@ -16,6 +16,7 @@ test('blocks renaming a directory that contains a dirty nested Document', async 
   page,
 }) => {
   await openNestedDocument(page)
+  await page.getByLabel('Auto-save delay').selectOption('manual')
 
   const editor = page.locator('.cm-content')
   await editor.click()

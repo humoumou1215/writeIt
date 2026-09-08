@@ -46,6 +46,7 @@ const emit = defineEmits<{
           :data-workspace-tab-path="tab.path"
           :data-workspace-tab-id="tab.documentId"
           @click="emit('select', tab.documentId)"
+          @dblclick="emit('close', tab.documentId)"
         >
           <span
             class="workspace-tab__dirty"

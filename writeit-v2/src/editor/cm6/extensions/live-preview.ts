@@ -353,6 +353,7 @@ class LivePreviewImageWidget extends WidgetType {
     const wrapper = document.createElement('span')
     wrapper.className = 'cm-writeit-live-preview-image'
     wrapper.dataset.imageSource = this.source
+    wrapper.tabIndex = 0
 
     const image = document.createElement('img')
     image.className = 'cm-writeit-live-preview-image__content'
@@ -423,7 +424,11 @@ class LivePreviewImageWidget extends WidgetType {
     const invokePreview = (): void => {
       if (resource && this.options.onPreview) this.options.onPreview(resource)
     }
-    image.addEventListener('click', invokePreview)
+    image.addEventListener('click', (event) => {
+      event.preventDefault()
+      wrapper.focus()
+      wrapper.dataset.imageFocused = 'true'
+    })
     previewButton.addEventListener('click', invokePreview)
     copyButton.addEventListener('click', () => {
       if (!resource || !this.options.onCopy) return

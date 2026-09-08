@@ -1,9 +1,9 @@
 # WriteIt v2 Status
 
-- **Current phase:** Codex Goal preparation complete; P5 not started
-- **Current task:** None — Goal contract is READY, not ACTIVE
+- **Current phase:** G1 — Phase 5 Table Engine
+- **Current task:** P5-00 — Table Representation Verification
 - **Branch:** `codex/goal-writeit-v2`
-- **Verified baseline:** `03975a7` (`fix(v2): complete F-03 follow-up integration`)
+- **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
 - **Decision ledger:** [DECISIONS.md](./DECISIONS.md)
 - **Milestone history:** [MILESTONES.md](./MILESTONES.md)
@@ -24,8 +24,8 @@
 
 | Checkpoint | State | Scope |
 |---|---|---|
-| G0 | PENDING | P4-UX01/P4-UX02 and production Embed retry reconciliation |
-| G1 | PENDING | P5 Table |
+| G0 | PASS | P4-UX01/P4-UX02 and production Embed retry reconciliation |
+| G1 | ACTIVE | P5 Table |
 | G2 | PENDING | P6 Annotation + Mermaid |
 | G3 | PENDING | P7 Git + Diff + Provenance |
 | G4 | PENDING | P8 Derived Services + Template Intelligence |
@@ -37,8 +37,8 @@
 ## Gate state
 
 - P4-AR2: **PASS**. The earlier architecture blocker is cleared.
-- P4-UX01/P4-UX02: present in SPEC but not previously closed as independent tasks; G0 must reconcile every acceptance item.
-- production Embed loader failure/retry: former non-blocking deferred test gap; D-013 promotes it to a required G0 outcome.
+- P4-UX01/P4-UX02: **PASS** in [G0 reconciliation](./G0_P4_UX_RECONCILIATION.md).
+- production Embed loader failure/retry: closed in G0 with real App browser evidence.
 - P5～P12: not started.
 
 ## Active decisions
@@ -56,9 +56,9 @@
 - Node 22 is the CI/release baseline; current local Node 23 is inside the supported `>=22 <24` development range.
 - Browser/mock filesystem coverage is strong, but native CAS/binary/exclusive-create semantics still need P11 adapter evidence.
 - Office clipboard evidence does not cover every target application; the bounded deferral policy is in `GOAL.md`.
-- production Embed failure/retry must be closed in G0 before Table work.
+- P5 starts from P5-00 renderer/legacy-fixture verification of visible `<br>` cell line breaks.
 - Production build passes but the main JS chunk is about `899.86 kB` (`283.16 kB` gzip), above Vite's warning threshold; address from measured startup/runtime evidence rather than hiding the warning.
 
 ## Next
 
-Open a fresh Codex task, activate the single Goal defined by [GOAL.md](./GOAL.md), change its status to `ACTIVE`, and start G0. Do not start P5 until G0 is PASS.
+Execute P5-00, then continue G1 in SPEC order through P5-AR1.

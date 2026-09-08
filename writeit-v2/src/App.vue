@@ -207,6 +207,7 @@ const documentIdsByPath = new Map<WorkspacePath, DocumentId>([
   [initialWorkspacePath, documentId],
 ])
 const embeddedDocumentLoads = new Map<WorkspacePath, Promise<void>>()
+const embeddedDocumentLoadFailures = new Map<WorkspacePath, number>()
 let workspaceDeletionGeneration = 0
 const tabs = new WorkspaceTabManager()
 const tabSnapshot = ref(tabs.getSnapshot())
@@ -241,6 +242,7 @@ const shortcutEntries = computed<readonly ShortcutSettingsEntry[]>(() => {
 const sidebarCollapsed = ref(initialSettings.sidebarCollapsed)
 const sidebarPinned = ref(initialSettings.sidebarPinned)
 const sidebarWidth = ref(initialSettings.sidebarWidth)
+const activeWorkspaceTool = ref<'files' | 'search' | 'git'>('files')
 const autoSaveDelay = ref(initialSettings.autoSaveDelayMs)
 const imagePasteMode = ref<ImagePasteMode>(initialSettings.imagePasteMode)
 const restoreLastWorkspace = ref(initialSettings.restoreLastWorkspace)
@@ -254,8 +256,11 @@ let restoringWorkspace = false
 
 const editorHost = ref<HTMLDivElement | null>(null)
 const previewHost = ref<HTMLDivElement | null>(null)
+const splitEditorHost = ref<HTMLDivElement | null>(null)
 const projection = ref<SingleDocumentView | null>(null)
 const preview = ref<BasicLivePreview | null>(null)
+const splitProjection = ref<SingleDocumentView | null>(null)
+const splitDocumentId = ref<DocumentId | null>(null)
 const mountedDocumentId = ref<DocumentId | null>(null)
 const presentationMode = ref<PresentationMode>('source')
 const presentationModes = new Map<DocumentId, PresentationMode>()
@@ -406,6 +411,13 @@ const activeDocument = computed<DocumentState | undefined>(() => {
     : store.get(documentById(activeDocumentId))
 })
 
+const splitDocument = computed<DocumentState | undefined>(() => {
+  documentRevisionSignal.value
+  return splitDocumentId.value === null
+    ? undefined
+    : store.get(documentById(splitDocumentId.value))
+})
+
 const activePersistenceState = computed(() => {
   persistenceRevisionSignal.value
   const activeDocumentId = tabSnapshot.value.activeDocumentId
@@ -531,6 +543,12 @@ async function ensureEmbeddedDocument(
       documentIdsByPath.set(path, id)
     }
     if (!store.get(documentById(id))) {
+      const remainingFailures = embeddedDocumentLoadFailures.get(path) ?? 0
+      if (remainingFailures > 0) {
+        if (remainingFailures === 1) embeddedDocumentLoadFailures.delete(path)
+        else embeddedDocumentLoadFailures.set(path, remainingFailures - 1)
+        throw new Error(`Simulated transient Embed load failure: ${path}`)
+      }
       await persistence.loadFromFile({
         id,
         path: createDocumentPath(path),
@@ -860,6 +878,23 @@ function toggleSidebarPinned(): void {
   updateWorkspaceSettings({ sidebarPinned: !sidebarPinned.value })
 }
 
+function selectWorkspaceTool(tool: 'files' | 'search' | 'git'): void {
+  activeWorkspaceTool.value = tool
+}
+
+function maybeAutoCollapseSidebar(): void {
+  if (!sidebarPinned.value && !sidebarCollapsed.value) {
+    updateWorkspaceSettings({ sidebarCollapsed: true })
+  }
+}
+
+function handleMainFocusIn(event: FocusEvent): void {
+  const target = event.target
+  if (target instanceof Element && target.closest('.editor-host')) {
+    maybeAutoCollapseSidebar()
+  }
+}
+
 function changeSidebarCollapsed(event: Event): void {
   updateWorkspaceSettings({
     sidebarCollapsed: (event.target as HTMLInputElement).checked,
@@ -1053,6 +1088,36 @@ function destroyActiveProjections(): void {
   }
 }
 
+function destroySplitProjection(): void {
+  const activeSplit = splitProjection.value
+  splitProjection.value = null
+  activeSplit?.destroy()
+}
+
+function closeSplitPane(): void {
+  destroySplitProjection()
+  splitDocumentId.value = null
+}
+
+function mountSplitDocument(fragment: string | null = null): void {
+  destroySplitProjection()
+  const host = splitEditorHost.value
+  const documentIdToMount = splitDocumentId.value
+  if (!host || documentIdToMount === null) return
+  const document = store.get(documentById(documentIdToMount))
+  if (!document) return
+  const next = mountSingleDocumentView({
+    store,
+    locator: documentById(document.id),
+    parent: host,
+    projectionId: `cm6-split-${document.id}`,
+    editable: true,
+    presentationMode: presentationModes.get(document.id) ?? 'source',
+  })
+  splitProjection.value = next
+  if (fragment !== null) next.jumpToFragment(fragment)
+}
+
 function mountActiveDocument(): void {
   if (!editorHost.value || !previewHost.value) return
 
@@ -1132,6 +1197,9 @@ function mountActiveDocument(): void {
           onOpen: (path, fragment) => {
             void openWorkspaceFile(path, fragment)
           },
+          onOpenInSplit: (path, fragment) => {
+            void openWorkspaceFileInSplit(path, fragment)
+          },
         }),
         createCompletionExtension({
           registry: completionRegistry,
@@ -1153,6 +1221,8 @@ function mountActiveDocument(): void {
           imagePaste: createImagePasteBridgeOptions(),
           onOpen: (path, fragment) =>
             openReferenceContext({ path, fragment }),
+          onOpenInSplit: (path, fragment) =>
+            openWorkspaceFileInSplit(createWorkspacePath(path), fragment),
         }),
       ],
       imageProjection: imageProjectionOptions,
@@ -1193,6 +1263,68 @@ function navigateTabs(direction: -1 | 1): void {
   if (next) activateWorkspaceTab(next.documentId)
 }
 
+async function ensureWorkspaceDocumentLoaded(
+  normalizedPath: WorkspacePath,
+): Promise<DocumentId> {
+  const documentPathForOpen = createDocumentPath(normalizedPath)
+  let loadedDocument = store.get(documentByPath(documentPathForOpen))
+  let mappedDocumentId = documentIdsByPath.get(normalizedPath)
+
+  if (!loadedDocument && mappedDocumentId !== undefined) {
+    const mappedDocument = store.get(documentById(mappedDocumentId))
+    if (mappedDocument?.path === documentPathForOpen) loadedDocument = mappedDocument
+    else {
+      documentIdsByPath.delete(normalizedPath)
+      mappedDocumentId = undefined
+    }
+  }
+  if (loadedDocument) {
+    mappedDocumentId = loadedDocument.id
+    documentIdsByPath.set(normalizedPath, loadedDocument.id)
+  }
+
+  const decision = decideWorkspaceOpen({
+    loadedDocumentId: loadedDocument?.id,
+    dirty: loadedDocument?.dirty ?? false,
+    tabOpen: loadedDocument !== undefined && tabs.isOpen(loadedDocument.id),
+  })
+  let documentIdForPath: DocumentId
+  if (decision.kind === 'load') {
+    documentIdForPath = mappedDocumentId ?? createDocumentId(`workspace:${normalizedPath}`)
+    await persistence.loadFromFile({ id: documentIdForPath, path: documentPathForOpen })
+    documentIdsByPath.set(normalizedPath, documentIdForPath)
+  } else {
+    documentIdForPath = decision.documentId
+    if (decision.kind === 'reopen-clean') {
+      await persistence.reopen(documentById(documentIdForPath))
+    }
+  }
+  observeDocument(documentIdForPath)
+  observePersistence(documentIdForPath)
+  indexReferenceDocument(store.get(documentById(documentIdForPath)))
+  return documentIdForPath
+}
+
+async function openWorkspaceFileInSplit(
+  path: WorkspacePath,
+  fragment: string | null = null,
+): Promise<void> {
+  if (workspaceBusy.value) return
+  const normalizedPath = createWorkspacePath(path)
+  if (findWorkspaceNode(workspaceTreeSnapshot.value.tree, normalizedPath)?.kind !== 'file') return
+  workspaceBusy.value = true
+  workspaceError.value = null
+  try {
+    splitDocumentId.value = await ensureWorkspaceDocumentLoaded(normalizedPath)
+    await nextTick()
+    mountSplitDocument(fragment)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  } finally {
+    workspaceBusy.value = false
+  }
+}
+
 async function openWorkspaceFile(
   path: WorkspacePath,
   fragment: string | null = null,
@@ -1211,55 +1343,7 @@ async function openWorkspaceFile(
   workspaceBusy.value = true
   workspaceError.value = null
   try {
-    const documentPathForOpen = createDocumentPath(normalizedPath)
-    let loadedDocument = store.get(documentByPath(documentPathForOpen))
-    let mappedDocumentId = documentIdsByPath.get(normalizedPath)
-
-    // The Store is authoritative for identity. The path map is only a
-    // navigation hint and may lag behind an Embed/other projection that
-    // loaded the Document without opening a workspace tab.
-    if (!loadedDocument && mappedDocumentId !== undefined) {
-      const mappedDocument = store.get(documentById(mappedDocumentId))
-      if (mappedDocument?.path === documentPathForOpen) {
-        loadedDocument = mappedDocument
-      } else {
-        documentIdsByPath.delete(normalizedPath)
-        mappedDocumentId = undefined
-      }
-    }
-    if (loadedDocument) {
-      mappedDocumentId = loadedDocument.id
-      documentIdsByPath.set(normalizedPath, loadedDocument.id)
-    }
-
-    const wasOpen =
-      loadedDocument !== undefined && tabs.isOpen(loadedDocument.id)
-    const decision = decideWorkspaceOpen({
-      loadedDocumentId: loadedDocument?.id,
-      dirty: loadedDocument?.dirty ?? false,
-      tabOpen: wasOpen,
-    })
-    let documentIdForPath: DocumentId
-    if (decision.kind === 'load') {
-      documentIdForPath =
-        mappedDocumentId ?? createDocumentId(`workspace:${normalizedPath}`)
-      await persistence.loadFromFile({
-        id: documentIdForPath,
-        path: documentPathForOpen,
-      })
-      documentIdsByPath.set(normalizedPath, documentIdForPath)
-    } else {
-      documentIdForPath = decision.documentId
-      if (decision.kind === 'reopen-clean') {
-        // Preserve the existing clean closed-document reconciliation path.
-        // Dirty Documents take the activate-existing branch and never reach
-        // persistence.reopen(), so their in-memory edits cannot be replaced.
-        await persistence.reopen(documentById(documentIdForPath))
-      }
-    }
-    observeDocument(documentIdForPath)
-    observePersistence(documentIdForPath)
-    indexReferenceDocument(store.get(documentById(documentIdForPath)))
+    const documentIdForPath = await ensureWorkspaceDocumentLoaded(normalizedPath)
     pendingFragmentNavigation =
       fragment === null
         ? null
@@ -1268,6 +1352,7 @@ async function openWorkspaceFile(
     const previousActive = tabSnapshot.value.activeDocumentId
     if (previousActive !== documentIdForPath) destroyActiveProjections()
     tabs.open(documentIdForPath)
+    maybeAutoCollapseSidebar()
     selectedWorkspacePath.value = normalizedPath
     workspaceRevealPath.value = normalizedPath
     workspaceRevealVersion.value += 1
@@ -1721,6 +1806,21 @@ async function initializeWorkspace(): Promise<void> {
 }
 
 onMounted(() => {
+  if (import.meta.env.DEV) {
+    ;(window as unknown as {
+      __writeItV2AppTest?: {
+        failNextEmbeddedLoad(path: string, count?: number): void
+      }
+    }).__writeItV2AppTest = {
+      failNextEmbeddedLoad(path, count = 1) {
+        const normalized = createWorkspacePath(path)
+        embeddedDocumentLoadFailures.set(
+          normalized,
+          Math.max(1, Math.trunc(count)),
+        )
+      },
+    }
+  }
   window.addEventListener('keydown', handleWorkspaceKeydown)
   window.addEventListener('keydown', handleShortcutKeydown)
   void initializeWorkspace().catch((error: unknown) => {
@@ -1731,6 +1831,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (import.meta.env.DEV) {
+    delete (window as unknown as { __writeItV2AppTest?: unknown })
+      .__writeItV2AppTest
+  }
   if (pendingWorkspaceDeletion.value) {
     const pending = pendingWorkspaceDeletion.value
     pendingWorkspaceDeletion.value = null
@@ -1741,6 +1845,7 @@ onBeforeUnmount(() => {
   endSidebarResize()
   persistWorkspaceRecovery()
   destroyActiveProjections()
+  destroySplitProjection()
   imagePreview.value = null
   imageProjectionResolver.dispose()
   for (const unsubscribe of documentSubscriptions.values()) unsubscribe()
@@ -1985,6 +2090,21 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="workspace-card__body">
+        <nav class="workspace-tools" aria-label="Workspace tools">
+          <button
+            v-for="tool in (['files', 'search', 'git'] as const)"
+            :key="tool"
+            type="button"
+            class="workspace-tool"
+            :class="{ 'workspace-tool--active': activeWorkspaceTool === tool }"
+            :data-testid="`workspace-tool-${tool}`"
+            :aria-pressed="activeWorkspaceTool === tool"
+            @click="selectWorkspaceTool(tool)"
+          >
+            {{ tool === 'files' ? 'Files' : tool === 'search' ? 'Search' : 'Git' }}
+          </button>
+        </nav>
+        <div v-if="activeWorkspaceTool === 'files'" data-testid="workspace-files-tool">
         <div class="workspace-create">
           <label for="workspace-entry-name">New entry</label>
           <input
@@ -2055,6 +2175,31 @@ onBeforeUnmount(() => {
           拖动文件或文件夹到另一个文件夹即可移动；树状态来自 filesystem refresh。
         </p>
         </div>
+        <section
+          v-else
+          class="workspace-tool-placeholder"
+          :data-testid="`workspace-${activeWorkspaceTool}-tool`"
+          :aria-label="`${activeWorkspaceTool} workspace tool`"
+        >
+          <h3>{{ activeWorkspaceTool === 'search' ? 'Search' : 'Git' }}</h3>
+          <p>
+            {{ activeWorkspaceTool === 'search'
+              ? '全文搜索将在 P8 接入；切换工具不会重建当前编辑器。'
+              : 'Git 工作台将在 P7 接入；切换工具不会重建当前编辑器。' }}
+          </p>
+          <ul v-if="activeWorkspaceTool === 'git'" class="workspace-git-preview" aria-label="Changed files preview">
+            <li
+              v-if="activeDocument?.dirty"
+              class="workspace-git-preview__current"
+              data-testid="workspace-git-current-document"
+            >
+              <span>{{ activeDocument.path }}</span>
+              <span>Unsaved</span>
+            </li>
+            <li v-else class="workspace-git-preview__empty">No current unsaved change.</li>
+          </ul>
+        </section>
+        </div>
         <div
           v-if="!sidebarCollapsed"
           class="workspace-resize-handle"
@@ -2072,7 +2217,7 @@ onBeforeUnmount(() => {
         ></div>
       </aside>
 
-      <section class="workspace-main" aria-label="Open documents">
+      <section class="workspace-main" aria-label="Open documents" @focusin="handleMainFocusIn">
         <div class="workspace-tab-toolbar">
           <WorkspaceTabsPanel
             :tabs="documentTabViews"
@@ -2217,6 +2362,34 @@ onBeforeUnmount(() => {
             </p>
             <p class="projection-note">
               同一 CM6 document 在 Raw Source 与 Live Preview decorations/widgets 间切换；不创建第二个 textarea authority。试试 <code>Ctrl/Cmd+E</code>、<code>@</code>、<code>[[</code> 或 <code>![[</code>。
+            </p>
+          </section>
+
+          <section
+            v-if="splitDocument"
+            class="editor-card editor-card--split"
+            data-testid="workspace-split-pane"
+            aria-label="Split Markdown editor projection"
+          >
+            <div class="surface-heading">
+              <div>
+                <h2>Split editor</h2>
+                <span class="presentation-status" data-testid="workspace-split-path">
+                  {{ splitDocument.path }}
+                </span>
+              </div>
+              <button
+                type="button"
+                data-testid="workspace-split-close"
+                aria-label="Close split editor"
+                @click="closeSplitPane"
+              >
+                Close split
+              </button>
+            </div>
+            <div ref="splitEditorHost" class="editor-host split-editor-host"></div>
+            <p class="projection-note">
+              分屏与其他编辑区共享同一 DocumentStore 内容和 revision。
             </p>
           </section>
 

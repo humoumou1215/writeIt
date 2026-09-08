@@ -152,6 +152,11 @@ test('keeps readonly embed body non-editable while its explicit open action navi
   await mountHarness(page, '![[EmbedTarget.md|ro]]')
   const embed = page.locator('[data-testid="embed-host-editor"] [data-writeit-embed]')
   await expect(embed).toHaveAttribute('data-embed-mode', 'readonly')
+  await expect(embed.locator('[data-embed-label]')).toContainText('![[EmbedTarget.md|ro]]')
+  await expect(embed.locator('[data-embed-label]')).toContainText('Readonly')
+  expect(await embed.locator('[data-embed-label]').evaluate((element) =>
+    getComputedStyle(element).position,
+  )).toBe('sticky')
   const childContent = embed.locator('.cm-writeit-embed-projection__editor .cm-content')
   await childContent.click()
   await page.keyboard.press('End')
@@ -262,6 +267,14 @@ test('decodes document-relative images in a nested embed with the shared resolve
   )
   await expect(image).toHaveAttribute('data-image-status', 'ready')
   await expect(image).toHaveAttribute('data-image-path', 'notes/assets/diagram.png')
+  const nestedEmbeds = page.locator(
+    '[data-testid="browser-nested-image-host"] [data-writeit-embed]',
+  )
+  await expect(nestedEmbeds).toHaveCount(2)
+  await expect(nestedEmbeds.nth(0)).toHaveAttribute('data-embed-depth', '0')
+  await expect(nestedEmbeds.nth(1)).toHaveAttribute('data-embed-depth', '1')
+  await expect(nestedEmbeds.nth(0).locator(':scope > [data-embed-label]'))
+    .toContainText('![[notes/Parent.md]]')
   await expect.poll(() =>
     page.evaluate(() => {
       const candidate = document.querySelector<HTMLImageElement>(
@@ -387,12 +400,7 @@ test('retries a transient embed load failure after an explicit target event', as
     )
     .toBe(1)
 
-  await page.evaluate(() => {
-    const harness = (
-      window as unknown as { __writeItV2RetryHarness?: { retry(): void } }
-    ).__writeItV2RetryHarness
-    harness?.retry()
-  })
+  await host.locator('[data-embed-action="retry"]').click()
   await expect(host.locator('[data-embed-status="mounted"]')).toBeVisible()
 
   const state = await page.evaluate(() => {
@@ -582,6 +590,9 @@ test('renders circular embeds as a bounded diagnostic instead of recursing', asy
     void b
   })
   await expect(page.locator('[data-testid="cycle-host-editor"] [data-embed-status="circular"]')).toBeVisible()
+  const circular = page.locator('[data-testid="cycle-host-editor"] [data-embed-status="circular"]')
+  await expect(circular.locator(':scope > [data-embed-label]')).toContainText('![[CycleA.md]]')
+  await expect(circular.locator('[data-embed-message="circular"]')).toContainText('Circular embed')
   await expect(page.locator('[data-testid="cycle-host-editor"] .cm-editor')).toHaveCount(2)
   await page.evaluate(() => {
     ;(

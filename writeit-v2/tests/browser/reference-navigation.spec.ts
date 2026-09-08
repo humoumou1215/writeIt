@@ -154,3 +154,28 @@ test('marks broken references and reselects without rewriting unrelated source',
   expect((await readHarness(page)).revision).toBe(1)
   await destroyHarness(page)
 })
+
+test('keeps duplicate reference occurrences distinct and remaps display-only numbering after edits', async ({
+  page,
+}) => {
+  await mountHarness(page, '[[target.md]] and [[target.md]]')
+  const editor = page.locator('[data-testid="reference-navigation-editor"]')
+  const references = editor.locator('[data-writeit-reference]')
+  await expect(references).toHaveCount(2)
+  await expect(references.nth(0)).toHaveAttribute('data-reference-occurrence-label', '①')
+  await expect(references.nth(1)).toHaveAttribute('data-reference-occurrence-label', '②')
+  const identities = await references.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLElement).dataset.referenceOccurrenceId),
+  )
+  expect(new Set(identities).size).toBe(2)
+  expect((await readHarness(page)).markdown).toBe('[[target.md]] and [[target.md]]')
+
+  const content = editor.locator('.cm-content')
+  await content.click()
+  await page.keyboard.insertText('prefix ')
+  await expect.poll(async () => (await readHarness(page)).markdown)
+    .toBe('[[target.md]] and [[target.md]]prefix ')
+  await expect(references.nth(0)).toHaveAttribute('data-reference-occurrence', '1')
+  await expect(references.nth(1)).toHaveAttribute('data-reference-occurrence', '2')
+  await destroyHarness(page)
+})

@@ -1,6 +1,6 @@
 # WriteIt v2 Codex Goal Contract
 
-- **Status:** READY — prepared, not yet activated
+- **Status:** ACTIVE — execution started at G0
 - **Prepared on:** 2026-09-08
 - **Baseline commit:** `03975a7` (`fix(v2): complete F-03 follow-up integration`)
 - **Goal branch:** `codex/goal-writeit-v2`
@@ -111,8 +111,8 @@ The Goal is complete only when all of the following are true:
 | Checkpoint | State | Commit / evidence | Notes |
 |---|---|---|---|
 | Goal preparation | COMPLETE | `docs(v2): prepare Codex goal workflow` | Baseline `03975a7`; contract check, 396 Vitest, 63 Chromium tests, typecheck and build PASS |
-| G0 | PENDING | — | Start in a fresh Codex task after activating the Goal |
-| G1 | PENDING | — | — |
+| G0 | PASS | `feat(v2): close G0 P4 UX reconciliation` | [P4 UX reconciliation](./G0_P4_UX_RECONCILIATION.md) PASS；397 Vitest + 72 Chromium；production retry closed |
+| G1 | ACTIVE | — | Starting P5-00 table representation verification |
 | G2 | PENDING | — | — |
 | G3 | PENDING | — | — |
 | G4 | PENDING | — | — |
@@ -123,4 +123,4 @@ The Goal is complete only when all of the following are true:
 
 ## Activation
 
-Do not treat this file alone as an active Goal. In a fresh Codex task, explicitly create/start one Goal whose objective is the Objective above and which names this file as its execution contract. At activation, change **Status** from `READY` to `ACTIVE` and begin G0. Mark it `COMPLETE` only after every completion condition is met.
+This contract is ACTIVE in the Codex Goal created from the Objective above. Mark it `COMPLETE` only after every completion condition is met.

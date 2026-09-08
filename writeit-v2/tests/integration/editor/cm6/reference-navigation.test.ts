@@ -30,6 +30,62 @@ async function flush(): Promise<void> {
 }
 
 describe('CM6 reference navigation projection', () => {
+  it('assigns independent display-only occurrence identities and remaps them after source edits', async () => {
+    const store = new DocumentStore()
+    const id = createDocumentId('reference-navigation-occurrences')
+    const locator = documentById(id)
+    const hostDocument = store.load({
+      id,
+      path: createDocumentPath('host.md'),
+      markdown: '[[target.md]] and [[target.md]]',
+    })
+    const graph = new ReferenceGraph({
+      workspacePaths: ['host.md', 'target.md'],
+      documents: [hostDocument],
+    })
+    const health = new ReferenceHealthService(graph)
+    let rawView: EditorView | undefined
+    const capture = ViewPlugin.define((view) => {
+      rawView = view
+      return {}
+    })
+    const projection = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'reference-navigation-occurrences-editor',
+      editable: true,
+      extensions: [
+        capture,
+        createReferenceNavigationExtension({
+          sourcePath: 'host.md',
+          healthResolver: health,
+        }),
+      ],
+    })
+    mounted.push(projection)
+    if (!rawView) throw new Error('CM6 view was not captured')
+    await flush()
+
+    const occurrences = [...rawView.dom.querySelectorAll<HTMLElement>('[data-writeit-reference]')]
+    expect(occurrences.map((mark) => mark.dataset.referenceOccurrence)).toEqual(['1', '2'])
+    expect(occurrences.map((mark) => mark.dataset.referenceOccurrenceLabel)).toEqual(['①', '②'])
+    expect(new Set(occurrences.map((mark) => mark.dataset.referenceOccurrenceId)).size).toBe(2)
+    expect(store.get(locator)?.markdown).toBe('[[target.md]] and [[target.md]]')
+
+    projection.view.dispatch({
+      changes: {
+        from: 0,
+        to: projection.view.state.doc.length,
+        insert: 'prefix [[target.md]] and [[target.md]]',
+      },
+    })
+    await flush()
+    const remapped = [...rawView.dom.querySelectorAll<HTMLElement>('[data-writeit-reference]')]
+    expect(remapped.map((mark) => mark.dataset.referenceOccurrence)).toEqual(['1', '2'])
+    expect(store.get(locator)?.markdown).toBe('prefix [[target.md]] and [[target.md]]')
+  })
+
   it('decorates a healthy reference, shows a tooltip, and opens its fragment', async () => {
     const open = vi.fn()
     const fileSystem = new MemoryFileSystem({

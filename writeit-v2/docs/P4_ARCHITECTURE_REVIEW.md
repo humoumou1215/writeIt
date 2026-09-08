@@ -1,5 +1,7 @@
 # P4-AR2 — P0–P4 Architecture & Product Boundary Re-review
 
+> **G0 addendum（2026-09-08）：** 本报告历史上接受的 production Embed loader retry test gap 已由 [G0 reconciliation](./G0_P4_UX_RECONCILIATION.md) 关闭。真实 App journey 现覆盖 loader failure → visible Retry → recovery；以下 F-03 “deferred/test gap”文字仅保留为历史决策记录，不再描述当前状态。
+
 - **初始评审日期：** 2026-09-08
 - **初始 Baseline：** `65103f3` (`fix(v2): complete P4-R05 embed lifecycle recovery`)
 - **本次 re-review：** 2026-09-08，`HEAD b96d116` 加当前未提交 F-03 follow-up 工作树

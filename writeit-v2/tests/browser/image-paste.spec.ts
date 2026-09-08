@@ -190,6 +190,16 @@ test('resolves, previews, and locates a workspace image without changing Markdow
     ),
   ).toBe(true)
 
+  await editorImage.click()
+  await expect(page.getByTestId('image-preview-modal')).toHaveCount(0)
+  const editorImageShell = page.locator('.cm-writeit-live-preview-image')
+  await editorImageShell.hover()
+  const editorPreviewAction = editorImageShell.locator('[data-image-action="preview"]')
+  await expect(editorPreviewAction).toBeVisible()
+  await editorPreviewAction.click()
+  await expect(page.getByTestId('image-preview-modal')).toBeVisible()
+  await page.getByTestId('image-preview-close').click()
+
   // Return to raw source before asserting source fidelity and exercising the
   // copy/preview/reopen projection actions.
   await page.getByTestId('presentation-toggle').click()

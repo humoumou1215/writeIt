@@ -79,6 +79,12 @@ export interface ReferenceNavigationExtensionOptions {
     fragment: string | null,
     request: ReturnType<typeof createReferenceOpenRequest>,
   ) => void | PromiseLike<void>
+  /** Shift-click opens the same source-backed target in a secondary pane. */
+  readonly onOpenInSplit?: (
+    path: WorkspacePath,
+    fragment: string | null,
+    request: ReturnType<typeof createReferenceOpenRequest>,
+  ) => void | PromiseLike<void>
   /** Object-shaped callback for callers that prefer one navigation payload. */
   readonly onOpenRequest?: (
     request: ReturnType<typeof createReferenceOpenRequest>,
@@ -120,7 +126,7 @@ const setReferenceFactsEffect = StateEffect.define<ReferenceFactsEffect>()
 const REFERENCE_MARK_SELECTOR = '[data-writeit-reference]'
 const EMBED_CARD_SELECTOR = '[data-writeit-embed]'
 const EMBED_BODY_SELECTOR = '.cm-writeit-embed-projection__editor'
-const EMBED_OPEN_ACTION_SELECTOR = '[data-embed-action="open"]'
+const EMBED_ACTION_SELECTOR = '[data-embed-action]'
 const RESELECT_MENU_SELECTOR = '[data-reference-reselect-index]'
 let tooltipSequence = 0
 
@@ -201,7 +207,12 @@ function statusLabel(fact: ReferenceHealthFact): string {
   return `broken: ${fact.status}`
 }
 
-function referenceMark(fact: ReferenceHealthFact): Decoration {
+function occurrenceLabel(index: number): string {
+  const circled = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
+  return index >= 1 && index <= 20 ? circled[index - 1] as string : String(index)
+}
+
+function referenceMark(fact: ReferenceHealthFact, occurrence: number): Decoration {
   const classes = [
     'cm-writeit-reference',
     fact.reference.kind === 'embed' ? 'cm-writeit-reference-embed' : 'cm-writeit-reference-link',
@@ -219,7 +230,10 @@ function referenceMark(fact: ReferenceHealthFact): Decoration {
       'data-reference-health': fact.status,
       'data-reference-broken': String(fact.broken),
       'data-reference-path': fact.targetPath ?? fact.reference.path,
-      'aria-label': `${fact.raw} (${statusLabel(fact)})`,
+      'data-reference-occurrence': String(occurrence),
+      'data-reference-occurrence-label': occurrenceLabel(occurrence),
+      'data-reference-occurrence-id': fact.id,
+      'aria-label': `${fact.raw}, occurrence ${occurrence} (${statusLabel(fact)})`,
     },
   })
 }
@@ -229,6 +243,7 @@ function buildReferenceDecorations(
   facts: readonly ReferenceHealthFact[],
 ): DecorationSet {
   const ranges: Range<Decoration>[] = []
+  let occurrence = 0
   for (const fact of facts) {
     if (
       fact.from < 0 ||
@@ -238,10 +253,11 @@ function buildReferenceDecorations(
     ) {
       continue
     }
+    occurrence += 1
     ranges.push({
       from: fact.from,
       to: fact.to,
-      value: referenceMark(fact),
+      value: referenceMark(fact, occurrence),
     })
   }
   return ranges.length === 0 ? Decoration.none : Decoration.set(ranges, true)
@@ -289,7 +305,7 @@ function elementFromTarget(
  * The card's explicit Open action is also allowed to handle its own click.
  */
 function isEmbedProjectionInteraction(target: EventTarget | null): boolean {
-  if (closestElementFromTarget(target, EMBED_OPEN_ACTION_SELECTOR)) return true
+  if (closestElementFromTarget(target, EMBED_ACTION_SELECTOR)) return true
   const body = closestElementFromTarget(target, EMBED_BODY_SELECTOR)
   if (!body) return false
   const card = closestElementFromTarget(body, EMBED_CARD_SELECTOR)
@@ -298,7 +314,7 @@ function isEmbedProjectionInteraction(target: EventTarget | null): boolean {
   // navigation fallback when no explicit Open action was provided; App wiring
   // supplies that action so readonly image/body interactions stay in-card.
   return card.dataset.embedMode === 'editable' ||
-    card.querySelector(EMBED_OPEN_ACTION_SELECTOR) !== null
+    card.querySelector(EMBED_ACTION_SELECTOR) !== null
 }
 
 function normalizeReselectionItems(
@@ -382,7 +398,11 @@ export class ReferenceNavigationController {
       this.invoke(() =>
         this.options.onOpenRequest?.(request),
       )
-      this.invoke(() => this.options.onOpen?.(request.path, request.fragment, request))
+      this.invoke(() =>
+        event.shiftKey && this.options.onOpenInSplit
+          ? this.options.onOpenInSplit(request.path, request.fragment, request)
+          : this.options.onOpen?.(request.path, request.fragment, request),
+      )
       return
     }
 

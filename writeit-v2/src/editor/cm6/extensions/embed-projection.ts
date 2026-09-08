@@ -128,6 +128,11 @@ export interface EmbedProjectionExtensionOptions {
     fragment: string | null,
     reference: ParsedReference,
   ) => void | PromiseLike<void>
+  readonly onOpenInSplit?: (
+    path: DocumentPath,
+    fragment: string | null,
+    reference: ParsedReference,
+  ) => void | PromiseLike<void>
   /** Readonly is also enforced by the CM6 host state. */
   readonly editable?: boolean
   /** Internal chain state; callers normally leave this unset. */
@@ -397,6 +402,8 @@ class EmbedProjectionWidget extends WidgetType {
   private wrapper: HTMLDivElement | undefined
   private mount: HTMLDivElement | undefined
   private openButton: HTMLButtonElement | undefined
+  private splitButton: HTMLButtonElement | undefined
+  private retryButton: HTMLButtonElement | undefined
   private unsubscribeDocument: (() => void) | undefined
   private unsubscribeTimeline: (() => void) | undefined
 
@@ -429,6 +436,29 @@ class EmbedProjectionWidget extends WidgetType {
     }
   }
 
+  private readonly handleRetryClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    this.retryMissing()
+  }
+
+  private readonly handleSplitClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const path = targetPath(this.renderTarget.target)
+    const onOpenInSplit = this.options.onOpenInSplit
+    if (!path || !onOpenInSplit) return
+    try {
+      void Promise.resolve(
+        onOpenInSplit(path, this.reference.fragment, this.reference),
+      ).catch((error: unknown) => {
+        if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+      })
+    } catch (error) {
+      if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+    }
+  }
+
   /**
    * A child editor owns paste events inside its projection. Stop the event at
    * the child mount after CM6 has handled it so the host editor cannot see a
@@ -450,6 +480,7 @@ class EmbedProjectionWidget extends WidgetType {
     private readonly canEdit: boolean,
     private readonly maxDepth: number,
     private readonly options: EmbedProjectionExtensionOptions,
+    private readonly retryMissing: () => void,
   ) {
     super()
   }
@@ -481,7 +512,16 @@ class EmbedProjectionWidget extends WidgetType {
     const label = document.createElement('div')
     label.className = 'cm-writeit-embed-projection__label'
     label.dataset.embedLabel = 'true'
-    label.textContent = `${modeLabel(this.reference.readonly)} · ${wrapper.dataset.embedTarget}`
+    const source = document.createElement('code')
+    source.className = 'cm-writeit-embed-projection__source'
+    source.textContent = this.reference.raw
+    label.append(source)
+    if (this.reference.readonly) {
+      const readonlyBadge = document.createElement('span')
+      readonlyBadge.className = 'cm-writeit-embed-projection__readonly'
+      readonlyBadge.textContent = 'Readonly'
+      label.append(readonlyBadge)
+    }
     wrapper.append(label)
 
     const target = this.renderTarget.target
@@ -499,8 +539,30 @@ class EmbedProjectionWidget extends WidgetType {
       label.append(openButton)
       this.openButton = openButton
     }
+    if (this.options.onOpenInSplit && targetPath(target) !== undefined) {
+      const splitButton = document.createElement('button')
+      splitButton.type = 'button'
+      splitButton.className = 'cm-writeit-embed-projection__open'
+      splitButton.dataset.embedAction = 'open-split'
+      splitButton.setAttribute(
+        'aria-label',
+        `Open ${displayTarget(target, this.reference)} in split`,
+      )
+      splitButton.textContent = 'Open split'
+      splitButton.addEventListener('click', this.handleSplitClick)
+      label.append(splitButton)
+      this.splitButton = splitButton
+    }
     if (this.renderTarget.error !== undefined) {
       this.appendMessage(wrapper, 'error', `Embed unavailable: ${this.renderTarget.error}`)
+      const retryButton = document.createElement('button')
+      retryButton.type = 'button'
+      retryButton.className = 'cm-writeit-embed-projection__retry'
+      retryButton.dataset.embedAction = 'retry'
+      retryButton.textContent = 'Retry'
+      retryButton.addEventListener('click', this.handleRetryClick)
+      wrapper.append(retryButton)
+      this.retryButton = retryButton
       return wrapper
     }
     if (!target) {
@@ -656,7 +718,11 @@ class EmbedProjectionWidget extends WidgetType {
     this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown)
     this.mount?.removeEventListener('paste', this.handleChildPasteBoundary)
     this.openButton?.removeEventListener('click', this.handleOpenClick)
+    this.splitButton?.removeEventListener('click', this.handleSplitClick)
+    this.retryButton?.removeEventListener('click', this.handleRetryClick)
     this.openButton = undefined
+    this.splitButton = undefined
+    this.retryButton = undefined
     this.child?.destroy()
     this.child = undefined
     this.mount = undefined
@@ -891,6 +957,7 @@ export class EmbedProjectionController {
             this.canEdit,
             this.maxDepth,
             this.options,
+            () => this.requestRefresh(true),
           ),
         }),
       })

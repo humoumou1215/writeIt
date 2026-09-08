@@ -1149,7 +1149,6 @@ describe('CM6 embed projection', () => {
   it('does not permanently consume a transient load failure before retry', async () => {
     const store = new DocumentStore()
     const host = loadDocument(store, 'retry-host', 'RetryHost.md', '![[Retry.md]]')
-    let notifyTargets: () => void = () => undefined
     let loadAttempts = 0
     const projection = mountSingleDocumentView({
       store,
@@ -1170,10 +1169,6 @@ describe('CM6 embed projection', () => {
             }
             loadDocument(store, 'retry-target', 'Retry.md', 'recovered target')
           },
-          subscribeTargets: (listener) => {
-            notifyTargets = listener
-            return () => undefined
-          },
         }),
       ],
     })
@@ -1186,8 +1181,11 @@ describe('CM6 embed projection', () => {
       'transient target load failure',
     )
     expect(projection.view.dom.querySelector('[data-embed-status="error"]')).not.toBeNull()
-
-    notifyTargets()
+    const retry = projection.view.dom.querySelector<HTMLButtonElement>(
+      '[data-embed-action="retry"]',
+    )
+    expect(retry).not.toBeNull()
+    retry?.click()
     await Promise.resolve()
     expect(loadAttempts).toBe(2)
     expect(projection.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()

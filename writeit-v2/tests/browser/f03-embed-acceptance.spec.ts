@@ -360,6 +360,38 @@ test('missing Embed target can appear, become dirty, and then be explicitly open
   await expect(page.getByTestId('workspace-error')).toHaveCount(0)
 })
 
+test('real App exposes a failed Embed load, retries explicitly, and recovers without changing host source', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.evaluate(() => {
+    const hook = (window as unknown as {
+      __writeItV2AppTest?: { failNextEmbeddedLoad(path: string): void }
+    }).__writeItV2AppTest
+    if (!hook) throw new Error('App test hook is unavailable')
+    hook.failNextEmbeddedLoad('notes/workspace.md')
+  })
+  const revisionBefore = await documentRevision(page)
+  await appendReferenceToWelcome(page, '![[notes/workspace.md]]')
+
+  const embed = page.locator(
+    '.editor-host > .cm-editor [data-writeit-embed][data-embed-target="notes/workspace.md"]',
+  )
+  await expect(embed).toHaveAttribute('data-embed-status', 'error')
+  await expect(embed.locator('[data-embed-message="error"]')).toContainText(
+    'Simulated transient Embed load failure',
+  )
+  await expect(embed.locator('[data-embed-action="retry"]')).toBeVisible()
+  await embed.locator('[data-embed-action="retry"]').click()
+  await expect(embed).toHaveAttribute('data-embed-status', 'mounted')
+  await expect(embed.locator('.cm-content')).toContainText('Workspace tree')
+  expect(await documentRevision(page)).toBe(revisionBefore + 1)
+
+  await page.getByTestId('presentation-toggle').click()
+  await expect(page.locator('.editor-host > .cm-editor .cm-content'))
+    .toContainText('![[notes/workspace.md]]')
+})
+
 test('unloaded clean files keep the normal filesystem Open path', async ({
   page,
 }) => {

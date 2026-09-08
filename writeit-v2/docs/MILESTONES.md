@@ -12,6 +12,7 @@
 | 2026-09-08 | P4 reference/embed baseline | Reference graph/completion/navigation/rename/clipboard/context actions/Embed 与 F-01～F-03 follow-ups 完成 |
 | 2026-09-08 | P4 architecture/product gate | [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) user decision B 后 PASS；baseline commit `03975a7` |
 | 2026-09-08 | Codex Goal preparation | Goal/decision contracts、ADR-0007/0008、统一验证与 Goal 分支建立；396 Vitest、63 Chromium、typecheck/build PASS；尚未激活 Goal |
+| 2026-09-08 | G0 P4 UX reconciliation | [G0 review](./G0_P4_UX_RECONCILIATION.md) PASS；production Embed retry gap 关闭；397 Vitest、72 Chromium、typecheck/build PASS |
 
 ## Historical detail locations
 

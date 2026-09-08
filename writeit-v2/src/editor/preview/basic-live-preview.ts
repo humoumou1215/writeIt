@@ -190,6 +190,7 @@ function appendImageProjection(
   const wrapper = document.createElement('span')
   wrapper.className = 'live-preview-image'
   wrapper.dataset.imageSource = source
+  wrapper.tabIndex = 0
 
   const image = document.createElement('img')
   image.className = 'live-preview-image__content'
@@ -260,7 +261,11 @@ function appendImageProjection(
   const invokePreview = (): void => {
     if (currentResource && options.onPreview) options.onPreview(currentResource)
   }
-  image.addEventListener('click', invokePreview)
+  image.addEventListener('click', (event) => {
+    event.preventDefault()
+    wrapper.focus()
+    wrapper.dataset.imageFocused = 'true'
+  })
   previewButton.addEventListener('click', invokePreview)
   copyButton.addEventListener('click', () => {
     if (!currentResource || !options.onCopy) return

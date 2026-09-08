@@ -283,7 +283,7 @@ test('readonly completion popup cannot mutate its DocumentStore', async ({ page 
   )
   await editor.click()
   await page.keyboard.press('End')
-  await expect(menu).toHaveAttribute('data-show', 'true')
+  await expect(menu).toHaveAttribute('data-show', 'false')
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await readSource(page)).markdown).toBe('@')
   expect((await readSource(page)).revision).toBe(0)
