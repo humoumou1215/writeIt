@@ -115,8 +115,8 @@ The Goal is complete only when all of the following are true:
 | G1 | PASS | `e13e526` | [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); 434 Vitest + 74 Chromium; typecheck/build PASS |
 | G2 | PASS | `be9ba45` | [P6 Architecture Review](./P6_ARCHITECTURE_REVIEW.md); 453 Vitest + 76 Chromium; typecheck/build PASS |
 | G3 | PASS | `010c2d6` | [P7 Architecture Review](./P7_ARCHITECTURE_REVIEW.md); 461 Vitest + 78 Chromium; typecheck/build PASS |
-| G4 | ACTIVE | — | Starting P8-00 Search / Panel / Template UX Contract |
-| G5 | PENDING | — | — |
+| G4 | PASS | `d52183f` | [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md); search/replace, derived services, validation and template intelligence implemented |
+| G5 | ACTIVE | — | Starting P9 export provider contract |
 | G6 | PENDING | — | — |
 | G7 | PENDING | — | Desktop toolchain preflight required before implementation |
 | G8 | PENDING | — | — |

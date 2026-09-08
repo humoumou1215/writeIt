@@ -133,6 +133,8 @@ export interface SingleDocumentViewSurface {
   navigateToFragment(fragment: string): boolean
   /** Dispatches a source edit intent without exposing CM6 annotations. */
   dispatch(spec: SingleDocumentUserTransaction): void
+  /** Selects a source-backed range and scrolls it into view. */
+  selectRange(from: number, to: number): void
   setPresentationMode(mode: PresentationMode): void
   togglePresentationMode(): PresentationMode
   canExecuteTableCommand(commandId: TableCommandId): boolean
@@ -282,6 +284,13 @@ function createPublicEditorSurface(
         throw new TypeError('Editor user transaction must be an object')
       }
       editorView.dispatch({ changes: spec.changes })
+    },
+    selectRange(from: number, to: number): void {
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to < from || to > editorView.state.doc.length) {
+        throw new RangeError('Editor selection range is invalid')
+      }
+      editorView.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true })
+      editorView.focus()
     },
     setPresentationMode(mode: PresentationMode): void {
       if (!setViewPresentationMode(editorView, mode)) {

@@ -31,6 +31,10 @@ import { createTableCommands } from './application/table'
 import type { TableCommandId } from './core/table'
 import { AnnotationService, MemoryAnnotationRepository } from './application/annotation'
 import { GitWorkbenchService } from './application/git'
+import { SearchService, type SearchQuery } from './application/search'
+import { ValidationService } from './application/validation'
+import { TemplateCatalog, TemplateService } from './application/template'
+import { CreateFromTemplateService } from './application/workspace'
 import { MemoryGitAdapter, type GitDiffResult, type GitFileStatus, type GitRepositoryInfo } from './platform/git'
 import {
   createDocumentId,
@@ -49,6 +53,7 @@ import {
   ReferenceGraph,
   ReferenceHealthService,
 } from './core/reference'
+import { composedContentStats, flattenOutline, parseOutline } from './core'
 import {
   ReferenceClipboardService,
   ReferenceRenameService,
@@ -99,6 +104,7 @@ import { MemoryFileSystem } from './platform/filesystem'
 import { createBrowserReferenceClipboard } from './platform/clipboard'
 import { BrowserSettingsStorage } from './platform/settings'
 import {
+  SearchPanel,
   WorkspaceTabs as WorkspaceTabsPanel,
   WorkspaceTree as WorkspaceTreePanel,
 } from './ui/workspace'
@@ -147,6 +153,21 @@ const workspaceTreeService = new WorkspaceTreeService(workspaceFileSystem, {
       dirty: document.dirty,
     })),
   getRecoveryPaths: () => workspaceRecoveryStore.getSnapshot().openDocumentPaths,
+})
+const templateCatalog = new TemplateCatalog({
+  list: async (scope) => {
+    if (scope === 'global') return [{ path: 'meeting.md', content: '# Meeting\n\nDate: {{date}}\n\n## Notes\n' }]
+    return [...workspaceFileSystem.snapshot().entries()]
+      .filter(([path]) => path.startsWith('.template/'))
+      .map(([path, content]) => ({ path, content }))
+  },
+})
+const templateService = new TemplateService(templateCatalog)
+const templateCreationService = new CreateFromTemplateService(workspaceTreeService, {
+  provider: { resolve: ({ templateId }) => {
+    const template = templateService.get(templateId)
+    return template ? { markdown: template.markdown } : undefined
+  } },
 })
 const imageAttachmentService = new ImageAttachmentService({
   fileSystem: workspaceFileSystem,
@@ -318,6 +339,25 @@ const gitSelectedPath = ref<string | null>(null)
 const gitLayout = ref<'unified' | 'split'>('unified')
 const gitLoading = ref(false)
 const gitError = ref<string | null>(null)
+const searchResults = ref<readonly import('./core/search').SearchFileResult[]>([])
+const searchQuery = ref<SearchQuery | null>(null)
+const searchError = ref<string | null>(null)
+const searchReplacement = ref('')
+const searchService = new SearchService({
+  list: () => workspaceFiles.value.flatMap((path) => {
+    const loaded = store.get(documentByPath(createDocumentPath(path)))
+    const disk = workspaceFileSystem.snapshot().get(createDocumentPath(path))
+    const markdown = loaded?.markdown ?? disk
+    return markdown === undefined ? [] : [{ path, markdown }]
+  }),
+})
+const validationService = new ValidationService()
+const validationIssues = ref<readonly import('./core/validation').ValidationIssue[]>([])
+const strictValidation = ref(false)
+const templateRecords = ref<readonly import('./application/template').TemplateRecord[]>([])
+const selectedTemplateId = ref('meeting')
+const templateName = ref('new-note.md')
+const templateError = ref<string | null>(null)
 let annotationSequence = 0
 let pendingFragmentNavigation: {
   readonly documentId: DocumentId
@@ -370,6 +410,12 @@ function refreshReferenceHealth(): void {
   })
 }
 
+function refreshValidation(document: DocumentState | undefined = activeDocument.value): void {
+  validationIssues.value = document
+    ? validationService.validate(document.markdown, document.revision).issues
+    : []
+}
+
 function cleanupLateEmbeddedDocument(
   path: WorkspacePath,
   documentIdToCleanup: DocumentId,
@@ -409,6 +455,8 @@ function observeDocument(documentIdToObserve: DocumentId): void {
     documentIdToObserve,
     store.subscribe(documentById(documentIdToObserve), (event) => {
       if (event.type === 'changed' || event.type === 'renamed') {
+        searchService.invalidate()
+        refreshValidation(event.document)
         indexReferenceDocument(event.document)
         if (event.type === 'changed') {
           void annotationService
@@ -474,6 +522,26 @@ const activeReferenceHealth = computed(() => {
 const activeBrokenReferenceCount = computed(
   () => activeReferenceHealth.value.filter((fact) => fact.broken).length,
 )
+const activeOutline = computed(() => {
+  documentRevisionSignal.value
+  return activeDocument.value ? parseOutline(activeDocument.value.markdown) : []
+})
+const activeBacklinks = computed(() => {
+  documentRevisionSignal.value
+  const path = workspacePathForDocument(activeDocument.value)
+  return path ? referenceGraph.getBacklinks(path) : []
+})
+const activeComposedStats = computed(() => {
+  documentRevisionSignal.value
+  const document = activeDocument.value
+  if (!document) return { wordCount: 0, referenceCount: 0, embedCount: 0, outline: [], circularEmbeds: [] }
+  return composedContentStats(document.path, document.markdown, {
+    read: (path) => {
+      const loaded = store.get(documentByPath(createDocumentPath(path)))
+      return loaded?.markdown ?? workspaceFileSystem.snapshot().get(createDocumentPath(path))
+    },
+  })
+})
 
 const canAddAnnotation = computed(() => {
   const view = projection.value?.view
@@ -719,6 +787,7 @@ const documentTabViews = computed(() => {
 
 const workspaceTreeUnsubscribe = workspaceTreeService.subscribe((snapshot) => {
   workspaceTreeSnapshot.value = snapshot
+  searchService.invalidate()
   referenceGraph.setWorkspacePaths(orderedWorkspaceFilePaths(snapshot.tree))
   refreshReferenceHealth()
 })
@@ -833,6 +902,7 @@ refreshReferenceHealth()
 watch(
   () => tabSnapshot.value.activeDocumentId,
   (activeDocumentId) => {
+    refreshValidation(activeDocument.value)
     if (restoringWorkspace) return
     void nextTick(() => {
       if (
@@ -1120,6 +1190,129 @@ function selectWorkspaceTool(tool: 'files' | 'search' | 'git'): void {
   if (tool === 'git' && gitInfo.value === null) void refreshGitWorkbench()
 }
 
+function runWorkspaceSearch(query: SearchQuery): void {
+  searchError.value = null
+  try {
+    searchQuery.value = query
+    searchResults.value = searchService.search(query)
+  } catch (error) {
+    searchResults.value = []
+    searchError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectSearchMatch(path: string, from: number, to: number): Promise<void> {
+  try {
+    await openWorkspaceFile(createWorkspacePath(path))
+    await nextTick()
+    const document = activeDocument.value
+    const view = projection.value?.view
+    if (!document || document.path !== createDocumentPath(path) || !view) {
+      throw new Error(`Search result could not be opened: ${path}`)
+    }
+    if (from < 0 || to < from || to > view.state.doc.length) {
+      throw new Error(`Search result is no longer source-backed: ${path}:${from}`)
+    }
+    view.selectRange(from, to)
+    searchError.value = null
+  } catch (error) {
+    searchError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function replaceSearchMatch(
+  path: string,
+  from: number,
+  to: number,
+  replacement: string,
+): Promise<void> {
+  try {
+    const normalizedPath = createWorkspacePath(path)
+    const id = await ensureWorkspaceDocumentLoaded(normalizedPath)
+    searchService.replaceInDocument(store, documentById(id), from, to, replacement)
+    searchService.invalidate()
+    if (searchQuery.value) searchResults.value = searchService.search(searchQuery.value)
+    searchError.value = `Replaced 1 occurrence in ${path}.`
+  } catch (error) {
+    searchError.value = `Replace failed for ${path}: ${workspaceErrorMessage(error)}`
+  }
+}
+
+async function replaceAllSearchMatches(replacement: string): Promise<void> {
+  const query = searchQuery.value
+  if (!query) return
+  const failures: string[] = []
+  let replaced = 0
+  for (const file of searchResults.value) {
+    try {
+      const id = await ensureWorkspaceDocumentLoaded(createWorkspacePath(file.path))
+      // Apply from the end so all source offsets remain valid. Each operation
+      // carries the current revision and therefore cannot overwrite an
+      // external or concurrent change silently.
+      for (const match of [...file.matches].sort((a, b) => b.from - a.from)) {
+        searchService.replaceInDocument(store, documentById(id), match.from, match.to, replacement)
+        replaced += 1
+      }
+    } catch (error) {
+      failures.push(`${file.path}: ${workspaceErrorMessage(error)}`)
+    }
+  }
+  searchService.invalidate()
+  searchResults.value = searchService.search(query)
+  searchError.value = failures.length > 0
+    ? `Replaced ${replaced} occurrence${replaced === 1 ? '' : 's'}; failures: ${failures.join('; ')}`
+    : `Replaced ${replaced} occurrence${replaced === 1 ? '' : 's'}.`
+}
+
+async function refreshTemplates(): Promise<void> {
+  templateError.value = null
+  templateRecords.value = await templateService.refresh()
+  if (templateRecords.value.length > 0 && !templateRecords.value.some((item) => item.id === selectedTemplateId.value)) selectedTemplateId.value = templateRecords.value[0].id
+  if (templateCatalog.getFailure()) templateError.value = templateCatalog.getFailure()
+}
+
+async function createFromSelectedTemplate(): Promise<void> {
+  const name = templateName.value.trim()
+  if (!name) { templateError.value = 'Enter a file name first.'; return }
+  try {
+    const result = await templateCreationService.create({ templateId: selectedTemplateId.value, parentPath: '', name })
+    await refreshWorkspace()
+    await openWorkspaceFile(result.path)
+    templateError.value = `Created ${result.path}.`
+  } catch (error) { templateError.value = workspaceErrorMessage(error) }
+}
+
+function insertSelectedTemplate(): void {
+  const document = activeDocument.value
+  const template = templateService.get(selectedTemplateId.value)
+  const view = projection.value?.view
+  if (!document || !template || !view) { templateError.value = 'Open a document before inserting a template.'; return }
+  const at = view.state.selection.main.from
+  try {
+    view.dispatch({ changes: { from: at, to: view.state.selection.main.to, insert: template.markdown } })
+    templateError.value = `Inserted ${template.name}.`
+  } catch (error) { templateError.value = workspaceErrorMessage(error) }
+}
+
+function selectOutlineHeading(from: number): void {
+  try {
+    projection.value?.view.selectRange(from, from)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectBacklink(edge: { readonly sourcePath: string; readonly from: number; readonly to: number }): Promise<void> {
+  try {
+    await openWorkspaceFile(createWorkspacePath(edge.sourcePath))
+    await nextTick()
+    if (activeDocument.value?.path !== createDocumentPath(edge.sourcePath) || !projection.value) throw new Error('Backlink source is unavailable')
+    projection.value.view.selectRange(edge.from, edge.to)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
 function maybeAutoCollapseSidebar(): void {
   if (!sidebarPinned.value && !sidebarCollapsed.value) {
     updateWorkspaceSettings({ sidebarCollapsed: true })
@@ -1253,6 +1446,11 @@ async function saveActiveDocument(): Promise<void> {
   persistenceBusy.value = true
   persistenceError.value = null
   try {
+    const validation = validationService.validate(document.markdown, document.revision)
+    validationIssues.value = validation.issues
+    if (strictValidation.value && validation.issues.some((issue) => issue.severity === 'error')) {
+      throw new Error(`Save blocked by ${validation.issues.filter((issue) => issue.severity === 'error').length} validation error(s).`)
+    }
     await persistence.save(documentById(document.id))
   } catch (error) {
     persistenceError.value = persistenceErrorMessage(error)
@@ -2074,6 +2272,7 @@ registerApplicationCommands()
 
 async function initializeWorkspace(): Promise<void> {
   await refreshWorkspace()
+  await refreshTemplates()
   await restoreWorkspaceSession()
   await nextTick()
   mountActiveDocument()
@@ -2378,6 +2577,26 @@ onBeforeUnmount(() => {
             {{ tool === 'files' ? 'Files' : tool === 'search' ? 'Search' : 'Git' }}
           </button>
         </nav>
+        <aside v-if="activeDocument" class="workspace-derived" aria-label="Derived document views">
+          <section class="workspace-derived__section" data-testid="workspace-outline">
+            <h3>Outline</h3>
+            <ul>
+              <li v-for="heading in flattenOutline(activeOutline)" :key="heading.id">
+                <button type="button" :style="{ marginLeft: `${(heading.level - 1) * 8}px` }" @click="selectOutlineHeading(heading.from)">{{ heading.text }}</button>
+              </li>
+              <li v-if="activeOutline.length === 0" class="workspace-derived__empty">No headings</li>
+            </ul>
+          </section>
+          <section class="workspace-derived__section" data-testid="workspace-backlinks">
+            <h3>Backlinks</h3>
+            <ul>
+              <li v-for="(edge, index) in activeBacklinks" :key="edge.id">
+                <button type="button" @click="selectBacklink(edge)">{{ edge.sourcePath }} · {{ index + 1 }} ({{ edge.status }})</button>
+              </li>
+              <li v-if="activeBacklinks.length === 0" class="workspace-derived__empty">No backlinks</li>
+            </ul>
+          </section>
+        </aside>
         <div v-if="activeWorkspaceTool === 'files'" data-testid="workspace-files-tool">
         <div class="workspace-create">
           <label for="workspace-entry-name">New entry</label>
@@ -2489,12 +2708,29 @@ onBeforeUnmount(() => {
           :data-testid="`workspace-${activeWorkspaceTool}-tool`"
           :aria-label="`${activeWorkspaceTool} workspace tool`"
         >
-          <h3>{{ activeWorkspaceTool === 'search' ? 'Search' : 'Git' }}</h3>
-          <p>
-            {{ activeWorkspaceTool === 'search'
-              ? '全文搜索将在 P8 接入；切换工具不会重建当前编辑器。'
-              : 'Git 工作台将在 P7 接入；切换工具不会重建当前编辑器。' }}
-          </p>
+          <SearchPanel
+            :results="searchResults"
+            :query="searchQuery?.text"
+            :case-sensitive="searchQuery?.caseSensitive"
+            :replace-text="searchReplacement"
+            :error="searchError"
+            @search="runWorkspaceSearch"
+            @select="selectSearchMatch"
+            @replace="replaceSearchMatch"
+            @replace-all="replaceAllSearchMatches"
+          />
+          <section class="template-panel" data-testid="template-panel" aria-label="Templates">
+            <div class="template-panel__header"><h3>Templates</h3><button type="button" data-testid="template-refresh" @click="refreshTemplates">Rescan</button></div>
+            <select v-model="selectedTemplateId" data-testid="template-select">
+              <option v-for="template in templateRecords" :key="template.id" :value="template.id">{{ template.name }} ({{ template.scope }})</option>
+            </select>
+            <input v-model="templateName" data-testid="template-name" placeholder="new-file.md" />
+            <div class="template-panel__actions">
+              <button type="button" data-testid="template-create" @click="createFromSelectedTemplate">New from template</button>
+              <button type="button" data-testid="template-insert" @click="insertSelectedTemplate">Insert at selection</button>
+            </div>
+            <p v-if="templateError" class="workspace-error" data-testid="template-error">{{ templateError }}</p>
+          </section>
         </section>
         </div>
         <div
@@ -2640,6 +2876,10 @@ onBeforeUnmount(() => {
                 >
                   Add annotation
                 </button>
+                <label class="autosave-control">
+                  <input type="checkbox" data-testid="validation-strict" v-model="strictValidation" />
+                  Strict validation
+                </label>
               </div>
             </div>
             <div ref="editorHost" class="editor-host"></div>
@@ -2664,6 +2904,11 @@ onBeforeUnmount(() => {
             <p v-if="activePersistenceState?.status === 'conflict' && !persistenceError" class="persistence-warning" data-testid="save-conflict-warning">
               本地修改与外部文件冲突；不会覆盖外部内容。
             </p>
+            <ul v-if="validationIssues.length > 0" class="validation-issues" data-testid="validation-issues" aria-label="Validation issues">
+              <li v-for="issue in validationIssues" :key="`${issue.ruleId}-${issue.from ?? 0}`" :data-severity="issue.severity">
+                {{ issue.severity }} · {{ issue.message }}
+              </li>
+            </ul>
             <p
               v-if="activeBrokenReferenceCount > 0 || referenceHealthError"
               class="reference-health-warning"
@@ -2674,6 +2919,10 @@ onBeforeUnmount(() => {
             <p class="projection-note">
               同一 CM6 document 在 Raw Source 与 Live Preview decorations/widgets 间切换；不创建第二个 textarea authority。试试 <code>Ctrl/Cmd+E</code>、<code>@</code>、<code>[[</code> 或 <code>![[</code>。
             </p>
+            <footer class="document-stats" data-testid="document-stats" aria-label="Document statistics">
+              {{ activeComposedStats.wordCount }} words · {{ activeComposedStats.referenceCount }} references · {{ activeComposedStats.embedCount }} embeds
+              <span v-if="activeComposedStats.circularEmbeds.length > 0"> · {{ activeComposedStats.circularEmbeds.length }} circular embed{{ activeComposedStats.circularEmbeds.length === 1 ? '' : 's' }}</span>
+            </footer>
           </section>
 
           <section
