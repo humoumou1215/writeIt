@@ -1,0 +1,22 @@
+# WriteIt v2 Milestones
+
+长期执行历史保存在 Git 与对应 Task/Review 文档中；本文件只记录不会每天变化的阶段里程碑。实时状态见 [STATUS.md](./STATUS.md)。
+
+| Date | Milestone | Result / evidence |
+|---|---|---|
+| 2026-09-06 | P0 repository reset and initial architecture | v2/legacy boundary、feature map、scaffold 与 ADR-0001～0006 建立 |
+| 2026-09-06 | P1 foundation | P1-AR2 PASS；DocumentStore/revision/history/timeline/filesystem port 基线完成 |
+| 2026-09-07 | P2 CM6 projection architecture | [P2 Architecture Review](./P2_ARCHITECTURE_REVIEW.md) remediation 后 PASS |
+| 2026-09-07 | P2A editing assistance | [P2A Acceptance Review](./P2A_ACCEPTANCE_REVIEW.md) remediation 后 PASS |
+| 2026-09-08 | P3 workspace/persistence baseline | Workspace tree、tabs、persistence、recovery、shortcuts、attachments/images、template hook 完成；后续数据安全 remediation 纳入 P4 re-review |
+| 2026-09-08 | P4 reference/embed baseline | Reference graph/completion/navigation/rename/clipboard/context actions/Embed 与 F-01～F-03 follow-ups 完成 |
+| 2026-09-08 | P4 architecture/product gate | [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) user decision B 后 PASS；baseline commit `03975a7` |
+| 2026-09-08 | Codex Goal preparation | Goal/decision contracts、ADR-0007/0008、统一验证与 Goal 分支建立；396 Vitest、63 Chromium、typecheck/build PASS；尚未激活 Goal |
+
+## Historical detail locations
+
+- Task contracts and remediation records: `docs/*TASK_CONTRACT.md`
+- Architecture/product gate reports: `docs/*ARCHITECTURE_REVIEW.md`, `docs/*ACCEPTANCE_REVIEW.md`
+- Accepted architecture decisions: [ADR index](./adr/README.md)
+- Legacy workflow coverage: [LEGACY_FEATURE_MAP.md](../../LEGACY_FEATURE_MAP.md)
+- Exact code and documentation history: Git log on the relevant path

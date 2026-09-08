@@ -9,7 +9,7 @@ ADRs record architecture decisions that constrain later implementation. An accep
 - **Superseded:** replaced by a linked later ADR.
 - **Deprecated:** retained as history but no longer recommended.
 
-## Initial decision set
+## Accepted decision set
 
 | ADR | Status | Decision |
 |---|---|---|
@@ -19,5 +19,7 @@ ADRs record architecture decisions that constrain later implementation. An accep
 | [ADR-0004](./ADR-0004-codemirror-6-primary-editor-architecture.md) | Accepted | CodeMirror 6 is the primary editor architecture; Spike result is GO. |
 | [ADR-0005](./ADR-0005-markdown-table-core-and-cm6-widget.md) | Accepted | Markdown Table uses WriteIt Table Core plus a CM6 widget. |
 | [ADR-0006](./ADR-0006-diff-guarantee-on-markdown-source.md) | Accepted | The diff guarantee layer operates on Markdown source. |
+| [ADR-0007](./ADR-0007-annotation-workspace-sidecar-persistence.md) | Accepted | Annotations persist as workspace sidecar review data. |
+| [ADR-0008](./ADR-0008-template-provider-runtime-boundary.md) | Accepted | Executable template providers run behind an explicit trusted runtime boundary. |
 
-All six decisions were accepted on 2026-09-06. Their implementation details remain subject to the explicit deferred decisions in each ADR; deferred details may not weaken the accepted invariants.
+ADR-0001 through ADR-0006 were accepted on 2026-09-06. ADR-0007 and ADR-0008 were accepted during Codex Goal preparation on 2026-09-08. Implementation details remain subject to the explicit deferred decisions in each ADR; deferred details may not weaken the accepted invariants.

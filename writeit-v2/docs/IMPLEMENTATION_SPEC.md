@@ -198,7 +198,7 @@ import { something } from '../../editor-app/src/...'
 
 从 P5 开始，架构规则与用户体验规则分开管理：
 
-- `IMPLEMENTATION_SPEC.md`：回答“功能由谁负责、数据怎么流动、哪些边界不能破坏、Pi 这一任务具体做什么”。
+- `IMPLEMENTATION_SPEC.md`：回答“功能由谁负责、数据怎么流动、哪些边界不能破坏、Agent 这一任务具体做什么”。
 - `UX_SPEC.md`：回答“用户看到什么、按钮放哪里、什么时候出现、点击/键盘操作后发生什么、Live Preview 怎么显示”。
 - `PHASE_GATE_CHECKLIST.md`：回答“一个 Phase 做完以后，进入下一阶段前固定检查什么”。
 
@@ -206,8 +206,8 @@ import { something } from '../../editor-app/src/...'
 
 ### UX 决策规则
 
-1. 涉及页面布局、按钮位置、菜单入口、快捷操作、Live Preview 显示方式的任务，Pi 开始前必须读取 `UX_SPEC.md` 对应章节。
-2. 未在 `UX_SPEC.md` 明确的视觉细节，Pi 可以做最小实现，但不得把临时选择写成不可改变的产品规则。
+1. 涉及页面布局、按钮位置、菜单入口、快捷操作、Live Preview 显示方式的任务，Agent 开始前必须读取 `UX_SPEC.md` 对应章节。
+2. 未在 `UX_SPEC.md` 明确的视觉细节，Agent 可以做最小实现，但不得把临时选择写成不可改变的产品规则。
 3. 会改变用户主要操作方式的选择，例如“表格行操作放在右键菜单还是永久按钮”，必须先写入 `UX_SPEC.md` 或由用户确认，不能由单个实现任务静默决定。
 4. Figma 是可选的视觉参考，不是数据/架构真相。若使用 Figma，已确认的页面 Frame/链接可记录在 `UX_SPEC.md`；若 Figma 与文字规则冲突，先停止实现并更新其中一方，不允许自行猜测。
 5. UI 美化不能以破坏 Markdown source、DocumentStore、undo/redo、selection、clipboard、IME（中文输入法组合输入）等行为为代价。
@@ -219,7 +219,7 @@ import { something } from '../../editor-app/src/...'
 - **UX-01 Workspace Shell Baseline**：主页面区域、侧边栏、tabs、工具入口、右侧面板的职责。
 - **UX-02 Editor Presentation Baseline**：Raw Source / Live Preview 以及 heading、link、reference、embed、code、table、Mermaid 等显示规则。
 - **UX-03 Interaction Baseline**：菜单、右键、popup、keyboard、hover、dangerous action confirmation 的统一规则。
-- **UX-04 Optional Figma Reference**：只在需要视觉对比或复杂交互时建立 Figma 页面；不会 Figma 不影响 Pi 开发。
+- **UX-04 Optional Figma Reference**：只在需要视觉对比或复杂交互时建立 Figma 页面；没有 Figma 不影响开发。
 
 这些任务主要修改文档/原型，不改变当前 P4 产品代码 gate。
 
@@ -2225,7 +2225,7 @@ None
 P0-02
 ```
 
-## 23. Pi Task Contract
+## 23. Agent Task / Codex Goal Contract
 
 每个任务继续包含：
 
@@ -2264,11 +2264,15 @@ Out of scope         这次明确不做什么
 
 普通 UI 菜单、一组相邻命令、同一用户旅程中的几个小组件可以放在同一个 Task。
 
+默认执行模式仍然是一次一个 Task ID。用户启动并明确引用 [`GOAL.md`](./GOAL.md) 的 Codex Goal 时，Goal checkpoint 可以按已声明顺序包含多个 Task ID；这不改变每个 Task 的 scope、tests 和 acceptance criteria，只改变 checkpoint 通过后是否自动继续。
+
+Goal 的 objective、允许范围、checkpoint、统一验证、暂停条件和完成条件以 `GOAL.md` 为准；已预先冻结或允许自适应的产品选择以 [`DECISIONS.md`](./DECISIONS.md) 为准。Goal 不得把 open backlog 当成完成标准，也不得在执行中静默扩大范围。
+
 ### Task 开始前的 UX 规则
 
-只要 Task 会改变用户看到/点击/输入的东西，`Read first` 必须包含 `docs/UX_SPEC.md` 对应章节。若该章节还没有决定核心交互，先完成 UX 文档小任务，不允许 Pi 自己冻结产品行为。
+只要 Task 会改变用户看到/点击/输入的东西，`Read first` 必须包含 `docs/UX_SPEC.md` 对应章节。若该章节还没有决定核心交互，先完成 UX 文档小任务，不允许 Agent 自己冻结产品行为。
 
-## 24. Pi 执行纪律
+## 24. Codex 执行纪律
 
 ```text
 Read → Inspect → Implement → Test → Update STATUS → Report
@@ -2278,10 +2282,12 @@ Read → Inspect → Implement → Test → Update STATUS → Report
 
 1. 有 UI/交互时先读 `UX_SPEC.md`。
 2. 每个 Phase 完成前运行 `PHASE_GATE_CHECKLIST.md`，不是只看 tests green。
-3. 小型实现选择可以自行选择并记录；会改变 ADR 或主要用户操作方式的选择必须停止并提出决策。
+3. 小型实现选择可以自行选择并记录；普通 Task 中会改变 ADR 或主要用户操作方式的选择必须停止并提出决策。Codex Goal 中按 `DECISIONS.md` 的 `FROZEN` / `MAY ADAPT` / `MUST ASK` 分类处理。
 4. Legacy 行为不清晰时查 `LEGACY_FEATURE_MAP.md` 和旧测试，不要无目的扫描整个旧项目。
-5. 不自动开始下一个 Task。
+5. 普通任务不自动开始下一个 Task；Codex Goal 的 checkpoint PASS 后自动继续。Gate 为 HOLD 时先建立 remediation、修复并复审，不因 HOLD 本身等待用户。
 6. 测试通过不是数据安全证明；涉及 rename/delete/save/clipboard/async lifecycle 时必须补失败/恢复路径。
+7. Goal checkpoint 使用 `npm run verify:fast`；Phase Gate、跨浏览器交互或 checkpoint 收尾使用 `npm run verify`。平台阶段另加对应 desktop/package 验证。
+8. Goal checkpoint 验证通过并同步 STATUS/GOAL 后可自动创建本地 commit；禁止自动 push、tag、签名、发布或创建 release。
 
 ## 25. 推荐执行节奏
 
@@ -2291,25 +2297,7 @@ P0~P4 按既有历史和 remediation/gate 记录继续维护，不因为本次 S
 
 ### 当前建议
 
-在 P5 前：
-
-```text
-完成当前 P4 remediation
-        +
-完善 UX_SPEC 的 Workspace / Editor / Table baseline（可并行，只改文档/原型）
-        ↓
-P4 re-review / gate PASS
-        ↓
-P5-00
-P5-01
-P5-02
-P5-03
-P5-04
-P5-05
-P5-AR1
-        ↓
-P6 ...
-```
+P4-AR2 已 PASS。开始 P5 前先在 Codex Goal 的 G0 checkpoint 对 P4-UX01、P4-UX02 以及 production Embed loader failure/retry 证据做一次显式 reconciliation：已满足的条目补证据，未满足的条目实现并验证。随后按 `GOAL.md` 的 G1～G8 连续推进 P5～P12。
 
 每个 Phase 原则上只做一次正式 Phase Gate。只有中途出现新的数据 authority、持久化模型、跨 Document transaction、平台边界或 ADR 修改时，才额外做中途 Architecture Review。
 

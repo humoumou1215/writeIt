@@ -1,5 +1,7 @@
 # WriteIt v2 Status Prompt
 
+> **Legacy Pi entrypoint.** 保留用于历史状态核对；Codex Goal 不读取或执行本 prompt。当前 Codex 状态合同见 `writeit-v2/docs/GOAL.md` 与 `writeit-v2/docs/STATUS.md`。
+
 用法：
 
 ```text

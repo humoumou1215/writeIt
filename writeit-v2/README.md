@@ -1,7 +1,7 @@
 # WriteIt v2
 
 WriteIt v2 是基于 Markdown-first、DocumentStore 和 CodeMirror 6 的新主线。
-当前已完成 P2-01 至 P2-06、P2A-00 至 P2A-06、P2A-R01 至 P2A-R06、P3-01 至 P3-08、P4-01 至 P4-09 及已批准的 P2-AR-06/P3/P4 remediation；P2A-AR1 用户验收门已通过。P4-AR2 综合 architecture/product-boundary gate 按用户决策 B 已为 **PASS**：当前 Embed controlled harness + workspace/reference `Refresh` retry 作为 acceptance 证据被接受，真实 production loader failure/retry journey 记录为后续非阻断 deferred/test gap。P5 尚未开始，下一建议为 P5-00（Table UX & Behavior Contract）。能力包括 CM6 编辑器与 DocumentStore 双向同步、同一 Document 的多 Projection、revision/stale 协议、基础 Live Preview、编辑辅助、同一 CM6 状态内的 Raw Source / Live Preview 切换、Workspace tree/tabs/navigation、manual save/auto-save/dirty/conflict/external-change policy、路径型 workspace recovery 和可持久化的 sidebar/settings shell，以及四种图片粘贴策略、二进制附件落盘和相对路径图片投影/预览/复制与工作区定位；目录移动影响已打开 descendant 时继续 fail-closed 阻止，完整 directory migration 继续 deferred；真实 production Embed loader failure/retry journey 不属于当前 P4 gate blocker。
+P0～P4 与 F-01～F-03 follow-up 已完成，P4-AR2 为 **PASS**。下一阶段将通过 [`docs/GOAL.md`](./docs/GOAL.md) 定义的单一 Codex Goal，先关闭 P4 UX/production Embed retry 证据缺口，再连续推进 P5～P12。当前 Goal 仅完成准备，尚未激活；实时状态与前置决策分别见 [`docs/STATUS.md`](./docs/STATUS.md) 和 [`docs/DECISIONS.md`](./docs/DECISIONS.md)。
 
 ## 开发命令
 
@@ -14,6 +14,8 @@ npm run test
 npm run test:browser
 npm run typecheck
 npm run build
+npm run verify:fast
+npm run verify
 ```
 
 ## 当前边界

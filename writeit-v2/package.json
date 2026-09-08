@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22 <24"
+  },
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",
@@ -12,7 +15,10 @@
     "test:browser": "playwright test",
     "test:watch": "vitest",
     "check:boundaries": "node scripts/check-boundaries.mjs",
-    "typecheck": "vue-tsc --noEmit"
+    "check:goal-contract": "node scripts/check-goal-contract.mjs",
+    "typecheck": "vue-tsc --noEmit",
+    "verify:fast": "npm run check:goal-contract && npm run test && npm run build",
+    "verify": "npm run check:goal-contract && npm run test && npm run test:browser && npm run build"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.2",
