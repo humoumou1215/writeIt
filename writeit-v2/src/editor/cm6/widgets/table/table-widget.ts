@@ -416,10 +416,20 @@ class MarkdownTableWidget extends WidgetType {
       })
       editor.addEventListener('keydown', (event) => {
         if (composing || event.isComposing) return
+        event.stopPropagation()
         if (event.key === 'Tab') {
           event.preventDefault()
           this.commitEditor(editor, row, column, false)
           this.navigate(row, column, event.shiftKey ? -1 : 1, 'tab')
+        } else if (event.key === 'Enter') {
+          // Keep logical cell newlines inside the textarea. Without handling
+          // the key explicitly a browser/CM6 parent may receive Enter after
+          // the widget re-renders and insert a physical line after the table.
+          event.preventDefault()
+          const start = editor.selectionStart
+          const end = editor.selectionEnd
+          editor.setRangeText('\n', start, end, 'end')
+          this.commitEditor(editor, row, column)
         } else if (event.key === 'Escape') {
           event.preventDefault()
           this.interaction.select(this.table, row, column, 'selected')
