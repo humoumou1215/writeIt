@@ -17,6 +17,12 @@
 | 2026-09-09 | G2 Annotation + Mermaid | [P6 Architecture Review](./P6_ARCHITECTURE_REVIEW.md) PASS；annotation sidecar/anchors/drawer、source-backed Mermaid preview、commands/completion/reference fallback 完成；453 Vitest、76 Chromium、typecheck/build PASS |
 | 2026-09-09 | G3 Git + Diff + Provenance | [P7 Architecture Review](./P7_ARCHITECTURE_REVIEW.md) PASS；structured Git ports/workbench、raw diff guarantee、semantic fallback、discard guard、blame projection 完成；461 Vitest、78 Chromium、typecheck/build PASS |
 
+| 2026-09-09 | G4 Derived Services + Template Intelligence | [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md) PASS；search/replace、outline/backlinks/stats、validation、template catalog/provider 完成；477 Vitest、80 Chromium、typecheck/build PASS |
+| 2026-09-09 | G5 Export | [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md) PASS；snapshot-based Markdown/PDF/DOCX/custom/batch export 完成 |
+| 2026-09-09 | G6 Diagnostics | [P10 Architecture Review](./P10_ARCHITECTURE_REVIEW.md) PASS；bounded diagnostics、privacy report、permissioned debug API 完成 |
+| 2026-09-09 | G7 Desktop adapters | [P11 Architecture Review](./P11_ARCHITECTURE_REVIEW.md) PASS；Tauri command adapters、debug policy、package smoke、Windows workflow 完成 |
+| 2026-09-09 | G8 RC audit | [P12 RC Audit](./P12_RC_AUDIT.md) PASS；feature-map parity classifications and approved deferrals recorded |
+
 ## Historical detail locations
 
 - Task contracts and remediation records: `docs/*TASK_CONTRACT.md`

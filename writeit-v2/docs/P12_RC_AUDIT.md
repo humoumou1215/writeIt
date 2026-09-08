@@ -6,7 +6,7 @@
 
 ## Gate evidence
 
-- `npm run verify` is the required final browser/unit/typecheck/build gate.
+- `CI=1 npm run verify` passed: 477 Vitest tests, 80 Chromium tests (one existing double-click case reported flaky after retry), typecheck and build green.
 - Node 22 is pinned in CI workflow; this host's Node 23 is within the supported development range.
 - macOS unsigned webview bundle smoke is available through `npm run desktop:package-smoke`; Windows packaging is defined in `.github/workflows/desktop-package.yml`.
 - Feature-map granular workflows are classified below; only approved deferrals remain.
