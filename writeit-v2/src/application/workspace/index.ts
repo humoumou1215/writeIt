@@ -1,4 +1,5 @@
 export * from './tree'
+export * from './directory-safety'
 export * from './rename'
 export * from './tabs'
 export * from './persistence'

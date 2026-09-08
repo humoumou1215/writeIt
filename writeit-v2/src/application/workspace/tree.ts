@@ -3,6 +3,7 @@ import {
   createWorkspaceFileNode,
   createWorkspacePath,
   createWorkspaceTree,
+  findWorkspaceNode,
   isWorkspacePathWithin,
   sortWorkspaceNodes,
   workspaceJoin,
@@ -18,14 +19,31 @@ import type {
 } from '../../core/workspace'
 import type { WorkspaceFileSystemPort } from '../../platform/filesystem'
 import {
+  WorkspaceEntryNotFoundError,
   WorkspaceInvalidOperationError,
 } from '../../platform/filesystem'
+import {
+  directoryMoveTarget,
+  directoryRenameTarget,
+  findOpenDocumentsWithinDirectory,
+  findRecoveryPathsWithinDirectory,
+  WorkspaceDirectoryOperationBlockedError,
+  WorkspaceDirectorySafetyCheckError,
+} from './directory-safety'
+import type {
+  WorkspaceDirectoryOperation,
+  WorkspaceOpenDocumentBinding,
+} from './directory-safety'
 
 export interface WorkspaceTreeServiceOptions {
   /** Relative path at which the workspace tree is rooted. */
   readonly rootPath?: WorkspacePath | string
   /** Label used for the root node; it does not affect filesystem paths. */
   readonly rootName?: string
+  /** Runtime DocumentStore-backed path bindings protected by directory moves. */
+  readonly getOpenDocuments?: () => readonly WorkspaceOpenDocumentBinding[]
+  /** Recovery paths are protected even when their Document is not loaded yet. */
+  readonly getRecoveryPaths?: () => readonly (WorkspacePath | string)[]
 }
 
 export interface WorkspaceTreeSnapshot {
@@ -77,6 +95,14 @@ export class WorkspaceTreeService {
 
   private readonly rootName: string
 
+  private readonly getOpenDocuments:
+    | (() => readonly WorkspaceOpenDocumentBinding[])
+    | undefined
+
+  private readonly getRecoveryPaths:
+    | (() => readonly (WorkspacePath | string)[])
+    | undefined
+
   private readonly listeners = new Set<WorkspaceTreeListener>()
 
   private snapshot: WorkspaceTreeSnapshot
@@ -88,6 +114,8 @@ export class WorkspaceTreeService {
     this.fileSystem = fileSystem
     this.rootPath = createWorkspacePath(options.rootPath ?? '')
     this.rootName = requireRootName(options.rootName, this.rootPath)
+    this.getOpenDocuments = options.getOpenDocuments
+    this.getRecoveryPaths = options.getRecoveryPaths
     this.snapshot = Object.freeze({
       tree: createWorkspaceTree(this.rootPath, [], this.rootName),
       revision: 0,
@@ -153,6 +181,10 @@ export class WorkspaceTreeService {
 
   async rename(path: WorkspacePath, name: string): Promise<WorkspacePath> {
     const source = this.requireManagedEntryPath(path)
+    const target = directoryRenameTarget(source, name)
+    if (target !== source) {
+      await this.assertDirectoryOperationSafe('rename', source, target)
+    }
     const renamed = await this.fileSystem.renameEntry(source, name)
     await this.refresh()
     return renamed
@@ -193,12 +225,89 @@ export class WorkspaceTreeService {
       )
     }
 
+    const target = directoryMoveTarget(
+      normalizedSource,
+      normalizedDestination,
+    )
+    if (target !== normalizedSource) {
+      await this.assertDirectoryOperationSafe('move', normalizedSource, target)
+    }
+
     const moved = await this.fileSystem.moveEntry(
       normalizedSource,
       normalizedDestination,
     )
     await this.refresh()
     return moved
+  }
+
+  /**
+   * Checks directory path bindings before any filesystem mutation. File
+   * operations retain their existing path through this service; P4-06 owns
+   * their reference-aware application path.
+   */
+  private async assertDirectoryOperationSafe(
+    operation: WorkspaceDirectoryOperation,
+    sourcePath: WorkspacePath,
+    targetPath: WorkspacePath,
+  ): Promise<void> {
+    if (!this.getOpenDocuments && !this.getRecoveryPaths) return
+
+    // A refreshed tree gives the normal UI path a synchronous preflight,
+    // which also prevents an unrelated scheduled persistence callback from
+    // interleaving with a blocked operation. If the projection is stale or
+    // does not contain the entry, confirm through the read-only filesystem
+    // listing before deciding whether the safety check applies.
+    const knownNode = findWorkspaceNode(this.snapshot.tree, sourcePath)
+    const sourceKind =
+      knownNode?.kind === 'directory'
+        ? knownNode.kind
+        : await this.readEntryKind(sourcePath)
+    if (sourceKind !== 'directory') return
+
+    let openDocuments: ReturnType<typeof findOpenDocumentsWithinDirectory> =
+      Object.freeze([])
+    let recoveryPaths: ReturnType<typeof findRecoveryPathsWithinDirectory> =
+      Object.freeze([])
+    try {
+      openDocuments = this.getOpenDocuments
+        ? findOpenDocumentsWithinDirectory(
+            sourcePath,
+            this.getOpenDocuments(),
+          )
+        : Object.freeze([])
+      recoveryPaths = this.getRecoveryPaths
+        ? findRecoveryPathsWithinDirectory(
+            sourcePath,
+            this.getRecoveryPaths(),
+          )
+        : Object.freeze([])
+    } catch (error) {
+      throw new WorkspaceDirectorySafetyCheckError({
+        operation,
+        sourcePath,
+        targetPath,
+        cause: error,
+      })
+    }
+
+    if (openDocuments.length === 0 && recoveryPaths.length === 0) return
+    throw new WorkspaceDirectoryOperationBlockedError({
+      operation,
+      sourcePath,
+      targetPath,
+      affectedDocuments: openDocuments,
+      affectedRecoveryPaths: recoveryPaths,
+    })
+  }
+
+  private async readEntryKind(
+    path: WorkspacePath,
+  ): Promise<WorkspaceEntry['kind']> {
+    const entries = await this.fileSystem.listDirectory(workspaceParent(path))
+    const entry = entries.find((candidate) => candidate.path === path)
+    if (!entry) throw new WorkspaceEntryNotFoundError(path)
+    return entry.kind
   }
 
   private async readDirectory(

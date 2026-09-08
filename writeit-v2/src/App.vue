@@ -117,11 +117,21 @@ const keybindingSettingsStore = new KeybindingSettingsStore(
   settingsStorage,
   keybindingRegistry,
 )
+const workspaceRecoveryStore = new WorkspaceRecoveryStore(settingsStorage, {
+  workspacePath: createWorkspacePath(''),
+})
 const workspaceTreeService = new WorkspaceTreeService(workspaceFileSystem, {
   rootName: 'Workspace',
-})
-const workspaceRecoveryStore = new WorkspaceRecoveryStore(settingsStorage, {
-  workspacePath: workspaceTreeService.getRootPath(),
+  // Tabs retain only DocumentIds, while persistence and P4-09 can retain
+  // loaded Documents after a tab change. Protect every Store path binding so
+  // a directory move cannot strand an apparently closed or embedded source.
+  getOpenDocuments: () =>
+    store.getAll().map((document) => ({
+      documentId: document.id,
+      path: createWorkspacePath(document.path),
+      dirty: document.dirty,
+    })),
+  getRecoveryPaths: () => workspaceRecoveryStore.getSnapshot().openDocumentPaths,
 })
 const imageAttachmentService = new ImageAttachmentService({
   fileSystem: workspaceFileSystem,

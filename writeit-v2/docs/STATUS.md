@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P2-AR-06 remediation — Complete
+Current task: P4-R01 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -73,6 +73,7 @@ Current task: P2-AR-06 remediation — Complete
 - [x] P4-08 Reference Context Actions — open/copy exact reference syntax and source-safe link/editable-embed/readonly-embed mode conversion with CM6/Store/browser coverage
 - [x] P4-09 Embed Projection — source-backed editable/read-only CM6 child projections, multi-projection revision fan-out, nested/circular guards, stale/lifecycle state, Store undo/redo, unopened-target loading seam, and integration/Chromium coverage
 - [x] P2-AR-06 remediation — CM6-independent source deltas, minimal selection-preserving Store fan-out, explicit typing history grouping, and byte-aware delta history budgets
+- [x] P4-R01 — Directory rename/move safety for open Documents — fail-closed nested-directory preflight, typed displayable diagnostics, and unit/integration/Chromium coverage ([Task Contract](./P4_R01_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -140,6 +141,7 @@ None
 - P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
 - P4-04 models file → entity completion as a provider-owned child session: selecting a file keeps the trigger/source untouched, and only a leaf file/object/heading candidate commits through the existing projection mutation capability. Static objects and dynamic `objectsFor(ctx)` are resolved through an editor-independent SuggestContext; headings are the safe fallback when no objects are available.
+- P4-R01 makes directory rename/move fail closed before filesystem mutation when any nested runtime Document or recovery path binding would be stranded. The typed diagnostic includes operation/source/target, affected paths, DocumentIds and dirty state; unaffected directories retain the existing filesystem-refresh behavior.
 
 ## Known risks
 - The AST-backed architecture checker now covers side-effect/re-export/dynamic/CommonJS/Vue imports and resolved layer dependencies; the real-browser gate covers the primary CM6 lifecycle path.
@@ -174,6 +176,7 @@ None
 - P4-07 browser/system clipboard behavior depends on platform permission and custom MIME support; outside-workspace file URLs degrade to a basename unless a platform resolver can map them to a workspace-relative path. Native Tauri clipboard/root-path adapters remain future platform work.
 - P4-08 text clipboard copy currently depends on the injected browser/platform writer; a native Tauri text-clipboard adapter and richer context-menu command integration remain future platform work.
 - P4-09 keeps embed child projections source-backed and bounded: target loading is delegated to the application persistence seam, nested content uses the current basic live-preview subset, and a depth limit degrades presentation without changing Markdown.
+- Directory operations containing a Store-loaded Document remain intentionally blocked for the lifetime of that runtime path binding; this conservative policy avoids adding a directory-wide path rebind/unload protocol in P4-R01.
 - P4-06 uses a preserve-when-unambiguous reference spelling policy (with workspace-relative fallback), rejects dirty/external incoming sources and existing targets before mutation, and compensates post-rename filesystem/Store failures without silently leaving broken links.
 - P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is a fallback when browser clipboard permissions or custom MIME support are unavailable. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
 - P4-08 keeps context actions source-backed: copy returns the exact token, open delegates to the application with an optional resolved target, and mode changes replace only the selected token through the projection mutation capability without creating an embed authority.
