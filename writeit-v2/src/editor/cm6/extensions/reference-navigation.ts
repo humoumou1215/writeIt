@@ -118,6 +118,9 @@ interface ReferenceFactsEffect {
 
 const setReferenceFactsEffect = StateEffect.define<ReferenceFactsEffect>()
 const REFERENCE_MARK_SELECTOR = '[data-writeit-reference]'
+const EMBED_CARD_SELECTOR = '[data-writeit-embed]'
+const EMBED_BODY_SELECTOR = '.cm-writeit-embed-projection__editor'
+const EMBED_OPEN_ACTION_SELECTOR = '[data-embed-action="open"]'
 const RESELECT_MENU_SELECTOR = '[data-reference-reselect-index]'
 let tooltipSequence = 0
 
@@ -258,18 +261,44 @@ function tooltipText(fact: ReferenceHealthFact): string {
   return `📄 ${target} — click to open.`
 }
 
-function elementFromTarget(
+function closestElementFromTarget(
   target: EventTarget | null,
+  selector: string,
 ): HTMLElement | undefined {
   if (!target) return undefined
   const value = target as {
-    closest?: (selector: string) => Element | null
+    closest?: (value: string) => Element | null
     parentElement?: HTMLElement | null
   }
   if (typeof value.closest === 'function') {
-    return value.closest(REFERENCE_MARK_SELECTOR) as HTMLElement | null ?? undefined
+    return value.closest(selector) as HTMLElement | null ?? undefined
   }
-  return value.parentElement ?? undefined
+  return value.parentElement?.closest(selector) as HTMLElement | null ?? undefined
+}
+
+function elementFromTarget(
+  target: EventTarget | null,
+): HTMLElement | undefined {
+  return closestElementFromTarget(target, REFERENCE_MARK_SELECTOR)
+}
+
+/**
+ * Mounted Embed bodies are interaction surfaces of their child projection.
+ * The host reference navigation listener runs in capture phase, so it must
+ * explicitly yield before translating a child click back to the host token.
+ * The card's explicit Open action is also allowed to handle its own click.
+ */
+function isEmbedProjectionInteraction(target: EventTarget | null): boolean {
+  if (closestElementFromTarget(target, EMBED_OPEN_ACTION_SELECTOR)) return true
+  const body = closestElementFromTarget(target, EMBED_BODY_SELECTOR)
+  if (!body) return false
+  const card = closestElementFromTarget(body, EMBED_CARD_SELECTOR)
+  if (card?.dataset.embedStatus !== 'mounted') return false
+  // Editable bodies always own the click. A readonly body keeps the legacy
+  // navigation fallback when no explicit Open action was provided; App wiring
+  // supplies that action so readonly image/body interactions stay in-card.
+  return card.dataset.embedMode === 'editable' ||
+    card.querySelector(EMBED_OPEN_ACTION_SELECTOR) !== null
 }
 
 function normalizeReselectionItems(
@@ -341,6 +370,7 @@ export class ReferenceNavigationController {
   private reselectSelectedIndex = 0
 
   private readonly onClick = (event: MouseEvent): void => {
+    if (isEmbedProjectionInteraction(event.target)) return
     const fact = this.factFromEvent(event)
     if (!fact) return
     event.preventDefault()

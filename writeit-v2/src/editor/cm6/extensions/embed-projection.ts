@@ -38,6 +38,7 @@ import {
 import type {
   SingleDocumentView,
 } from '../projection/single-document-view'
+import type { ImageProjectionRenderOptions } from '../../preview/image-projection'
 
 /** A target can be known before its DocumentStore state has been loaded. */
 export interface EmbedProjectionTarget {
@@ -88,6 +89,14 @@ export interface EmbedProjectionExtensionOptions {
   ) => void | PromiseLike<void>
   /** Invalidates target resolution without changing Markdown. */
   readonly subscribeTargets?: (listener: () => void) => () => void
+  /** Source-backed image options shared by nested child projections. */
+  readonly imageProjection?: ImageProjectionRenderOptions
+  /** Explicit card action for opening the resolved target in a workspace tab. */
+  readonly onOpen?: (
+    path: DocumentPath,
+    fragment: string | null,
+    reference: ParsedReference,
+  ) => void | PromiseLike<void>
   /** Readonly is also enforced by the CM6 host state. */
   readonly editable?: boolean
   /** Internal chain state; callers normally leave this unset. */
@@ -356,8 +365,38 @@ class EmbedProjectionWidget extends WidgetType {
   private child: SingleDocumentView | undefined
   private wrapper: HTMLDivElement | undefined
   private mount: HTMLDivElement | undefined
+  private openButton: HTMLButtonElement | undefined
   private unsubscribeDocument: (() => void) | undefined
   private unsubscribeTimeline: (() => void) | undefined
+
+  private readonly handleBodyMouseDown = (event: MouseEvent): void => {
+    const mount = this.mount
+    const child = this.child
+    const target = event.target
+    if (!mount || !child || !(target instanceof Node)) return
+    if (!mount.contains(target)) return
+    // The card is a projection surface, not a navigation hit target. Focus
+    // before CM6 handles the pointer so a click on padding or live-preview
+    // content lands in the nested editor instead of the host token.
+    child.view.focus()
+  }
+
+  private readonly handleOpenClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const path = targetPath(this.renderTarget.target)
+    const onOpen = this.options.onOpen
+    if (!path || !onOpen) return
+    try {
+      void Promise.resolve(
+        onOpen(path, this.reference.fragment, this.reference),
+      ).catch((error: unknown) => {
+        if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+      })
+    } catch (error) {
+      if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+    }
+  }
 
   constructor(
     private readonly store: DocumentStore,
@@ -395,6 +434,7 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.dataset.embedDepth = String(this.depth)
     wrapper.setAttribute('aria-label', `${modeLabel(this.reference.readonly)} ${wrapper.dataset.embedTarget}`)
     this.wrapper = wrapper
+    wrapper.addEventListener('mousedown', this.handleBodyMouseDown)
 
     const label = document.createElement('div')
     label.className = 'cm-writeit-embed-projection__label'
@@ -403,6 +443,20 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.append(label)
 
     const target = this.renderTarget.target
+    if (this.options.onOpen && targetPath(target) !== undefined) {
+      const openButton = document.createElement('button')
+      openButton.type = 'button'
+      openButton.className = 'cm-writeit-embed-projection__open'
+      openButton.dataset.embedAction = 'open'
+      openButton.setAttribute(
+        'aria-label',
+        `Open ${displayTarget(target, this.reference)} in workspace`,
+      )
+      openButton.textContent = 'Open'
+      openButton.addEventListener('click', this.handleOpenClick)
+      label.append(openButton)
+      this.openButton = openButton
+    }
     if (this.renderTarget.error !== undefined) {
       this.appendMessage(wrapper, 'error', `Embed unavailable: ${this.renderTarget.error}`)
       return wrapper
@@ -444,6 +498,7 @@ class EmbedProjectionWidget extends WidgetType {
     const childMount = document.createElement('div')
     childMount.className = 'cm-writeit-embed-projection__editor'
     childMount.dataset.embedEditor = 'true'
+    childMount.dataset.embedBody = 'true'
     childMount.dataset.embedProjectionId = childId
     childMount.dataset.embedDocumentId = targetDocument.id
     childMount.dataset.embedDocumentPath = targetDocument.path
@@ -454,16 +509,28 @@ class EmbedProjectionWidget extends WidgetType {
     this.mount = childMount
 
     const childEditable = this.canEdit && !this.reference.readonly
+    const childImageProjection = this.options.imageProjection === undefined
+      ? undefined
+      : {
+          ...this.options.imageProjection,
+          // Every nested projection resolves its image source against the
+          // target Document, never against the host card's path.
+          documentPath: targetDocument.path,
+        }
+    const childEmbedOptions: EmbedProjectionExtensionOptions = {
+      ...this.options,
+      locator,
+      editable: childEditable,
+      stack: Object.freeze([...this.stack, ...target.keys]),
+      depth: this.depth + 1,
+      hostProjectionId: childId,
+      hostFocus: () => view.focus(),
+      ...(childImageProjection === undefined
+        ? {}
+        : { imageProjection: childImageProjection }),
+    }
     const childExtensions: Extension[] = [
-      createEmbedProjectionExtension({
-        ...this.options,
-        locator,
-        editable: childEditable,
-        stack: Object.freeze([...this.stack, ...target.keys]),
-        depth: this.depth + 1,
-        hostProjectionId: childId,
-        hostFocus: () => view.focus(),
-      }),
+      createEmbedProjectionExtension(childEmbedOptions),
       keymap.of([
         {
           key: 'Mod-z',
@@ -489,6 +556,7 @@ class EmbedProjectionWidget extends WidgetType {
         editable: childEditable,
         presentationMode: 'live-preview',
         extensions: childExtensions,
+        imageProjection: childImageProjection,
       })
       this.subscribeChildState(locator, childId, childMount)
       this.renderChildState()
@@ -506,6 +574,9 @@ class EmbedProjectionWidget extends WidgetType {
     this.unsubscribeTimeline?.()
     this.unsubscribeDocument = undefined
     this.unsubscribeTimeline = undefined
+    this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown)
+    this.openButton?.removeEventListener('click', this.handleOpenClick)
+    this.openButton = undefined
     this.child?.destroy()
     this.child = undefined
     this.mount = undefined

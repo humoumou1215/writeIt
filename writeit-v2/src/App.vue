@@ -1019,6 +1019,13 @@ function mountActiveDocument(): void {
   const locator = documentById(document.id)
   const initialPresentationMode =
     presentationModes.get(document.id) ?? 'source'
+  const imageProjectionOptions = {
+    imageResolver: imageProjectionResolver,
+    documentPath: document.path,
+    onPreview: openImagePreview,
+    onCopy: copyImage,
+    onReveal: revealImageInWorkspace,
+  }
   try {
     const nextProjection = mountSingleDocumentView({
       store,
@@ -1099,15 +1106,12 @@ function mountActiveDocument(): void {
           onTargetMissing: ensureEmbeddedDocument,
           subscribeTargets: (listener) =>
             referenceHealth.subscribe(() => listener()),
+          imageProjection: imageProjectionOptions,
+          onOpen: (path, fragment) =>
+            openReferenceContext({ path, fragment }),
         }),
       ],
-      imageProjection: {
-        imageResolver: imageProjectionResolver,
-        documentPath: document.path,
-        onPreview: openImagePreview,
-        onCopy: copyImage,
-        onReveal: revealImageInWorkspace,
-      },
+      imageProjection: imageProjectionOptions,
     })
     projection.value = nextProjection
     mountedDocumentId.value = document.id
@@ -1116,11 +1120,7 @@ function mountActiveDocument(): void {
       store,
       locator,
       parent: previewHost.value,
-      imageResolver: imageProjectionResolver,
-      documentPath: document.path,
-      onPreview: openImagePreview,
-      onCopy: copyImage,
-      onReveal: revealImageInWorkspace,
+      ...imageProjectionOptions,
     })
     if (pendingFragmentNavigation?.documentId === document.id) {
       nextProjection.jumpToFragment(pendingFragmentNavigation.fragment)

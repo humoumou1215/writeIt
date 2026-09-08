@@ -8,6 +8,7 @@ type EmbedHarness = {
   }
   hostLocator: unknown
   targetLocator: unknown
+  opened: { path: string; fragment: string | null } | null
   projection: { destroy(): void }
 }
 
@@ -17,6 +18,7 @@ async function mountHarness(page: Page, source: string): Promise<void> {
     const loadModule = (path: string): Promise<any> =>
       import(new URL(path, window.location.origin).href)
     const core = await loadModule('/src/core/document/index.ts')
+    const reference = await loadModule('/src/core/reference/index.ts')
     const cm6 = await loadModule('/src/editor/cm6/index.ts')
 
     const store = new core.DocumentStore()
@@ -39,10 +41,16 @@ async function mountHarness(page: Page, source: string): Promise<void> {
     root.append(hostElement)
     document.body.append(root)
 
+    const graph = new reference.ReferenceGraph({
+      workspacePaths: ['EmbedHost.md', 'EmbedTarget.md'],
+      documents: [host],
+    })
+    const health = new reference.ReferenceHealthService({ graph })
     const harness: EmbedHarness = {
       store,
       hostLocator: core.documentById(host.id),
       targetLocator: core.documentById(target.id),
+      opened: null,
       projection: undefined as never,
     }
     harness.projection = cm6.mountSingleDocumentView({
@@ -53,10 +61,20 @@ async function mountHarness(page: Page, source: string): Promise<void> {
       editable: true,
       presentationMode: 'live-preview',
       extensions: [
+        cm6.createReferenceNavigationExtension({
+          sourcePath: 'EmbedHost.md',
+          healthResolver: health,
+          onOpen: (path: string, fragment: string | null) => {
+            harness.opened = { path, fragment }
+          },
+        }),
         cm6.createEmbedProjectionExtension({
           store,
           locator: core.documentById(host.id),
           getAvailablePaths: () => ['EmbedHost.md', 'EmbedTarget.md'],
+          onOpen: (path: string, fragment: string | null) => {
+            harness.opened = { path, fragment }
+          },
         }),
       ],
     })
@@ -69,6 +87,7 @@ async function mountHarness(page: Page, source: string): Promise<void> {
 async function readHarness(page: Page): Promise<{
   host: { markdown: string; revision: number }
   target: { markdown: string; revision: number }
+  opened: { path: string; fragment: string | null } | null
   projectionCount: number
 }> {
   return page.evaluate(() => {
@@ -82,6 +101,7 @@ async function readHarness(page: Page): Promise<{
     return {
       host,
       target,
+      opened: harness.opened,
       projectionCount: harness.store.getProjections(harness.targetLocator).length,
     }
   })
@@ -102,19 +122,184 @@ test('edits an embed target through the nested CM6 projection and keeps host sou
   await mountHarness(page, 'Host\n\n![[EmbedTarget.md]]')
   const embed = page.locator('[data-testid="embed-host-editor"] [data-writeit-embed]')
   await expect(embed).toHaveAttribute('data-embed-status', 'mounted')
+  await expect(page.locator('[data-testid="embed-host-editor"] > .cm-editor'))
+    .toHaveAttribute('data-reference-health', 'ready')
   const childContent = embed.locator('.cm-writeit-embed-projection__editor .cm-content')
   await childContent.click()
+  await expect(childContent).toBeFocused()
+  expect((await readHarness(page)).opened).toBeNull()
   await page.keyboard.press('End')
-  await page.keyboard.type(' edited')
+  await page.keyboard.insertText(' edited')
 
   await expect.poll(async () => (await readHarness(page)).target.markdown).toBe(
     'target source edited',
   )
   const state = await readHarness(page)
   expect(state.host.markdown).toBe('Host\n\n![[EmbedTarget.md]]')
-  expect(state.target.revision).toBeGreaterThan(0)
+  expect(state.target.revision).toBe(1)
   expect(state.projectionCount).toBe(1)
+  await embed.locator('[data-embed-action="open"]').click()
+  await expect.poll(async () => (await readHarness(page)).opened).toEqual({
+    path: 'EmbedTarget.md',
+    fragment: null,
+  })
   await destroyHarness(page)
+})
+
+test('keeps readonly embed body non-editable while its explicit open action navigates', async ({
+  page,
+}) => {
+  await mountHarness(page, '![[EmbedTarget.md|ro]]')
+  const embed = page.locator('[data-testid="embed-host-editor"] [data-writeit-embed]')
+  await expect(embed).toHaveAttribute('data-embed-mode', 'readonly')
+  const childContent = embed.locator('.cm-writeit-embed-projection__editor .cm-content')
+  await childContent.click()
+  await page.keyboard.press('End')
+  await page.keyboard.type(' must not apply')
+
+  await expect.poll(async () => (await readHarness(page)).target.markdown).toBe(
+    'target source',
+  )
+  expect((await readHarness(page)).target.revision).toBe(0)
+  await embed.locator('[data-embed-action="open"]').click()
+  await expect.poll(async () => (await readHarness(page)).opened).toEqual({
+    path: 'EmbedTarget.md',
+    fragment: null,
+  })
+  await destroyHarness(page)
+})
+
+test('decodes document-relative images in a nested embed with the shared resolver', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.evaluate(async () => {
+    const loadModule = (path: string): Promise<any> =>
+      import(new URL(path, window.location.origin).href)
+    const core = await loadModule('/src/core/document/index.ts')
+    const cm6 = await loadModule('/src/editor/cm6/index.ts')
+    const preview = await loadModule('/src/editor/preview/index.ts')
+    const filesystem = await loadModule('/src/platform/filesystem/index.ts')
+    const store = new core.DocumentStore()
+    const target = store.load({
+      id: core.createDocumentId('browser-nested-image-target'),
+      path: core.createDocumentPath('notes/deep/Target.md'),
+      markdown: '![diagram](../assets/diagram.png)',
+    })
+    store.load({
+      id: core.createDocumentId('browser-nested-image-parent'),
+      path: core.createDocumentPath('notes/Parent.md'),
+      markdown: '![[notes/deep/Target.md]]',
+    })
+    const host = store.load({
+      id: core.createDocumentId('browser-nested-image-host'),
+      path: core.createDocumentPath('Host.md'),
+      markdown: '![[notes/Parent.md]]',
+    })
+    const root = document.createElement('section')
+    root.dataset.testid = 'browser-nested-image-host'
+    document.body.append(root)
+    const fileSystem = new filesystem.MemoryFileSystem({
+      binaryFiles: {
+        'notes/assets/diagram.png': new Uint8Array([
+          137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+          0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 181, 28, 12, 2,
+          0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 98, 0, 0, 0, 4,
+          0, 1, 9, 232, 3, 253, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+          96, 130,
+        ]),
+      },
+    })
+    const resolver = new preview.WorkspaceImageProjectionResolver({
+      reader: fileSystem,
+    })
+    const projection = cm6.mountSingleDocumentView({
+      store,
+      locator: core.documentById(host.id),
+      parent: root,
+      projectionId: 'browser-nested-image-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        cm6.createEmbedProjectionExtension({
+          store,
+          locator: core.documentById(host.id),
+          getAvailablePaths: () => [
+            'Host.md',
+            'notes/Parent.md',
+            'notes/deep/Target.md',
+          ],
+          imageProjection: {
+            imageResolver: resolver,
+            documentPath: host.path,
+          },
+        }),
+      ],
+      imageProjection: {
+        imageResolver: resolver,
+        documentPath: host.path,
+      },
+    })
+    ;(
+      window as unknown as {
+        __writeItV2NestedImageHarness?: {
+          readonly projection: { destroy(): void }
+          readonly resolver: { dispose(): void }
+          readonly targetLocator: unknown
+          readonly store: { get(locator: unknown): { markdown: string; revision: number } | undefined }
+        }
+      }
+    ).__writeItV2NestedImageHarness = {
+      projection,
+      resolver,
+      targetLocator: core.documentById(target.id),
+      store,
+    }
+  })
+
+  const image = page.locator(
+    '[data-testid="browser-nested-image-host"] [data-embed-target="notes/deep/Target.md"] .cm-writeit-live-preview-image__content',
+  )
+  await expect(image).toHaveAttribute('data-image-status', 'ready')
+  await expect(image).toHaveAttribute('data-image-path', 'notes/assets/diagram.png')
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const candidate = document.querySelector<HTMLImageElement>(
+        '[data-testid="browser-nested-image-host"] [data-embed-target="notes/deep/Target.md"] .cm-writeit-live-preview-image__content',
+      )
+      return Boolean(candidate?.complete && candidate.naturalWidth > 0)
+    }),
+  ).toBe(true)
+  const sourceState = await page.evaluate(() => {
+    const harness = (
+      window as unknown as {
+        __writeItV2NestedImageHarness?: {
+          readonly store: { get(locator: unknown): { markdown: string; revision: number } | undefined }
+          readonly targetLocator: unknown
+        }
+      }
+    ).__writeItV2NestedImageHarness
+    if (!harness) throw new Error('nested image harness is not mounted')
+    const target = harness.store.get(harness.targetLocator)
+    if (!target) throw new Error('nested image target is missing')
+    return { markdown: target.markdown, revision: target.revision }
+  })
+  expect(sourceState).toEqual({
+    markdown: '![diagram](../assets/diagram.png)',
+    revision: 0,
+  })
+  await page.evaluate(() => {
+    const harness = (
+      window as unknown as {
+        __writeItV2NestedImageHarness?: {
+          readonly projection: { destroy(): void }
+          readonly resolver: { dispose(): void }
+        }
+      }
+    ).__writeItV2NestedImageHarness
+    harness?.projection.destroy()
+    harness?.resolver.dispose()
+  })
 })
 
 test('retries a transient embed load failure after an explicit target event', async ({

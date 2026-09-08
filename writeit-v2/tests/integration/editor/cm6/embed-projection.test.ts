@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import {
   createDocumentId,
@@ -10,11 +10,18 @@ import {
   DocumentStore,
 } from '../../../../src/core/document'
 import {
+  ReferenceGraph,
+  ReferenceHealthService,
+} from '../../../../src/core/reference'
+import {
   createEmbedProjectionExtension,
   createReferenceNavigationExtension,
   mountSingleDocumentView,
+  type EmbedProjectionExtensionOptions,
   type SingleDocumentView,
 } from '../../../../src/editor/cm6'
+import { WorkspaceImageProjectionResolver } from '../../../../src/editor/preview'
+import { MemoryFileSystem } from '../../../../src/platform/filesystem'
 
 const mounted: SingleDocumentView[] = []
 
@@ -37,6 +44,7 @@ function mountEmbed(
   locator: ReturnType<typeof documentById>,
   projectionId: string,
   editable = true,
+  options: Pick<EmbedProjectionExtensionOptions, 'imageProjection' | 'onOpen'> = {},
 ): SingleDocumentView {
   const projection = mountSingleDocumentView({
     store,
@@ -50,11 +58,16 @@ function mountEmbed(
         store,
         locator,
         getAvailablePaths: () => store.getAll().map((entry) => entry.path),
+        ...options,
       }),
     ],
   })
   mounted.push(projection)
   return projection
+}
+
+async function flush(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) await Promise.resolve()
 }
 
 function deferred(): {
@@ -116,6 +129,164 @@ describe('CM6 embed projection', () => {
     store.undo(a, createDocumentOrigin('test', 'embed-undo'))
     expect(store.get(a)?.markdown).toBe('# A\n\nsource\nchild edit')
     expect(mainA.view.state.doc.toString()).toBe('# A\n\nsource\nchild edit')
+  })
+
+  it('keeps editable card clicks in the child projection and exposes an explicit open action', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'interaction-target', 'Target.md', 'target')
+    const host = loadDocument(
+      store,
+      'interaction-host',
+      'Host.md',
+      '![[Target.md]]',
+    )
+    const hostDocument = store.get(host)
+    if (!hostDocument) throw new Error('host document was not loaded')
+    const graph = new ReferenceGraph({
+      workspacePaths: ['Host.md', 'Target.md'],
+      documents: [hostDocument],
+    })
+    const health = new ReferenceHealthService({ graph })
+    const opened = vi.fn()
+    const targetMain = mountEmbed(store, target, 'interaction-target-main')
+    const projection = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'interaction-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createReferenceNavigationExtension({
+          sourcePath: 'Host.md',
+          healthResolver: health,
+          onOpen: opened,
+        }),
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => store.getAll().map((entry) => entry.path),
+          onOpen: (path, fragment) => opened(path, fragment),
+        }),
+      ],
+    })
+    mounted.push(projection)
+    await flush()
+
+    const wrapper = projection.view.dom.querySelector<HTMLElement>(
+      '[data-writeit-embed][data-embed-status="mounted"]',
+    )
+    const childElement = wrapper?.querySelector<HTMLElement>('.cm-editor')
+    if (!childElement) throw new Error('editable embed editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('editable embed CM6 view was not found')
+
+    childView.contentDOM.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    )
+    childView.contentDOM.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    expect(opened).not.toHaveBeenCalled()
+    expect(childView.hasFocus).toBe(true)
+
+    childView.dispatch({
+      changes: { from: childView.state.doc.length, insert: ' edited' },
+    })
+    expect(store.get(host)?.markdown).toBe('![[Target.md]]')
+    expect(store.get(target)?.markdown).toBe('target edited')
+    expect(store.getRevision(target)).toBe(1)
+    expect(store.getHistory(target).undo).toHaveLength(1)
+    expect(targetMain.view.state.doc.toString()).toBe('target edited')
+
+    const openButton = wrapper?.querySelector<HTMLButtonElement>(
+      '[data-embed-action="open"]',
+    )
+    openButton?.click()
+    expect(opened).toHaveBeenCalledTimes(1)
+    expect(opened).toHaveBeenCalledWith('Target.md', null)
+  })
+
+  it('keeps readonly embed bodies non-editable while the explicit open action navigates', () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'readonly-action-target', 'Target.md', 'source')
+    const host = loadDocument(
+      store,
+      'readonly-action-host',
+      'Host.md',
+      '![[Target.md|ro]]',
+    )
+    const opened = vi.fn()
+    const projection = mountEmbed(store, host, 'readonly-action-host', true, {
+      onOpen: (path, fragment) => opened(path, fragment),
+    })
+
+    const wrapper = projection.view.dom.querySelector<HTMLElement>(
+      '[data-writeit-embed][data-embed-status="mounted"]',
+    )
+    const childElement = wrapper?.querySelector<HTMLElement>('.cm-editor')
+    if (!childElement) throw new Error('readonly embed editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('readonly embed CM6 view was not found')
+    expect(childView.state.readOnly).toBe(true)
+
+    childView.dispatch({
+      changes: { from: childView.state.doc.length, insert: ' must not apply' },
+    })
+    expect(store.get(target)?.markdown).toBe('source')
+    expect(store.getRevision(target)).toBe(0)
+    wrapper?.querySelector<HTMLButtonElement>('[data-embed-action="open"]')?.click()
+    expect(opened).toHaveBeenCalledWith('Target.md', null)
+  })
+
+  it('uses the target document path and shared resolver for nested embed images', async () => {
+    const store = new DocumentStore()
+    const targetPath = 'notes/deep/Target.md'
+    const parentPath = 'notes/Parent.md'
+    const target = loadDocument(
+      store,
+      'nested-image-target',
+      targetPath,
+      '![diagram](../assets/diagram.png)',
+    )
+    loadDocument(
+      store,
+      'nested-image-parent',
+      parentPath,
+      '![[notes/deep/Target.md]]',
+    )
+    const host = loadDocument(
+      store,
+      'nested-image-host',
+      'Host.md',
+      '![[notes/Parent.md]]',
+    )
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem({
+        binaryFiles: {
+          'notes/assets/diagram.png': new Uint8Array([1, 2, 3]),
+        },
+      }),
+    })
+    const projection = mountEmbed(store, host, 'nested-image-host', true, {
+      imageProjection: {
+        imageResolver: resolver,
+        documentPath: store.get(host)?.path,
+      },
+    })
+    try {
+      await flush()
+      const image = projection.view.dom.querySelector<HTMLImageElement>(
+        '[data-embed-target="notes/deep/Target.md"] .cm-writeit-live-preview-image__content',
+      )
+      expect(image?.dataset.imageStatus).toBe('ready')
+      expect(image?.dataset.imagePath).toBe('notes/assets/diagram.png')
+      expect(image?.src).toContain('data:image/png;base64,AQID')
+      expect(store.get(target)?.markdown).toBe('![diagram](../assets/diagram.png)')
+      expect(store.getRevision(target)).toBe(0)
+    } finally {
+      resolver.dispose()
+    }
   })
 
   it('propagates one target revision through a nested C-to-B-to-A projection chain', () => {
