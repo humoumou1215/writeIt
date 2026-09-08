@@ -1,8 +1,9 @@
 # P4-AR2 — P0–P4 Architecture & Product Boundary Re-review
 
-- **评审日期：** 2026-09-08
-- **Baseline：** `65103f3` (`fix(v2): complete P4-R05 embed lifecycle recovery`)
-- **评审范围：** P0–P4 architecture invariants、P2-AR-06、P4-R01、P4-R02、P3-R01、P4-R03、P3-R02、P3-R03、P4-R04、P4-R05、P2A 用户验收证据、Task Contract/STATUS/README/Feature Map 一致性
+- **初始评审日期：** 2026-09-08
+- **初始 Baseline：** `65103f3` (`fix(v2): complete P4-R05 embed lifecycle recovery`)
+- **本次 re-review：** 2026-09-08，`HEAD b96d116` 加当前未提交 F-03 follow-up 工作树
+- **评审范围：** P0–P4 architecture invariants、P2-AR-06、P4-R01、P4-R02、P3-R01、P4-R03、P3-R02、P3-R03、P4-R04、P4-R05、F-01/F-02、F-03 follow-up、P2A 用户验收证据、Task Contract/STATUS/README/Feature Map 一致性
 - **最终 Gate：** **CHANGES REQUIRED / HOLD**
 - **P5 状态：** 未开始；`P5-01` 未获授权
 - **ADR 状态：** ADR-0001 至 ADR-0006 仍 Accepted；本次没有提出修改 ADR 或改变已批准目录策略
@@ -20,6 +21,27 @@ P0–P4 的核心 authority、Projection、source-fidelity、依赖边界和 P2-
 目录操作的当前批准策略仍然是“影响已打开 descendant Document/path binding 时阻止”，本次不把它改成 transactional path migration。该策略足以保护当前运行时 path binding 的一致性，但不等于完整 directory reference migration；未打开 descendant 的 incoming-reference rewrite、path rebind、rollback 仍是明确 deferred risk。
 
 ## 2. 工作流与验证基线
+
+### 本次 re-review（2026-09-08）
+
+本次复核以 `HEAD b96d116`（`docs(v2): merge UX and phase gate specifications`）为提交基线，并在当前工作树上执行；工作树开始时并非 clean，已有的 F-03 follow-up 修改和测试不属于本次评审产生的变更。本次评审只读取并验证这些变更，不修改产品源代码、测试代码、`editor-app/` 或 `raw/`。
+
+开始复核时 `git status --short --branch` 为：`master...origin/master`，已有变更涉及 `STATUS.md`、`App.vue`、workspace open seam、CM6 popup/completion/embed/style、F-03 browser/integration tests，以及 F-03-R1/R2/R3 contracts、workspace-open unit test 和 image-paste unit test。评审结论必须区分这些未提交变更与本次 review 文档，不能把它们一起暂存。
+
+本次 gate 命令结果：
+
+| 命令 | 结果 | 证据摘要 |
+|---|---|---|
+| `cd writeit-v2 && npm run test` | **PASS** | boundary check 通过（87 source files）；Vitest 63 files / 396 tests passed |
+| `cd writeit-v2 && npm run test:browser` | **PASS** | Chromium 63 tests passed |
+| `cd writeit-v2 && npm run typecheck` | **PASS** | `vue-tsc --noEmit` 通过 |
+| `cd writeit-v2 && npm run build` | **PASS** | Vite production build 通过；899.86 kB main chunk 的既有 >500 kB warning 非本次 gate blocker |
+| `cd writeit-v2 && npm run check:boundaries` | **PASS** | AST/layer boundary check 通过（87 source files） |
+| `git diff --check` | **PASS** | 无 whitespace error |
+
+额外只读扫描未发现 v2 source 的 `editor-app` runtime import、Core 到 UI/platform/editor 的越层 import 或以 `setTimeout`/`setInterval`/`sleep`/固定 delay 作为状态协议的命中。测试通过证明当前 fixture/路径满足合同，不表示真实 native adapter、directory migration 或生产 Embed loader failure/retry 用户旅程已经闭合。
+
+### 初始 gate 记录（历史证据）
 
 开始评审时 `git status --short --branch` 为 clean（`master...origin/master [ahead 9]`）。本次没有修改产品源代码、测试代码、`editor-app/` 或 `raw/`；只产生评审合同、评审报告及必要的状态/README 文档。
 
@@ -194,11 +216,22 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 4. 是否继续批准当前目录策略：有打开 descendant 时阻止；完整 directory migration 明确 deferred。若要改成 transactional migration，必须另立架构决策，本 Task 不自行改变。
 5. 是否需要重新执行并保存 P2A 真实 IME/用户验收记录；历史 P2A-AR1 PASS 不应被自动化 test count 取代。
 
-## 9. 最终 Gate
+## 9. Re-review delta after F-03-R3
+
+本次工作树相对初始 P4-AR2 评审新增了 F-03-R1、F-03-R1-FIX、F-03-R2 和 F-03-R3 的实现与证据：
+
+- 真实 App 已覆盖 editable child 的 slash/completion popup、目标 DocumentStore mutation、host source/token 与当前 tab 保持不变、readonly child 不提供可提交 popup，以及 child image paste 的 target-path/一次性边界。
+- 已覆盖 loaded dirty target 的显式 Open/激活、稳定 DocumentId、dirty tab indicator、Save 清理 dirty，以及 missing target 出现后加载并继续编辑的 App 旅程。
+- 这些 follow-up 没有改变 accepted ADR、DocumentStore authority、Projection 边界、directory fail-closed policy 或 no-timeout 协议；本次 63 条 Chromium 测试和 396 条 Vitest 测试均通过。
+- 但仍没有真实 App 的 persistence loader rejection → 用户可见 Embed failure → 明确 Refresh/retry → child mount 的完整 Chromium 旅程。当前 `ensureEmbeddedDocument()` 的失败恢复仍依赖 workspace/reference refresh 事件；F-03-R3 的 popup parity 和 F-03-R1/R2 的成功/dirty/image 路径不能替代该 production acceptance evidence。
+
+P2A 的真实中文 IME 人工验收 artifact、P2-AR-06 unrepresentable mapping fallback 的专门 browser evidence，以及目录 preflight 与 in-flight loader/open 之间的 TOCTOU evidence 仍按原报告分类保留，不重新伪称 PASS。目录操作仍是“有运行时 descendant binding 则阻止”，不是完整 directory path migration。
+
+## 10. 最终 Gate
 
 **CHANGES REQUIRED / HOLD。**
 
-- P0–P4 核心 authority/boundary 和正常 remediation paths 有充分证据。
-- F-01 与 F-02 已关闭；F-03 的生产验收证据仍未闭合。
-- 因此 `STATUS.md` 不指向 `P5-01`，不开始 P5，不改变 accepted ADR，不改变已批准目录策略。
-- 后续应由用户批准独立 remediation Task；本评审不自动开始下一 Task。
+- P0–P4 核心 authority/boundary、source fidelity 和正常 remediation paths 有充分自动化证据；F-01 与 F-02 已关闭，F-03 的交互/图片/dirty Open follow-up 也有当前 App evidence。
+- **F-03 production loader failure/retry acceptance evidence 仍未闭合**，因此不能把受控 harness 的 retry 证据或成功加载旅程表述为 P5-ready production acceptance。
+- `STATUS.md` 必须保持 `P5-01` blocked，不把 P5 写成 Next；不开始 P5，不改变 accepted ADR，不改变已批准目录策略。
+- 后续应由用户批准并定义独立的 F-03 production acceptance remediation Task；本评审不自动开始下一 Task。

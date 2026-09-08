@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: F-03 — Editable Embed card interaction and nested image preview (complete; P4-AR2 re-review remains HOLD; P5 not started)
+Current task: P4-AR2 — P0–P4 Architecture & Product Boundary Re-review（complete; CHANGES REQUIRED / HOLD; P5 not started）
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -81,17 +81,17 @@ Current task: F-03 — Editable Embed card interaction and nested image preview 
 - [x] P3-R03 — Conditional filesystem writes / conflict-safe mutation — coherent text snapshots, immutable version tokens, deterministic MemoryFileSystem CAS, guarded persistence save, and rename rewrite/rollback conflict diagnostics ([Task Contract](./P3_R03_TASK_CONTRACT.md))
 - [x] P4-R04 — Clipboard fallback freshness protocol — current plain-text-only paste evidence must match the latest internal copy fingerprint/binding; changed, empty, ambiguous, or unreadable clipboard payloads fail closed while custom MIME/file URI and existing reference modes remain intact ([Task Contract](./P4_R04_TASK_CONTRACT.md))
 - [x] P4-R05 — Embed failure/recovery lifecycle coverage — generation-bound missing/load requests now support explicit retry after transient failure or target appearance, drop late results after detach, and cover nested rebuild plus close/reopen recovery ([Task Contract](./P4_R05_TASK_CONTRACT.md))
-- [x] P4-AR2 — P0–P4 Architecture & Product Boundary Re-review — **CHANGES REQUIRED / HOLD**; findings and evidence are recorded in [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) and the review contract ([Task Contract](./P4_AR2_TASK_CONTRACT.md))
+- [x] P4-AR2 — P0–P4 Architecture & Product Boundary Re-review — **CHANGES REQUIRED / HOLD**; current re-review runs 63 Chromium tests and 396 Vitest tests successfully, but production Embed loader failure/retry acceptance evidence remains open; findings and evidence are recorded in [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) and the review contract ([Task Contract](./P4_AR2_TASK_CONTRACT.md))
 - [x] F-01 — Dirty delete CAS integration — dirty Save preparation and conditional rollback now use coherent `FileVersionToken` CAS; conflict/rollback race diagnostics and multi-document failure coverage added ([Task Contract](./F_01_TASK_CONTRACT.md)); F-03 was still pending at that milestone and P5 remained blocked
 - [x] F-02 — Collision-safe timestamp image attachment compensation — timestamp-first exclusive create, collision suffixes, ownership-receipt conditional cleanup, source-safe Store/revision gate, and explicit orphan diagnostics with unit/integration/browser coverage ([Task Contract](./F_02_TASK_CONTRACT.md)); F-03 was still pending at that milestone and P5 remained blocked
 - [x] F-02-R1 — Image paste idempotency and preview fidelity — event-scoped once-only paste claim, files/items projection de-duplication, concurrent source-backed image resolution, and blob/data URL decode fallback with unit/integration/browser coverage ([Task Contract](./F_02_R1_TASK_CONTRACT.md)); F-03 was still pending at that milestone and P5 remained blocked
 - [x] F-03 — Editable Embed card interaction and nested image preview — editable body clicks stay in the current child projection, readonly embeds remain source-safe with explicit Open navigation, App wiring supplies shared image resolver/cache with target-document paths, and nested/lifecycle/revision/browser acceptance evidence passes ([Task Contract](./F_03_TASK_CONTRACT.md)); P5 remains blocked
 
 ## Active
-None — F-03 is complete; P4-AR2 still requires a re-review of the remaining production/evidence boundary before P5 work can start.
+None — P4-AR2 re-review is complete; the production Embed loader failure/retry evidence gap keeps P5 on HOLD.
 
 ## Blocked
-- [ ] P5-01 — HOLD until the P4-AR2 re-review confirms remaining production acceptance/evidence decisions; F-03 completion does not authorize P5.
+- [ ] P5-01 — HOLD; P4-AR2 re-review leaves production Embed loader failure/retry acceptance evidence open, so P5-01 is not authorized.
 
 ## Recent decisions
 - CM6 Architecture Spike = GO; broader office-app clipboard compatibility and large-table performance sampling are post-GO validation, not architecture blockers.
@@ -209,4 +209,4 @@ None — F-03 is complete; P4-AR2 still requires a re-review of the remaining pr
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes. Unrepresentable source/projection mappings still use a contiguous fallback and need explicit failure-path selection/degraded coverage.
 
 ## Next
-F-03 is complete. Re-run the P4-AR2 gate as a separate review when authorized; P5-01 remains unauthorized and must not start automatically.
+P4-AR2 re-review is complete and remains HOLD. Next suggested task: a user-approved, explicitly named F-03 production loader failure/retry acceptance remediation; no such Task ID is defined yet, and P5-01 remains unauthorized.
