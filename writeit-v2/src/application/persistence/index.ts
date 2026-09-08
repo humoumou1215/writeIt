@@ -3,6 +3,7 @@ import {
   DocumentNotFoundError,
   DocumentStore,
   documentById,
+  isDocumentId,
   isDocumentPath,
 } from '../../core/document'
 import type {
@@ -80,6 +81,16 @@ export interface PersistenceRebindPathOptions {
   readonly persistedMarkdown?: string
 }
 
+/**
+ * A guarded batch of writes used by workspace deletion. The transaction does
+ * not acknowledge a Store revision: if deletion is cancelled or fails, the
+ * DocumentStore and persistence records remain dirty and unchanged.
+ */
+export interface PersistenceDeletionSaveTransaction {
+  commit(): void
+  rollback(): Promise<void>
+}
+
 export interface PersistenceLoadInput {
   readonly id: DocumentId
   readonly path: DocumentPath
@@ -133,6 +144,44 @@ export class PersistenceWriteError extends Error {
     this.name = 'PersistenceWriteError'
     this.path = path
     this.cause = cause
+  }
+}
+
+export class PersistenceDeletionSaveError extends Error {
+  readonly code = 'persistence-deletion-save-failed' as const
+  readonly path?: DocumentPath
+  readonly cause: unknown
+  readonly rollbackErrors: readonly unknown[]
+
+  constructor(input: {
+    readonly path?: DocumentPath
+    readonly cause: unknown
+    readonly rollbackErrors?: readonly unknown[]
+  }) {
+    const pathLabel = input.path === undefined ? '' : ` for ${input.path}`
+    const rollbackLabel =
+      input.rollbackErrors !== undefined && input.rollbackErrors.length > 0
+        ? ` Rollback also failed for ${input.rollbackErrors.length} write${input.rollbackErrors.length === 1 ? '' : 's'}.`
+        : ''
+    super(
+      `Unable to prepare guarded deletion save${pathLabel}: ${errorMessage(input.cause)}.${rollbackLabel}`,
+      { cause: input.cause },
+    )
+    this.name = 'PersistenceDeletionSaveError'
+    this.path = input.path
+    this.cause = input.cause
+    this.rollbackErrors = Object.freeze([...(input.rollbackErrors ?? [])])
+  }
+}
+
+export class PersistenceOperationLockedError extends Error {
+  readonly code = 'persistence-operation-locked' as const
+  readonly documentId: DocumentId
+
+  constructor(documentId: DocumentId) {
+    super(`Persistence operation is locked while deleting document ${documentId}`)
+    this.name = 'PersistenceOperationLockedError'
+    this.documentId = documentId
   }
 }
 
@@ -258,6 +307,10 @@ export class DocumentPersistenceService {
 
   private readonly listeners = new Set<PersistenceStateListener>()
 
+  /** Nested deletion operations are not expected, but a counter keeps the
+   * lock safe for application adapters that compose commands. */
+  private readonly deletionLocks = new Map<DocumentId, number>()
+
   private autoSaveDelayMs: AutoSaveDelayMs
 
   constructor(
@@ -351,11 +404,267 @@ export class DocumentPersistenceService {
     return this.autoSaveDelayMs
   }
 
+  /** Returns the ids of every persistence registration, including closed tabs. */
+  getTrackedDocumentIds(): readonly DocumentId[] {
+    return Object.freeze(
+      [...this.records.keys()].sort((left, right) => left.localeCompare(right)),
+    )
+  }
+
+  isTracked(locator: DocumentLocator): boolean {
+    const document = this.store.get(locator)
+    return document !== undefined && this.records.has(document.id)
+  }
+
+  /**
+   * Runs one application deletion workflow while suppressing auto-save races
+   * for the supplied documents. Existing timers are left intact; a callback
+   * that fires during the lock keeps its pending state and is rescheduled only
+   * if the operation is cancelled.
+   */
+  async runDeletionExclusive<T>(
+    documentIds: readonly DocumentId[],
+    callback: () => Promise<T> | T,
+  ): Promise<T> {
+    if (!Array.isArray(documentIds)) {
+      throw new TypeError('Deletion document ids must be an array')
+    }
+    if (typeof callback !== 'function') {
+      throw new TypeError('Deletion callback must be a function')
+    }
+
+    const ids = [...new Set(documentIds)]
+    for (const documentId of ids) {
+      if (!isDocumentId(documentId)) {
+        throw new TypeError('Deletion document id must be non-empty')
+      }
+    }
+
+    const records: TrackedDocument[] = []
+    for (const documentId of ids) {
+      const record = this.records.get(documentId)
+      if (record !== undefined) records.push(record)
+    }
+
+    for (const record of records) {
+      this.deletionLocks.set(record.id, (this.deletionLocks.get(record.id) ?? 0) + 1)
+    }
+
+    try {
+      // Do not let an already-running auto-save overlap the deletion plan.
+      // Conflicts are safe to observe and the guarded deletion workflow will
+      // re-check the current disk baseline before writing.
+      for (const record of records) await this.waitForInFlightSave(record)
+      return await callback()
+    } finally {
+      for (const record of records) {
+        const count = this.deletionLocks.get(record.id) ?? 0
+        if (count <= 1) this.deletionLocks.delete(record.id)
+        else this.deletionLocks.set(record.id, count - 1)
+        if (count <= 1) this.restoreAutoSaveAfterDeletion(record)
+      }
+    }
+  }
+
+  /**
+   * Prepares guarded writes for dirty documents without changing Store or
+   * persistence state. The caller commits by deleting the workspace entry;
+   * rollback restores every byte written by this preparation.
+   */
+  async prepareDeletionSave(
+    documentIds: readonly DocumentId[],
+  ): Promise<PersistenceDeletionSaveTransaction> {
+    if (!Array.isArray(documentIds)) {
+      throw new TypeError('Deletion document ids must be an array')
+    }
+
+    interface PreparedWrite {
+      readonly record: TrackedDocument
+      readonly document: DocumentState
+      readonly originalMarkdown: string
+      readonly targetMarkdown: string
+      written: boolean
+    }
+
+    const prepared: PreparedWrite[] = []
+    const ids = [...new Set(documentIds)]
+    for (const documentId of ids) {
+      if (!isDocumentId(documentId)) {
+        throw new TypeError('Deletion document id must be non-empty')
+      }
+      const record = this.records.get(documentId)
+      if (record === undefined) {
+        throw new PersistenceDeletionSaveError({
+          cause: new PersistenceNotTrackedError(documentId),
+        })
+      }
+      const document = this.store.get(documentById(documentId))
+      if (!document) {
+        throw new PersistenceDeletionSaveError({
+          cause: new DocumentNotFoundError(documentById(documentId)),
+        })
+      }
+      if (!document.dirty) continue
+
+      let disk: DiskReadResult
+      try {
+        disk = await this.readDisk(record)
+      } catch (error) {
+        throw new PersistenceDeletionSaveError({
+          path: record.path,
+          cause: error,
+        })
+      }
+      if (disk.kind === 'deleted') {
+        throw new PersistenceDeletionSaveError({
+          path: record.path,
+          cause: new SaveConflictError({
+            path: record.path,
+            kind: 'deleted',
+            expectedMarkdown: record.persistedMarkdown,
+            revision: document.revision,
+          }),
+        })
+      }
+      if (disk.markdown !== record.persistedMarkdown) {
+        throw new PersistenceDeletionSaveError({
+          path: record.path,
+          cause: new SaveConflictError({
+            path: record.path,
+            kind: 'changed',
+            expectedMarkdown: record.persistedMarkdown,
+            actualMarkdown: disk.markdown,
+            revision: document.revision,
+          }),
+        })
+      }
+
+      prepared.push({
+        record,
+        document,
+        originalMarkdown: disk.markdown,
+        targetMarkdown: document.markdown,
+        written: false,
+      })
+    }
+
+    const rollbackWrites = async (): Promise<readonly unknown[]> => {
+      const rollbackErrors: unknown[] = []
+      for (const item of [...prepared].reverse()) {
+        if (!item.written) continue
+        try {
+          await this.fileSystem.writeFile(item.record.path, item.originalMarkdown)
+          item.written = false
+        } catch (error) {
+          rollbackErrors.push(error)
+        }
+      }
+      return Object.freeze(rollbackErrors)
+    }
+
+    try {
+      for (const item of prepared) {
+        const current = this.store.get(documentById(item.document.id))
+        if (
+          !current ||
+          current.revision !== item.document.revision ||
+          current.markdown !== item.document.markdown ||
+          current.path !== item.document.path
+        ) {
+          throw new PersistenceDeletionSaveError({
+            path: item.record.path,
+            cause: new Error(
+              `Document ${item.document.id} changed while preparing deletion save`,
+            ),
+          })
+        }
+        if (item.targetMarkdown === item.originalMarkdown) continue
+        try {
+          await this.fileSystem.writeFile(item.record.path, item.targetMarkdown)
+          item.written = true
+        } catch (error) {
+          throw new PersistenceDeletionSaveError({
+            path: item.record.path,
+            cause: new PersistenceWriteError(item.record.path, error),
+          })
+        }
+      }
+      for (const item of prepared) {
+        const current = this.store.get(documentById(item.document.id))
+        if (
+          !current ||
+          current.revision !== item.document.revision ||
+          current.markdown !== item.document.markdown ||
+          current.path !== item.document.path
+        ) {
+          throw new PersistenceDeletionSaveError({
+            path: item.record.path,
+            cause: new Error(
+              `Document ${item.document.id} changed while preparing deletion save`,
+            ),
+          })
+        }
+      }
+    } catch (error) {
+      const rollbackErrors = await rollbackWrites()
+      if (error instanceof PersistenceDeletionSaveError) {
+        if (rollbackErrors.length === 0) throw error
+        throw new PersistenceDeletionSaveError({
+          path: error.path,
+          cause: error.cause,
+          rollbackErrors,
+        })
+      }
+      throw new PersistenceDeletionSaveError({
+        cause: error,
+        rollbackErrors,
+      })
+    }
+
+    let committed = false
+    let rolledBack = false
+    return Object.freeze({
+      commit: (): void => {
+        committed = true
+      },
+      rollback: async (): Promise<void> => {
+        if (committed || rolledBack) return
+        const rollbackErrors = await rollbackWrites()
+        if (rollbackErrors.length > 0) {
+          throw new PersistenceDeletionSaveError({
+            cause: new Error('Deletion save rollback failed'),
+            rollbackErrors,
+          })
+        }
+        rolledBack = true
+      },
+    })
+  }
+
+  /** Removes one registration and cancels any future auto-save callback. */
+  untrack(locator: DocumentLocator): boolean {
+    const document = this.store.get(locator)
+    if (!document) return false
+    const record = this.records.get(document.id)
+    if (!record) return false
+    this.cancelAutoSave(record)
+    record.unsubscribeStore()
+    record.listeners.clear()
+    this.records.delete(document.id)
+    this.deletionLocks.delete(document.id)
+    return true
+  }
+
+  /** Explicit alias for application deletion/lifecycle callers. */
+  unregister(locator: DocumentLocator): boolean {
+    return this.untrack(locator)
+  }
+
   setAutoSaveDelay(delay: AutoSaveDelayMs): AutoSaveDelayMs {
     this.autoSaveDelayMs = requireAutoSaveDelay(delay)
     for (const record of this.records.values()) {
       this.cancelAutoSave(record)
-      if (this.autoSaveDelayMs !== null) {
+      if (this.autoSaveDelayMs !== null && !this.isDeletionLocked(record)) {
         const document = this.store.get(documentById(record.id))
         if (document?.dirty && record.externalChange === undefined) {
           this.scheduleAutoSave(record)
@@ -467,6 +776,9 @@ export class DocumentPersistenceService {
    */
   async save(locator: DocumentLocator): Promise<PersistenceSaveResult> {
     const record = this.requireRecord(locator)
+    if (this.isDeletionLocked(record)) {
+      throw new PersistenceOperationLockedError(record.id)
+    }
     const inFlight = record.savePromise
     if (inFlight) {
       const result = await inFlight
@@ -586,6 +898,7 @@ export class DocumentPersistenceService {
       record.listeners.clear()
     }
     this.records.clear()
+    this.deletionLocks.clear()
     this.listeners.clear()
   }
 
@@ -699,7 +1012,8 @@ export class DocumentPersistenceService {
     this.notify(record)
     if (
       record.suppressAutoSave === 0 &&
-      record.externalChange === undefined
+      record.externalChange === undefined &&
+      !this.isDeletionLocked(record)
     ) {
       this.scheduleAutoSave(record)
     }
@@ -707,13 +1021,13 @@ export class DocumentPersistenceService {
 
   private scheduleAutoSave(record: TrackedDocument): void {
     this.cancelAutoSave(record)
-    if (this.autoSaveDelayMs === null) return
+    if (this.autoSaveDelayMs === null || this.isDeletionLocked(record)) return
     const delay = this.autoSaveDelayMs
     record.pendingAutoSave = true
     this.notify(record)
     if (delay === 0) {
       queueMicrotask(() => {
-        if (!record.pendingAutoSave) return
+        if (!record.pendingAutoSave || this.isDeletionLocked(record)) return
         record.pendingAutoSave = false
         this.notify(record)
         void this.save(documentById(record.id)).catch((error: unknown) => {
@@ -728,6 +1042,7 @@ export class DocumentPersistenceService {
     }
     record.timer = this.scheduler.set(() => {
       record.timer = undefined
+      if (this.isDeletionLocked(record)) return
       record.pendingAutoSave = false
       this.notify(record)
       void this.save(documentById(record.id)).catch((error: unknown) => {
@@ -738,6 +1053,34 @@ export class DocumentPersistenceService {
         this.notify(record)
       })
     }, delay)
+  }
+
+  private isDeletionLocked(record: TrackedDocument): boolean {
+    return (this.deletionLocks.get(record.id) ?? 0) > 0
+  }
+
+  private restoreAutoSaveAfterDeletion(record: TrackedDocument): void {
+    if (
+      this.records.get(record.id) !== record ||
+      record.timer !== undefined ||
+      !record.pendingAutoSave ||
+      this.autoSaveDelayMs === null
+    ) {
+      return
+    }
+    const document = this.store.get(documentById(record.id))
+    if (!document?.dirty || record.externalChange !== undefined) {
+      record.pendingAutoSave = false
+      this.notify(record)
+      return
+    }
+
+    // scheduleAutoSave deliberately clears and re-adds the pending marker;
+    // callers observe the same final state while a consumed timer is replaced
+    // with a live timer after cancellation.
+    record.pendingAutoSave = false
+    this.notify(record)
+    this.scheduleAutoSave(record)
   }
 
   private cancelAutoSave(record: TrackedDocument): void {

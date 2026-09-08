@@ -325,6 +325,77 @@ h1 {
   font-size: 0.75rem;
 }
 
+.workspace-delete-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(20 28 48 / 35%);
+}
+
+.workspace-delete-dialog__surface {
+  width: min(32rem, 100%);
+  padding: 1.25rem;
+  border: 1px solid #cfd6e5;
+  border-radius: 0.6rem;
+  background: #fff;
+  box-shadow: 0 1rem 3rem rgb(20 28 48 / 25%);
+  color: #263044;
+}
+
+.workspace-delete-dialog__surface h2 {
+  margin: 0;
+  color: #202a42;
+  font-size: 1rem;
+}
+
+.workspace-delete-dialog__surface p {
+  margin: 0.7rem 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.workspace-delete-dialog__documents {
+  max-height: 10rem;
+  margin: 0.7rem 0 1rem;
+  padding-left: 1.25rem;
+  overflow: auto;
+  font-size: 0.8rem;
+}
+
+.workspace-delete-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.workspace-delete-dialog__actions button {
+  padding: 0.42rem 0.65rem;
+  border: 1px solid #cfd6e5;
+  border-radius: 0.35rem;
+  background: #f7f8fc;
+  color: #263044;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.workspace-delete-dialog__actions button:hover {
+  background: #eef1ff;
+}
+
+.workspace-delete-dialog__discard {
+  border-color: #e5b9b9 !important;
+  color: #9c2929 !important;
+}
+
+.workspace-delete-dialog__cancel {
+  background: #fff !important;
+}
+
 .workspace-tree {
   max-height: 28rem;
   margin: 0;

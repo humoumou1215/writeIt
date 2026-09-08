@@ -1,6 +1,7 @@
 import {
   createWorkspacePath,
   isWorkspacePath,
+  isWorkspacePathWithin,
 } from '../../core/workspace'
 import type { WorkspacePath } from '../../core/workspace'
 import type { SettingsStoragePort } from '../../platform/settings'
@@ -279,6 +280,49 @@ export class WorkspaceRecoveryStore {
 
   clear(workspacePath: WorkspacePath | string = this.snapshot.workspacePath): WorkspaceRecoveryState {
     const next = createState({ workspacePath })
+    if (sameState(next, this.snapshot)) return this.snapshot
+
+    this.storage.write(this.storageKey, encodeRecovery(next))
+    this.snapshot = next
+    this.storedState = true
+    this.notify()
+    return next
+  }
+
+  /**
+   * Removes deleted paths from the durable session in one recovery update.
+   * Open paths, active path and the selected tree path are all treated as
+   * disposable bindings; no deleted path can be restored on the next launch.
+   */
+  removePaths(
+    paths: readonly (WorkspacePath | string)[],
+  ): WorkspaceRecoveryState {
+    if (!Array.isArray(paths)) {
+      throw new WorkspaceRecoveryValidationError('Recovery paths must be an array')
+    }
+    const removed = new Set<WorkspacePath>()
+    for (const [index, path] of paths.entries()) {
+      removed.add(normalizePath(path, `recovery paths[${index}]`))
+    }
+    const isRemoved = (path: WorkspacePath): boolean =>
+      [...removed].some((root) => isWorkspacePathWithin(path, root))
+
+    const next = createState({
+      workspacePath: this.snapshot.workspacePath,
+      openDocumentPaths: this.snapshot.openDocumentPaths.filter(
+        (path) => !isRemoved(path),
+      ),
+      activeDocumentPath:
+        this.snapshot.activeDocumentPath !== null &&
+        isRemoved(this.snapshot.activeDocumentPath)
+          ? null
+          : this.snapshot.activeDocumentPath,
+      selectedWorkspacePath:
+        this.snapshot.selectedWorkspacePath !== null &&
+        isRemoved(this.snapshot.selectedWorkspacePath)
+          ? null
+          : this.snapshot.selectedWorkspacePath,
+    })
     if (sameState(next, this.snapshot)) return this.snapshot
 
     this.storage.write(this.storageKey, encodeRecovery(next))

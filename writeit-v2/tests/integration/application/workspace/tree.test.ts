@@ -4,6 +4,7 @@ import {
   findWorkspaceNode,
 } from '../../../../src/core/workspace'
 import type { WorkspacePath } from '../../../../src/core/workspace'
+import { ReferenceGraph } from '../../../../src/core/reference'
 import {
   createDocumentId,
   createDocumentOrigin,
@@ -367,5 +368,68 @@ describe('WorkspaceTreeService', () => {
     ).resolves.toBe('notes')
     expect(fileSystem.moveCalls).toBe(1)
     expect(fileSystem.hasFile(createDocumentPath('notes/open.md'))).toBe(true)
+  })
+
+  it('routes tree deletion through the dirty-aware application service', async () => {
+    const fileSystem = new MutationTrackingFileSystem({
+      files: {
+        'notes/deep/open.md': 'open on disk\n',
+        'notes/deep/other.md': 'other on disk\n',
+      },
+    })
+    const store = new DocumentStore()
+    const open = store.load({
+      id: createDocumentId('tree-delete-open'),
+      path: createDocumentPath('notes/deep/open.md'),
+      markdown: 'open on disk\n',
+    })
+    const other = store.load({
+      id: createDocumentId('tree-delete-other'),
+      path: createDocumentPath('notes/deep/other.md'),
+      markdown: 'other on disk\n',
+    })
+    const persistence = new DocumentPersistenceService(store, fileSystem, {
+      autoSaveDelayMs: null,
+    })
+    persistence.track(documentById(open.id), { persistedMarkdown: open.markdown })
+    persistence.track(documentById(other.id), { persistedMarkdown: other.markdown })
+    store.applyChange(documentById(open.id), {
+      markdown: 'unsaved open\n',
+      origin: createDocumentOrigin('test', 'tree-delete'),
+    })
+    const tabs = new WorkspaceTabManager([open.id, other.id])
+    const graph = new ReferenceGraph({
+      documents: [open, other],
+      workspacePaths: ['notes/deep/open.md', 'notes/deep/other.md'],
+    })
+    let decision: 'save' | 'discard' | 'cancel' = 'cancel'
+    const service = new WorkspaceTreeService(fileSystem, {
+      deletion: {
+        store,
+        tabs,
+        persistence,
+        referenceGraph: graph,
+        resolveDirty: () => decision,
+      },
+    })
+    await service.refresh()
+    const beforeTree = service.getSnapshot()
+    const beforeStore = store.get(documentById(open.id))
+
+    const cancelled = await service.delete(createWorkspacePath('notes'))
+    expect(cancelled).toMatchObject({ deleted: false, decision: 'cancel' })
+    expect(fileSystem.hasEntry(createWorkspacePath('notes'))).toBe(true)
+    expect(service.getSnapshot()).toBe(beforeTree)
+    expect(store.get(documentById(open.id))).toBe(beforeStore)
+    expect(tabs.getSnapshot().tabs).toHaveLength(2)
+
+    decision = 'discard'
+    const deleted = await service.delete(createWorkspacePath('notes'))
+    expect(deleted).toMatchObject({ deleted: true, decision: 'discard' })
+    expect(fileSystem.hasEntry(createWorkspacePath('notes'))).toBe(false)
+    expect(store.getAll()).toEqual([])
+    expect(tabs.getSnapshot().tabs).toEqual([])
+    expect(persistence.getTrackedDocumentIds()).toEqual([])
+    expect(graph.getIndex().getAll()).toEqual([])
   })
 })

@@ -244,6 +244,20 @@ export class DocumentPathConflictError extends DocumentIdentityConflictError {
   }
 }
 
+export class DocumentUnloadBlockedError extends Error {
+  readonly documentId: DocumentId
+  readonly projectionIds: readonly ProjectionId[]
+
+  constructor(documentId: DocumentId, projectionIds: readonly ProjectionId[]) {
+    super(
+      `Cannot unload document ${documentId} while projections are attached: ${projectionIds.join(', ')}`,
+    )
+    this.name = 'DocumentUnloadBlockedError'
+    this.documentId = documentId
+    this.projectionIds = Object.freeze([...projectionIds])
+  }
+}
+
 export class DocumentRevisionConflictError extends Error {
   constructor(expected: Revision, actual: Revision) {
     super(`Document revision conflict: expected ${expected}, actual ${actual}`)
@@ -522,6 +536,46 @@ export class DocumentStore {
   /** Alias for callers that describe the result as loaded documents. */
   getDocuments(): readonly DocumentState[] {
     return this.getAll()
+  }
+
+  /**
+   * Removes an unloaded Document only after every projection has detached.
+   * This is an application lifecycle operation, not a source mutation; no
+   * Markdown or revision is rewritten while the authority is being released.
+   */
+  unload(locator: DocumentLocator): DocumentState {
+    const current = this.requireDocument(locator)
+    const projections = this.requireProjectionMap(current.id)
+    if (projections.size > 0) {
+      throw new DocumentUnloadBlockedError(
+        current.id,
+        [...projections.keys()],
+      )
+    }
+
+    const dispatchState = this.requireDispatchState(current.id)
+    if (dispatchState.depth > 0 || dispatchState.dispatching) {
+      throw new Error(
+        `Cannot unload document ${current.id} while Store events are dispatching`,
+      )
+    }
+
+    this.documents.delete(current.id)
+    this.idsByPath.delete(current.path)
+    this.listeners.delete(current.id)
+    this.histories.delete(current.id)
+    this.projections.delete(current.id)
+    this.dispatchStates.delete(current.id)
+    return current
+  }
+
+  /** Explicit lifecycle aliases used by application cleanup services. */
+  unloadDocument(locator: DocumentLocator): DocumentState {
+    return this.unload(locator)
+  }
+
+  removeDocument(locator: DocumentLocator): DocumentState {
+    return this.unload(locator)
   }
 
   getRevision(locator: DocumentLocator): Revision {

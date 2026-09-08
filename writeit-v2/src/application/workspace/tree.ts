@@ -23,6 +23,13 @@ import {
   WorkspaceInvalidOperationError,
 } from '../../platform/filesystem'
 import {
+  WorkspaceDeletionService,
+} from './deletion'
+import type {
+  WorkspaceDeletionConfiguration,
+  WorkspaceDeletionResult,
+} from './deletion'
+import {
   directoryMoveTarget,
   directoryRenameTarget,
   findOpenDocumentsWithinDirectory,
@@ -44,6 +51,8 @@ export interface WorkspaceTreeServiceOptions {
   readonly getOpenDocuments?: () => readonly WorkspaceOpenDocumentBinding[]
   /** Recovery paths are protected even when their Document is not loaded yet. */
   readonly getRecoveryPaths?: () => readonly (WorkspacePath | string)[]
+  /** Optional application deletion command; absent preserves the filesystem-only behavior. */
+  readonly deletion?: WorkspaceDeletionConfiguration
 }
 
 export interface WorkspaceTreeSnapshot {
@@ -83,10 +92,10 @@ function requireListener(listener: WorkspaceTreeListener): void {
 }
 
 /**
- * Application service for the derived workspace tree. Filesystem mutations
- * happen first; a successful mutation is followed by a recursive refresh so
- * the published tree always describes the adapter rather than becoming a
- * second file-content authority.
+ * Application service for the derived workspace tree. Ordinary filesystem
+ * mutations are followed by a recursive refresh; configured deletion is
+ * delegated to the application deletion command, which performs its dirty
+ * guard and lifecycle cleanup before publishing the refreshed tree.
  */
 export class WorkspaceTreeService {
   private readonly fileSystem: WorkspaceFileSystemPort
@@ -102,6 +111,8 @@ export class WorkspaceTreeService {
   private readonly getRecoveryPaths:
     | (() => readonly (WorkspacePath | string)[])
     | undefined
+
+  private deletionService: WorkspaceDeletionService | undefined
 
   private readonly listeners = new Set<WorkspaceTreeListener>()
 
@@ -119,6 +130,28 @@ export class WorkspaceTreeService {
     this.snapshot = Object.freeze({
       tree: createWorkspaceTree(this.rootPath, [], this.rootName),
       revision: 0,
+    })
+    this.deletionService = new WorkspaceDeletionService({
+      fileSystem: this.fileSystem,
+      rootPath: this.rootPath,
+      refresh: () => this.refresh(),
+    })
+    if (options.deletion !== undefined) {
+      this.configureDeletion(options.deletion)
+    }
+  }
+
+  /**
+   * Installs the application-owned deletion command after the shell has
+   * created its Store, tabs, persistence and reference services. The refresh
+   * callback remains owned by this tree projection.
+   */
+  configureDeletion(options: WorkspaceDeletionConfiguration): void {
+    this.deletionService = new WorkspaceDeletionService({
+      ...options,
+      fileSystem: this.fileSystem,
+      rootPath: this.rootPath,
+      refresh: () => this.refresh(),
     })
   }
 
@@ -193,20 +226,23 @@ export class WorkspaceTreeService {
   async delete(
     path: WorkspacePath,
     options: { readonly recursive?: boolean } = { recursive: true },
-  ): Promise<void> {
+  ): Promise<WorkspaceDeletionResult> {
     const target = this.requireManagedEntryPath(path)
-    await this.fileSystem.deleteEntry(target, {
-      recursive: options.recursive ?? true,
-    })
-    await this.refresh()
+    const deletionService = this.deletionService
+    if (!deletionService) {
+      throw new WorkspaceInvalidOperationError(
+        'Workspace deletion service is not configured',
+      )
+    }
+    return deletionService.delete(target, options)
   }
 
   /** Explicit alias for callers that avoid the JavaScript `delete` keyword. */
   async deleteEntry(
     path: WorkspacePath,
     options: { readonly recursive?: boolean } = { recursive: true },
-  ): Promise<void> {
-    await this.delete(path, options)
+  ): Promise<WorkspaceDeletionResult> {
+    return this.delete(path, options)
   }
 
   async move(

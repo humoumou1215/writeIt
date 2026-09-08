@@ -80,6 +80,9 @@ import {
   WorkspaceSettingsStore,
   WorkspaceTabManager,
   WorkspaceTreeService,
+  type WorkspaceDeletionDecision,
+  type WorkspaceDeletionPlan,
+  type WorkspaceProjectionBinding,
 } from './application/workspace'
 import { MemoryFileSystem } from './platform/filesystem'
 import { createBrowserReferenceClipboard } from './platform/clipboard'
@@ -201,6 +204,7 @@ const documentIdsByPath = new Map<WorkspacePath, DocumentId>([
   [initialWorkspacePath, documentId],
 ])
 const embeddedDocumentLoads = new Map<WorkspacePath, Promise<void>>()
+let workspaceDeletionGeneration = 0
 const tabs = new WorkspaceTabManager()
 const tabSnapshot = ref(tabs.getSnapshot())
 const documentRevisionSignal = ref(0)
@@ -261,6 +265,10 @@ const workspaceContextMenu = ref<{
   readonly x: number
   readonly y: number
 } | null>(null)
+const pendingWorkspaceDeletion = ref<{
+  readonly plan: WorkspaceDeletionPlan
+  readonly resolve: (decision: WorkspaceDeletionDecision) => void
+} | null>(null)
 const imagePasteStatus = ref<string | null>(null)
 const imageActionStatus = ref<string | null>(null)
 const imagePreview = ref<ImageProjectionResource | null>(null)
@@ -313,6 +321,28 @@ function refreshReferenceHealth(): void {
   void referenceHealth.refresh().catch((error: unknown) => {
     referenceHealthError.value = workspaceErrorMessage(error)
   })
+}
+
+function cleanupLateEmbeddedDocument(
+  path: WorkspacePath,
+  documentIdToCleanup: DocumentId,
+): void {
+  const document = store.get(documentById(documentIdToCleanup))
+  if (!document) {
+    documentIdsByPath.delete(path)
+    return
+  }
+  for (const attached of store.getProjections(documentById(document.id))) {
+    try {
+      store.detachProjection(documentById(document.id), attached.projectionId)
+    } catch {
+      // A parent projection may already have detached this child.
+    }
+  }
+  persistence.untrack(documentById(document.id))
+  referenceGraph.removeDocument({ kind: 'path', path })
+  store.unload(documentById(document.id))
+  documentIdsByPath.delete(path)
 }
 
 function indexReferenceDocument(document: DocumentState | undefined): void {
@@ -470,6 +500,7 @@ async function ensureEmbeddedDocument(
   const currentLoad = embeddedDocumentLoads.get(path)
   if (currentLoad) return currentLoad
 
+  const loadGeneration = workspaceDeletionGeneration
   const load = (async () => {
     let id = documentIdsByPath.get(path)
     if (id === undefined) {
@@ -481,6 +512,13 @@ async function ensureEmbeddedDocument(
         id,
         path: createDocumentPath(path),
       })
+    }
+    if (
+      loadGeneration !== workspaceDeletionGeneration ||
+      findWorkspaceNode(workspaceTreeSnapshot.value.tree, path)?.kind !== 'file'
+    ) {
+      cleanupLateEmbeddedDocument(path, id)
+      return
     }
     observeDocument(id)
     observePersistence(id)
@@ -1315,9 +1353,14 @@ async function deleteWorkspaceEntry(path: WorkspacePath): Promise<void> {
   workspaceBusy.value = true
   workspaceError.value = null
   try {
-    await workspaceTreeService.delete(path)
+    const result = await workspaceTreeService.delete(path)
+    if (!result.deleted) return
     selectedWorkspacePath.value = workspaceParent(path)
     persistWorkspaceRecovery()
+    await nextTick()
+    if (activeDocument.value && projection.value === null) {
+      mountActiveDocument()
+    }
   } catch (error) {
     workspaceError.value = workspaceErrorMessage(error)
   } finally {
@@ -1352,6 +1395,94 @@ async function moveWorkspaceEntry(
     workspaceBusy.value = false
   }
 }
+
+function requestWorkspaceDeletionDecision(
+  plan: WorkspaceDeletionPlan,
+): Promise<WorkspaceDeletionDecision> {
+  return new Promise((resolve) => {
+    pendingWorkspaceDeletion.value = { plan, resolve }
+  })
+}
+
+function chooseWorkspaceDeletionDecision(
+  decision: WorkspaceDeletionDecision,
+): void {
+  const pending = pendingWorkspaceDeletion.value
+  if (!pending) return
+  pendingWorkspaceDeletion.value = null
+  pending.resolve(decision)
+}
+
+function activeProjectionBindings(): readonly WorkspaceProjectionBinding[] {
+  const documentId = mountedDocumentId.value
+  if (documentId === null) return Object.freeze([])
+
+  const editor = projection.value
+  const livePreview = preview.value
+  const bindings: WorkspaceProjectionBinding[] = []
+  if (editor) {
+    bindings.push({
+      documentId,
+      projectionId: editor.projectionId,
+      destroy: () => editor.destroy(),
+    })
+  }
+  if (livePreview) {
+    bindings.push({
+      documentId,
+      projectionId: livePreview.projectionId,
+      destroy: () => livePreview.destroy(),
+    })
+  }
+  return Object.freeze(bindings)
+}
+
+function forgetDeletedDocuments(plan: WorkspaceDeletionPlan): void {
+  const deletedIds = new Set(
+    plan.documents.map((document) => document.documentId),
+  )
+  for (const [path, documentId] of documentIdsByPath) {
+    if (deletedIds.has(documentId) || plan.affectedPaths.includes(path)) {
+      documentIdsByPath.delete(path)
+    }
+  }
+  for (const documentId of deletedIds) {
+    documentSubscriptions.get(documentId)?.()
+    documentSubscriptions.delete(documentId)
+    persistenceSubscriptions.get(documentId)?.()
+    persistenceSubscriptions.delete(documentId)
+    presentationModes.delete(documentId)
+  }
+  if (
+    pendingFragmentNavigation &&
+    deletedIds.has(pendingFragmentNavigation.documentId)
+  ) {
+    pendingFragmentNavigation = null
+  }
+  for (const path of plan.affectedPaths) embeddedDocumentLoads.delete(path)
+  workspaceDeletionGeneration += 1
+}
+
+function configureWorkspaceDeletion(): void {
+  workspaceTreeService.configureDeletion({
+    store,
+    tabs,
+    persistence,
+    recovery: workspaceRecoveryStore,
+    referenceGraph,
+    getProjectionBindings: activeProjectionBindings,
+    resolveDirty: requestWorkspaceDeletionDecision,
+    onDeleteCommitted: () => {
+      // The active host may own nested embed projections for a descendant
+      // document, so a successful deletion tears down the whole projection
+      // tree before Store documents are unloaded.
+      destroyActiveProjections()
+    },
+    onDocumentsUnloaded: forgetDeletedDocuments,
+  })
+}
+
+configureWorkspaceDeletion()
 
 function handleWorkspaceKeydown(event: KeyboardEvent): void {
   if (event.isComposing) return
@@ -1520,6 +1651,11 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (pendingWorkspaceDeletion.value) {
+    const pending = pendingWorkspaceDeletion.value
+    pendingWorkspaceDeletion.value = null
+    pending.resolve('cancel')
+  }
   window.removeEventListener('keydown', handleWorkspaceKeydown)
   window.removeEventListener('keydown', handleShortcutKeydown)
   endSidebarResize()
@@ -2022,6 +2158,57 @@ onBeforeUnmount(() => {
       </section>
     </div>
   </main>
+  <div
+    v-if="pendingWorkspaceDeletion"
+    class="workspace-delete-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="workspace-delete-dialog-title"
+    data-testid="workspace-delete-dialog"
+    @click.stop
+  >
+    <div class="workspace-delete-dialog__surface">
+      <h2 id="workspace-delete-dialog-title">Unsaved changes before delete</h2>
+      <p>
+        The selected entry contains unsaved Markdown. Choose how to continue;
+        the entry is not deleted until the selected action succeeds.
+      </p>
+      <ul class="workspace-delete-dialog__documents">
+        <li
+          v-for="document in pendingWorkspaceDeletion.plan.documents"
+          :key="document.documentId"
+        >
+          <strong>{{ document.path }}</strong>
+          <span> ({{ document.dirty ? 'dirty' : 'clean' }})</span>
+        </li>
+      </ul>
+      <div class="workspace-delete-dialog__actions">
+        <button
+          type="button"
+          data-testid="workspace-delete-save"
+          @click="chooseWorkspaceDeletionDecision('save')"
+        >
+          Save and delete
+        </button>
+        <button
+          type="button"
+          class="workspace-delete-dialog__discard"
+          data-testid="workspace-delete-discard"
+          @click="chooseWorkspaceDeletionDecision('discard')"
+        >
+          Discard and delete
+        </button>
+        <button
+          type="button"
+          class="workspace-delete-dialog__cancel"
+          data-testid="workspace-delete-cancel"
+          @click="chooseWorkspaceDeletionDecision('cancel')"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
   <ImagePreviewModal
     :image="imagePreview"
     @close="imagePreview = null"
