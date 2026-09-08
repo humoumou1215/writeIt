@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ViewPlugin, type EditorView } from '@codemirror/view'
 import {
   CompletionProviderRegistry,
@@ -46,7 +46,57 @@ function createRegistry(): CompletionProviderRegistry {
   return registry
 }
 
-function makeView(markdown = ''): {
+function createReferenceModeRegistry(): CompletionProviderRegistry {
+  const registry = new CompletionProviderRegistry()
+  registry.register({
+    id: 'reference-modes',
+    triggers: ['@', '[[', '![['],
+    modes: [
+      { id: 'link', label: 'Link' },
+      { id: 'embed', label: 'Editable embed' },
+      { id: 'embed-readonly', label: 'Readonly embed' },
+    ],
+    initialMode: (trigger) => (trigger.kind === '![[' ? 'embed' : 'link'),
+    provide: () => [
+      {
+        id: 'alpha',
+        label: 'Alpha document',
+        detail: 'alpha.md',
+        apply: (context) => ({
+          from: context.trigger.from,
+          to: context.trigger.to,
+          insert:
+            context.mode?.id === 'embed'
+              ? '![[alpha.md]]'
+              : context.mode?.id === 'embed-readonly'
+                ? '![[alpha.md|ro]]'
+                : '[[alpha.md]]',
+        }),
+      },
+      {
+        id: 'beta',
+        label: 'Beta document',
+        detail: 'beta.md',
+        apply: (context) => ({
+          from: context.trigger.from,
+          to: context.trigger.to,
+          insert:
+            context.mode?.id === 'embed'
+              ? '![[beta.md]]'
+              : context.mode?.id === 'embed-readonly'
+                ? '![[beta.md|ro]]'
+                : '[[beta.md]]',
+        }),
+      },
+    ],
+  })
+  return registry
+}
+
+function makeView(
+  markdown = '',
+  registry: CompletionProviderRegistry = createRegistry(),
+): {
   store: DocumentStore
   locator: ReturnType<typeof documentById>
   projection: SingleDocumentView
@@ -72,9 +122,7 @@ function makeView(markdown = ''): {
     extensions: [
       captureView,
       createCompletionExtension({
-        store,
-        locator,
-        registry: createRegistry(),
+        registry,
       }),
     ],
   })
@@ -147,6 +195,130 @@ describe('CM6 completion surface', () => {
     expect(popup.dataset.show).toBe('false')
   })
 
+  it('switches reference modes without refetching, moving the caret, or changing source', async () => {
+    const registry = createReferenceModeRegistry()
+    const completeSpy = vi.spyOn(registry, 'complete')
+    const { store, locator, rawView } = makeView('', registry)
+    typeSource(rawView, '@alp')
+    await flushCompletion()
+
+    const popup = menu(rawView)
+    expect(popup.dataset.activeMode).toBe('link')
+    expect(popup.querySelectorAll('[role="tab"]')).toHaveLength(3)
+    expect(popup.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(
+      'Link',
+    )
+    const selection = rawView.state.selection.main
+    const history = store.getHistory(locator)
+    const beforeSwitch = store.get(locator)
+    if (!beforeSwitch) throw new Error('completion document is missing')
+
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    expect(popup.dataset.activeMode).toBe('embed')
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    expect(popup.dataset.activeMode).toBe('link')
+
+    const readonlyMode = popup.querySelector<HTMLElement>(
+      '[data-completion-mode-id="embed-readonly"]',
+    )
+    if (!readonlyMode) throw new Error('readonly completion mode is missing')
+    readonlyMode.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    )
+    readonlyMode.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    expect(popup.dataset.activeMode).toBe('embed-readonly')
+    expect(rawView.state.selection.main).toEqual(selection)
+    expect(store.get(locator)).toEqual(beforeSwitch)
+    expect(store.getHistory(locator)).toEqual(history)
+    expect(completeSpy).toHaveBeenCalledTimes(1)
+
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await flushCompletion()
+    expect(store.get(locator)?.markdown).toBe('![[alpha.md|ro]]')
+    expect(store.get(locator)?.revision).toBe(beforeSwitch.revision + 1)
+  })
+
+  it.each([
+    ['link', 0, '[[alpha.md]]'],
+    ['embed', 1, '![[alpha.md]]'],
+    ['embed-readonly', 2, '![[alpha.md|ro]]'],
+  ] as const)('applies the %s reference mode starting from @', async (
+    _mode,
+    tabCount,
+    expected,
+  ) => {
+    const { store, locator, rawView } = makeView('', createReferenceModeRegistry())
+    typeSource(rawView, '@alp')
+    await flushCompletion()
+    for (let index = 0; index < tabCount; index += 1) {
+      rawView.dom.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Tab',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    }
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await flushCompletion()
+    expect(store.get(locator)?.markdown).toBe(expected)
+  })
+
+  it.each([
+    ['@alp', 'link', '[[alpha.md]]'],
+    ['[[alp', 'link', '[[alpha.md]]'],
+    ['![[alp', 'embed', '![[alpha.md]]'],
+    ['＠alp', 'link', '[[alpha.md]]'],
+    ['［［alp', 'link', '[[alpha.md]]'],
+    ['！【【alp', 'embed', '![[alpha.md]]'],
+  ] as const)('selects the initial reference mode for %s', async (
+    source,
+    initialMode,
+    expected,
+  ) => {
+    const { store, locator, rawView } = makeView('', createReferenceModeRegistry())
+    typeSource(rawView, source)
+    await flushCompletion()
+    const popup = menu(rawView)
+    expect(popup.dataset.activeMode).toBe(initialMode)
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await flushCompletion()
+    expect(store.get(locator)?.markdown).toBe(expected)
+  })
+
   it('keeps full-width trigger source unchanged while the menu is open', async () => {
     const { store, locator, rawView } = makeView()
     typeSource(rawView, '！【【alp')
@@ -192,6 +364,71 @@ describe('CM6 completion surface', () => {
 
     expect(store.get(locator)?.markdown).toBe('[[alpha.md]]')
     expect(rawView.state.doc.toString()).toBe(store.get(locator)?.markdown)
+  })
+
+  it('keeps wraparound keyboard selection visible without changing source state', async () => {
+    const registry = new CompletionProviderRegistry()
+    registry.register(
+      createStaticCompletionProvider({
+        id: 'long-list',
+        triggers: ['@'],
+        items: Array.from({ length: 20 }, (_, index) => ({
+          id: `item-${index + 1}`,
+          label: `Item ${index + 1}`,
+          insertText: `[[item-${index + 1}.md]]`,
+        })),
+      }),
+    )
+    const { store, locator, rawView } = makeView('', registry)
+    typeSource(rawView, '@')
+    await flushCompletion()
+
+    const popup = menu(rawView)
+    const selection = rawView.state.selection.main
+    const history = store.getHistory(locator)
+    Object.defineProperties(popup, {
+      clientHeight: { configurable: true, value: 80 },
+      clientTop: { configurable: true, value: 0 },
+    })
+    const originalRect = HTMLElement.prototype.getBoundingClientRect
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this === popup) {
+          return { top: 0, bottom: 80, left: 0, right: 200, width: 200, height: 80 } as DOMRect
+        }
+        const indexText = (this as HTMLElement).dataset.completionIndex
+        if (indexText !== undefined) {
+          const top = Number(indexText) * 30 - popup.scrollTop
+          return { top, bottom: top + 30, left: 0, right: 200, width: 200, height: 30 } as DOMRect
+        }
+        return originalRect.call(this)
+      })
+
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    expect(popup.querySelector('[aria-selected="true"]')?.textContent).toBe('Item 20')
+    expect(popup.scrollTop).toBeGreaterThan(0)
+
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    expect(popup.querySelector('[aria-selected="true"]')?.textContent).toBe('Item 1')
+    expect(popup.scrollTop).toBe(0)
+    expect(store.get(locator)?.markdown).toBe('@')
+    expect(store.get(locator)?.revision).toBe(1)
+    expect(rawView.state.selection.main).toEqual(selection)
+    expect(store.getHistory(locator)).toEqual(history)
+    rectSpy.mockRestore()
   })
 
   it('applies a mouse-selected item through the Store bridge', async () => {

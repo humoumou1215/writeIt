@@ -13,7 +13,7 @@ The initial review established that the P1/P2 happy path worked, but found five 
 
 P2-R01 through P2-R06 now resolve the blocker scenarios: observer failures cannot interrupt committed fan-out; Store replay authorization is adapter-private and checked; CM6 and Preview mount paths buffer/reconcile initialization changes; source freshness is independent from enhancement degradation; the boundary checker uses TypeScript AST inspection and explicit resolved layer rules; and Playwright Chromium exercises the critical editor/projection/fallback/source-fidelity lifecycle. All unit/integration, browser, typecheck, build, dependency, and whitespace checks pass.
 
-**P2-AR2 therefore lifts the architecture HOLD.** Under the current implementation sequence, the next task is P2A-00 and Phase 2A must complete before P3 starts; this sequencing requirement is not a failed architecture gate. The full-source fan-out/selection and byte-budget concern remains a tracked high risk before editable embeds/P4.
+**P2-AR2 therefore lifts the architecture HOLD.** Under the current implementation sequence, the next task is P2A-00 and Phase 2A must complete before P3 starts; this sequencing requirement is not a failed architecture gate. The full-source fan-out/selection and byte-budget concern was tracked as P2-AR-06 and is now addressed by the remediation contract below before further editable-projection work.
 
 ## Evidence reviewed
 
@@ -270,7 +270,60 @@ The architecture HOLD is lifted. The current SPEC inserts Phase 2A before P3, so
 
 Remaining non-blocking conditions:
 
-- **P12-AR-06 remains HIGH:** full-source fan-out resets another editable view's selection and history is count-bounded rather than byte-bounded. Define a CM6-independent/minimal source-change and mapping strategy before editable embeds/P4, preferably before workspace multi-view is exposed.
+- **P2-AR-06 remediation complete:** Store change events now carry CM6-independent source deltas; CM6 fan-out applies minimal projected changes and lets CM6 map selection; typing grouping is explicit; and history retains source deltas under both `maxEntries` and UTF-8 `maxBytes` budgets. Boundary, large-document, unit, integration, and Chromium coverage passed.
 - **P12-AR-08 remains MEDIUM:** `LEGACY_FEATURE_MAP.md` references are inconsistent. P2A-00 owns canonical path synchronization; two divergent copies must not be created.
 - The AST gate intentionally checks statically discoverable module references and the current explicit source layout. If path aliases or a new top-level layer are introduced, the resolver/matrix fixtures must evolve with them.
 - P2-06 remains deliberately basic, and the production bundle currently emits a non-blocking chunk-size warning; neither changes source authority or blocks P2A-00.
+
+## P2-AR-06 Remediation Task Contract
+
+### Goal
+
+Replace full-source Store fan-out and full-source retained history with a source-level, CM6-independent change representation. Applying a committed change to another editable Projection must use a minimal change and preserve/map its local selection where the source mapping is unambiguous. Typing history must have explicit grouping semantics, and per-document history must be bounded by both entry count and retained source-change bytes.
+
+### Allowed scope
+
+- `writeit-v2/src/core/document/` source-change representation, `DocumentStore` change events, history grouping, and history retention.
+- `writeit-v2/src/editor/cm6/projection/` and its source-fidelity adapter, only as needed to submit source changes and apply minimal Store fan-out while retaining CM6-local selection.
+- Related v2 unit, integration, browser, and boundary/performance-budget tests.
+- This contract and the corresponding concise `STATUS.md` update.
+
+Do not modify accepted ADR decisions or add runtime dependencies on CM6 to Core. Do not alter unrelated workspace, reference, attachment, entity, audit-evidence, or Phase 3–5 contracts.
+
+### Read first
+
+- `AGENTS.md`
+- `writeit-v2/docs/IMPLEMENTATION_SPEC.md`
+- `writeit-v2/docs/STATUS.md`
+- `writeit-v2/docs/P2_ARCHITECTURE_REVIEW.md`
+- ADR-0001 through ADR-0006, especially ADR-0002 and ADR-0003
+- Current `src/core/document/store.ts`, `src/editor/cm6/projection/source-fidelity.ts`, `src/editor/cm6/projection/single-document-view.ts`, and their existing tests
+
+### Implementation requirements
+
+1. Keep `DocumentStore` as the sole Markdown/revision authority. Add a frozen, source-offset-based change representation and apply/invert/sequence helpers in Core without CM6, Vue, DOM, Tauri, or `editor-app` imports.
+2. Include the committed source change in the Store change event and use it for source-backed history. Retained history must store changed source segments/sequences, not full before/after document snapshots; undo/redo must remain per-document and revisioned.
+3. Keep `maxEntries` compatibility and add a validated byte budget (UTF-8 source-change payload bytes). Evict oldest entries deterministically; entries larger than the budget are not retained. Expose enough accounting for tests/diagnostics without retaining Markdown in Core history.
+4. Define an explicit typing grouping contract (stable group id plus typing kind/continuation). Consecutive adapter-classified typing transactions in one uninterrupted caret run may merge into one undo entry; selection-only, paste/delete, command, Store replay, and other non-typing boundaries must not merge implicitly or by elapsed time.
+5. For Store fan-out, apply only the projected changed ranges (no unconditional whole-document replacement). Let CM6 map the other Projection's local selection through those ranges; line-ending-only source changes must update the source map without changing the CM6 selection. If a mapping/invariant cannot be trusted, use the existing stale/recovery path rather than silently claiming a preserved projection.
+6. Preserve all existing authority, revision, lifecycle, source-fidelity, and no-timeout invariants. Do not change an accepted ADR; if one becomes impossible to satisfy, stop and report the decision point.
+
+### Tests
+
+- Core unit tests for source-change validation, minimal targeted/multi-range application, inversion/sequence grouping, Unicode/UTF-16 offsets, byte accounting, max-entry compatibility, zero/oversize budgets, and deterministic eviction.
+- CM6 integration tests proving Store fan-out uses minimal changes, maps a secondary caret/selection, preserves untouched mixed line endings, groups explicit typing, and keeps undo/redo correct.
+- Real Chromium coverage for two editable projections (including an embed-capable projection path where already present) with a selection-preserving fan-out and a large-document budget/fidelity smoke.
+- Run `npm run test`, the relevant integration/browser tests, `npm run typecheck`, `npm run build`, `npm run check:boundaries`, and `git diff --check`.
+
+### Acceptance criteria
+
+- A one-character edit in Projection A updates Projection B to the authoritative source while B's selection is mapped past/around the edit instead of reset to offset 0.
+- No normal fan-out path dispatches a full `[0, oldLength]` replacement when a smaller projected change is available; source-only line-ending changes dispatch no document change.
+- A grouped typing run is one undo step, while a caret move or non-typing edit starts a separate step without timeout-based synchronization.
+- Undo/redo and every source event retain one authoritative Markdown source and correct monotonic revisions.
+- `getHistory()` never requires retained full-document snapshots; total retained change bytes and entry count stay within configured budgets, including large-document and oversize-entry boundaries.
+- Existing v2 unit/integration/browser, typecheck, build, dependency-boundary, and whitespace checks pass; no runtime import from `editor-app` is introduced.
+
+### Out of scope
+
+Directory rename policy, ReferenceGraph rollback, image paths, entity mode, P2A evidence/remediations, P3/P4 contract changes, table/P5 implementation, richer rendering, and any other architecture-review finding not required by the criteria above.

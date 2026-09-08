@@ -14,6 +14,12 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from '@codemirror/view'
+import {
+  mimeTypeForImagePath,
+  resolveWorkspaceImagePath,
+  type ImageProjectionRenderOptions,
+  type ImageProjectionResource,
+} from '../../preview/image-projection'
 
 /** The two presentations share one CM6 document and one source authority. */
 export type PresentationMode = 'source' | 'live-preview'
@@ -97,16 +103,19 @@ export type LivePreviewDecorationKind =
   | 'strong'
   | 'emphasis'
   | 'link'
+  | 'image'
   | 'code'
 
 export interface LivePreviewDecorationSpec {
   readonly from: number
   readonly to: number
   readonly kind: LivePreviewDecorationKind
+  readonly source?: string
+  readonly alt?: string
 }
 
 const inlinePattern =
-  /\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|_([^_\n]+)_|\[([^\]\n]+)\]\(([^)\s]+)\)/g
+  /!\[([^\]\n]*)\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|_([^_\n]+)_|\[([^\]\n]+)\]\(([^)\s]+)\)/g
 
 function isSafeHref(href: string): boolean {
   const normalized = href.trim().toLowerCase()
@@ -126,9 +135,10 @@ function addSpec(
   from: number,
   to: number,
   kind: LivePreviewDecorationKind,
+  details: Pick<LivePreviewDecorationSpec, 'source' | 'alt'> = {},
 ): void {
   if (to <= from) return
-  output.push({ from, to, kind })
+  output.push({ from, to, kind, ...details })
 }
 
 function collectInlineSpecs(
@@ -142,35 +152,43 @@ function collectInlineSpecs(
     const start = lineStart + match.index
     const end = start + match[0].length
 
-    if (match[1] !== undefined) {
+    if (match[1] !== undefined && match[2] !== undefined) {
+      addSpec(output, start, end, 'image', {
+        alt: match[1],
+        source: match[2],
+      })
+      continue
+    }
+
+    if (match[3] !== undefined) {
       const contentStart = start + 2
-      const contentEnd = contentStart + match[1].length
+      const contentEnd = contentStart + match[3].length
       addSpec(output, start, contentStart, 'hidden-syntax')
       addSpec(output, contentStart, contentEnd, 'strong')
       addSpec(output, contentEnd, end, 'hidden-syntax')
       continue
     }
 
-    if (match[2] !== undefined) {
+    if (match[4] !== undefined) {
       const contentStart = start + 1
-      const contentEnd = contentStart + match[2].length
+      const contentEnd = contentStart + match[4].length
       addSpec(output, start, contentStart, 'hidden-syntax')
       addSpec(output, contentStart, contentEnd, 'emphasis')
       addSpec(output, contentEnd, end, 'hidden-syntax')
       continue
     }
 
-    if (match[3] !== undefined) {
+    if (match[5] !== undefined) {
       const contentStart = start + 1
-      const contentEnd = contentStart + match[3].length
+      const contentEnd = contentStart + match[5].length
       addSpec(output, start, contentStart, 'hidden-syntax')
       addSpec(output, contentStart, contentEnd, 'emphasis')
       addSpec(output, contentEnd, end, 'hidden-syntax')
       continue
     }
 
-    const label = match[4]
-    const href = match[5]
+    const label = match[6]
+    const href = match[7]
     if (label === undefined || href === undefined || !isSafeHref(href)) {
       continue
     }
@@ -275,21 +293,214 @@ class LivePreviewLinkWidget extends WidgetType {
   }
 }
 
-function decorationForSpec(spec: LivePreviewDecorationSpec): Decoration {
+function directImageSource(source: string): boolean {
+  const normalized = source.toLowerCase()
+  return (
+    normalized.startsWith('data:') ||
+    normalized.startsWith('blob:') ||
+    normalized.startsWith('http://') ||
+    normalized.startsWith('https://') ||
+    source.startsWith('//')
+  )
+}
+
+function imageResourceWithoutResolver(
+  source: string,
+  alt: string,
+): ImageProjectionResource {
+  if (directImageSource(source)) {
+    return Object.freeze({
+      source,
+      url: source,
+      name: source.split('/').at(-1) || 'image',
+      alt,
+      mimeType: source.toLowerCase().startsWith('data:')
+        ? source.slice(5).split(/[;,]/u)[0] || 'image/png'
+        : 'image/png',
+      status: 'external' as const,
+    })
+  }
+
+  const path = resolveWorkspaceImagePath(source)
+  return Object.freeze({
+    source,
+    url: '',
+    ...(path === undefined ? {} : { path }),
+    name: path ?? source,
+    alt,
+    mimeType: mimeTypeForImagePath(path ?? source),
+    status: 'unavailable' as const,
+    error: 'Image projection resolver is unavailable',
+  })
+}
+
+class LivePreviewImageWidget extends WidgetType {
+  constructor(
+    private readonly source: string,
+    private readonly alt: string,
+    private readonly options: ImageProjectionRenderOptions,
+  ) {
+    super()
+  }
+
+  eq(other: WidgetType): boolean {
+    return (
+      other instanceof LivePreviewImageWidget &&
+      other.source === this.source &&
+      other.alt === this.alt &&
+      other.options.imageResolver === this.options.imageResolver
+    )
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const document = view.dom.ownerDocument
+    const wrapper = document.createElement('span')
+    wrapper.className = 'cm-writeit-live-preview-image'
+    wrapper.dataset.imageSource = this.source
+
+    const image = document.createElement('img')
+    image.className = 'cm-writeit-live-preview-image__content'
+    image.alt = this.alt
+    image.loading = 'lazy'
+    image.decoding = 'async'
+    image.dataset.imageSource = this.source
+    wrapper.append(image)
+
+    const status = document.createElement('span')
+    status.className = 'cm-writeit-live-preview-image__status'
+    status.setAttribute('role', 'status')
+    status.textContent = 'Loading image…'
+    wrapper.append(status)
+
+    const actions = document.createElement('span')
+    actions.className = 'cm-writeit-live-preview-image__actions'
+    const previewButton = document.createElement('button')
+    previewButton.type = 'button'
+    previewButton.className = 'cm-writeit-live-preview-image__action'
+    previewButton.dataset.imageAction = 'preview'
+    previewButton.setAttribute('aria-label', `Preview image ${this.alt || 'image'}`)
+    previewButton.textContent = 'Preview'
+    const copyButton = document.createElement('button')
+    copyButton.type = 'button'
+    copyButton.className = 'cm-writeit-live-preview-image__action'
+    copyButton.dataset.imageAction = 'copy'
+    copyButton.setAttribute('aria-label', `Copy image ${this.alt || 'image'}`)
+    copyButton.textContent = 'Copy'
+    const revealButton = document.createElement('button')
+    revealButton.type = 'button'
+    revealButton.className = 'cm-writeit-live-preview-image__action'
+    revealButton.dataset.imageAction = 'reveal'
+    revealButton.setAttribute(
+      'aria-label',
+      `Locate image ${this.alt || 'image'} in workspace`,
+    )
+    revealButton.textContent = 'Locate'
+    actions.append(previewButton, copyButton, revealButton)
+    wrapper.append(actions)
+
+    let resource: ImageProjectionResource | undefined
+    const apply = (next: ImageProjectionResource): void => {
+      resource = Object.freeze({ ...next, alt: this.alt })
+      wrapper.dataset.imageStatus = next.status
+      image.dataset.imageStatus = next.status
+      if (next.path !== undefined) {
+        wrapper.dataset.imagePath = next.path
+        image.dataset.imagePath = next.path
+      } else {
+        delete wrapper.dataset.imagePath
+        delete image.dataset.imagePath
+      }
+      if (next.url !== '') image.src = next.url
+      else image.removeAttribute('src')
+      const unavailable = next.status === 'unavailable'
+      status.hidden = !unavailable
+      status.textContent = next.error
+        ? `Image unavailable: ${next.error}`
+        : 'Image unavailable; Markdown path was kept.'
+      previewButton.disabled = unavailable || this.options.onPreview === undefined
+      copyButton.disabled = next.bytes === undefined || this.options.onCopy === undefined
+      revealButton.hidden = next.path === undefined || this.options.onReveal === undefined
+      revealButton.disabled = next.path === undefined || this.options.onReveal === undefined
+    }
+
+    const invokePreview = (): void => {
+      if (resource && this.options.onPreview) this.options.onPreview(resource)
+    }
+    image.addEventListener('click', invokePreview)
+    previewButton.addEventListener('click', invokePreview)
+    copyButton.addEventListener('click', () => {
+      if (!resource || !this.options.onCopy) return
+      void Promise.resolve(this.options.onCopy(resource)).catch(() => {
+        // Clipboard failures must not become CM6 transactions.
+      })
+    })
+    revealButton.addEventListener('click', () => {
+      if (resource?.path && this.options.onReveal) {
+        this.options.onReveal(resource.path)
+      }
+    })
+    image.addEventListener('error', () => {
+      if (!resource || resource.url === '') return
+      wrapper.dataset.imageStatus = 'unavailable'
+      image.dataset.imageStatus = 'unavailable'
+      status.hidden = false
+      status.textContent = 'Image could not be decoded; Markdown path was kept.'
+    })
+
+    if (this.options.imageResolver) {
+      wrapper.dataset.imageStatus = 'pending'
+      image.dataset.imageStatus = 'pending'
+      void this.options.imageResolver
+        .resolve(this.source, this.options.documentPath)
+        .then(apply)
+        .catch((error: unknown) => {
+          apply({
+            ...imageResourceWithoutResolver(this.source, this.alt),
+            error: `Image read failed: ${String(error)}`,
+          })
+        })
+    } else {
+      apply(imageResourceWithoutResolver(this.source, this.alt))
+    }
+
+    return wrapper
+  }
+
+  ignoreEvent(): boolean {
+    return true
+  }
+}
+
+function decorationForSpec(
+  spec: LivePreviewDecorationSpec,
+  imageOptions: ImageProjectionRenderOptions,
+): Decoration {
   if (spec.kind === 'hidden-syntax') return hiddenSyntaxDecoration
   if (spec.kind === 'heading') return headingDecoration
   if (spec.kind === 'strong') return strongDecoration
   if (spec.kind === 'emphasis') return emphasisDecoration
   if (spec.kind === 'code') return codeDecoration
+  if (spec.kind === 'image' && spec.source !== undefined) {
+    return Decoration.replace({
+      widget: new LivePreviewImageWidget(
+        spec.source,
+        spec.alt ?? '',
+        imageOptions,
+      ),
+    })
+  }
   return linkDecoration
 }
 
-function buildDecorations(markdownSource: string): DecorationSet {
+function buildDecorations(
+  markdownSource: string,
+  imageOptions: ImageProjectionRenderOptions,
+): DecorationSet {
   const specs = findLivePreviewDecorations(markdownSource)
   const ranges: Range<Decoration>[] = specs.map((spec) => ({
     from: spec.from,
     to: spec.to,
-    value: decorationForSpec(spec),
+    value: decorationForSpec(spec, imageOptions),
   }))
 
   // Link widgets are zero-width additions at the end of safe link labels. A
@@ -309,9 +520,9 @@ function buildDecorations(markdownSource: string): DecorationSet {
       inlinePattern.lastIndex = 0
       let match: RegExpExecArray | null
       while ((match = inlinePattern.exec(line)) !== null) {
-        const href = match[5]
+        const href = match[7]
         if (href === undefined || !isSafeHref(href)) continue
-        const label = match[4]
+        const label = match[6]
         if (label === undefined) continue
         const labelEnd = lineStart + match.index + 1 + label.length
         ranges.push({
@@ -335,7 +546,10 @@ class LivePreviewController {
 
   private mode: PresentationMode
 
-  constructor(private readonly view: EditorView) {
+  constructor(
+    private readonly view: EditorView,
+    private readonly imageOptions: ImageProjectionRenderOptions,
+  ) {
     this.mode = getPresentationMode(view.state)
     this.refresh()
   }
@@ -356,14 +570,15 @@ class LivePreviewController {
   private refresh(): void {
     this.decorations =
       this.mode === 'live-preview'
-        ? buildDecorations(this.view.state.doc.toString())
+        ? buildDecorations(this.view.state.doc.toString(), this.imageOptions)
         : Decoration.none
     this.view.dom.dataset.presentationMode = this.mode
     this.view.dom.dataset.livePreview = String(this.mode === 'live-preview')
   }
 }
 
-export interface LivePreviewExtensionOptions {
+export interface LivePreviewExtensionOptions
+  extends ImageProjectionRenderOptions {
   readonly initialMode?: PresentationMode
 }
 
@@ -418,7 +633,14 @@ export function createLivePreviewExtension(
   const extension = [
     presentationModeField.init(() => initialMode),
     ViewPlugin.define(
-      (view) => new LivePreviewController(view),
+      (view) =>
+        new LivePreviewController(view, {
+          imageResolver: options.imageResolver,
+          documentPath: options.documentPath,
+          onPreview: options.onPreview,
+          onCopy: options.onCopy,
+          onReveal: options.onReveal,
+        }),
       { decorations: (controller) => controller.decorations },
     ),
     keymap.of([{ key: 'Mod-e', run: togglePresentationMode }]),

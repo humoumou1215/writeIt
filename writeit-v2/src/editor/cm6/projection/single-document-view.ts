@@ -9,10 +9,13 @@ import {
 import { EditorView, type ViewUpdate } from '@codemirror/view'
 import {
   createDocumentOrigin,
+  createSourceChangeSet,
   DocumentNotFoundError,
   DocumentStore,
+  type DocumentHistoryGroup,
   type DocumentStoreEvent,
   type ProjectionId,
+  type SourceChangeSet,
 } from '../../../core/document'
 import type {
   DocumentLocator,
@@ -20,6 +23,19 @@ import type {
   DocumentState,
   Revision,
 } from '../../../core/document'
+import { findReferenceFragmentPosition } from '../../../core/reference'
+import {
+  createProjectionMutationCapability,
+  projectionMutationFacet,
+  type ProjectionMutationCapability,
+  type ProjectionMutationCapabilityController,
+} from './mutation-capability'
+import {
+  projectMarkdownSource,
+  projectSourceChangeToProjection,
+  projectedChangesToSourceChangeSet,
+  type MarkdownSourceProjection,
+} from './source-fidelity'
 import {
   containsLivePreviewExtension,
   createLivePreviewExtension,
@@ -29,6 +45,7 @@ import {
   DEFAULT_PRESENTATION_MODE,
   type PresentationMode,
 } from '../extensions/live-preview'
+import type { ImageProjectionRenderOptions } from '../../preview/image-projection'
 
 export const DEFAULT_SINGLE_DOCUMENT_PROJECTION_ID: ProjectionId =
   'cm6-main-editor'
@@ -102,6 +119,10 @@ export interface SingleDocumentViewSurface {
   readonly hasFocus: boolean
   readonly presentationMode: PresentationMode
   focus(): void
+  /** Moves the caret to a source-backed heading/object fragment when possible. */
+  jumpToFragment(fragment: string): boolean
+  /** Compatibility alias for navigation callers. */
+  navigateToFragment(fragment: string): boolean
   /** Dispatches a source edit intent without exposing CM6 annotations. */
   dispatch(spec: SingleDocumentUserTransaction): void
   setPresentationMode(mode: PresentationMode): void
@@ -123,6 +144,8 @@ export interface SingleDocumentViewOptions {
   readonly editable?: boolean
   /** Presentation stays in the same CM6 document; source is the default. */
   readonly presentationMode?: PresentationMode
+  /** Optional source-backed image projection settings for live presentation. */
+  readonly imageProjection?: ImageProjectionRenderOptions
 }
 
 /**
@@ -137,13 +160,17 @@ export function createSingleDocumentEditorState(
   extensions: readonly Extension[] = [],
   editable = false,
   presentationMode: PresentationMode = DEFAULT_PRESENTATION_MODE,
+  mutationCapability?: ProjectionMutationCapability,
+  imageProjection?: ImageProjectionRenderOptions,
 ): EditorState {
   return createSingleDocumentEditorStateWithController(
-    markdownSource,
+    projectMarkdownSource(markdownSource).projected,
     extensions,
     editable,
     createStoreSyncController(),
     presentationMode,
+    mutationCapability,
+    imageProjection,
   )
 }
 
@@ -153,6 +180,8 @@ function createSingleDocumentEditorStateWithController(
   editable: boolean,
   controller: StoreSyncController,
   presentationMode: PresentationMode,
+  mutationCapability?: ProjectionMutationCapability,
+  imageProjection?: ImageProjectionRenderOptions,
 ): EditorState {
   if (typeof markdownSource !== 'string') {
     throw new TypeError('Editor document must be a string')
@@ -161,9 +190,15 @@ function createSingleDocumentEditorStateWithController(
   const authorityGuard: Extension[] = [
     createStoreSyncGuard(editable, controller),
   ]
+  const projectionCapability = mutationCapability
+    ? [projectionMutationFacet.of(mutationCapability)]
+    : []
   const presentationExtension = containsLivePreviewExtension(extensions)
     ? []
-    : createLivePreviewExtension({ initialMode: presentationMode })
+    : createLivePreviewExtension({
+        initialMode: presentationMode,
+        ...(imageProjection ?? {}),
+      })
   if (!editable) {
     authorityGuard.unshift(EditorState.readOnly.of(true))
   }
@@ -173,6 +208,7 @@ function createSingleDocumentEditorStateWithController(
     extensions: [
       markdown(),
       EditorView.lineWrapping,
+      ...projectionCapability,
       ...extensions,
       presentationExtension,
       EditorView.editable.of(editable),
@@ -213,6 +249,22 @@ function createPublicEditorSurface(
     focus(): void {
       editorView.focus()
     },
+    jumpToFragment(fragment: string): boolean {
+      const position = findReferenceFragmentPosition(
+        editorView.state.doc.toString(),
+        fragment,
+      )
+      if (position === undefined) return false
+      editorView.dispatch({
+        selection: { anchor: position },
+        scrollIntoView: true,
+      })
+      editorView.focus()
+      return true
+    },
+    navigateToFragment(fragment: string): boolean {
+      return this.jumpToFragment(fragment)
+    },
     dispatch(spec: SingleDocumentUserTransaction): void {
       if (spec === null || typeof spec !== 'object') {
         throw new TypeError('Editor user transaction must be an object')
@@ -240,6 +292,19 @@ export class SingleDocumentView {
 
   private acknowledgedRevision: Revision | undefined
 
+  private typingGroupId: string | undefined
+
+  private typingGroupSequence = 0
+
+  private sourceCommitInProgress = false
+
+  /**
+   * Maps the normalized CM6 text back to the current authoritative source.
+   * This is refreshed on every Store revision, including revisions whose only
+   * difference is line-ending encoding.
+   */
+  private sourceProjection: MarkdownSourceProjection
+
   readonly view: SingleDocumentViewSurface
 
   constructor(
@@ -252,14 +317,25 @@ export class SingleDocumentView {
     private readonly origin: DocumentOrigin,
     private readonly editable: boolean,
     private readonly syncController: StoreSyncController,
+    private readonly mutationCapabilityController: ProjectionMutationCapabilityController,
   ) {
     this.displayedRevisionValue = initialDocument.revision
+    this.sourceProjection = projectMarkdownSource(initialDocument.markdown)
     this.view = createPublicEditorSurface(editorView)
   }
 
   /** Current presentation of the same CM6 document. */
   get presentationMode(): PresentationMode {
     return getPresentationMode(this.editorView.state)
+  }
+
+  jumpToFragment(fragment: string): boolean {
+    if (this.destroyed) return false
+    return this.view.jumpToFragment(fragment)
+  }
+
+  navigateToFragment(fragment: string): boolean {
+    return this.jumpToFragment(fragment)
   }
 
   setPresentationMode(mode: PresentationMode): void {
@@ -302,33 +378,61 @@ export class SingleDocumentView {
    * closure created by `mountSingleDocumentView`.
    */
   onViewUpdate(update: ViewUpdate): void {
-    if (this.destroyed || !update.docChanged) return
+    if (this.destroyed) return
+
     let hasUntrustedDocumentChange = false
+    let hasAuthorizedDocumentChange = false
     for (const transaction of update.transactions) {
-      if (
-        transaction.docChanged &&
-        !consumeAuthorizedStoreSync(transaction, this.syncController)
-      ) {
+      if (!transaction.docChanged) continue
+      if (consumeAuthorizedStoreSync(transaction, this.syncController)) {
+        hasAuthorizedDocumentChange = true
+      } else {
         hasUntrustedDocumentChange = true
       }
     }
+
+    if (hasAuthorizedDocumentChange) this.typingGroupId = undefined
     if (!hasUntrustedDocumentChange) {
+      if (!update.docChanged && update.selectionSet) {
+        this.typingGroupId = undefined
+      }
       this.ensureAuthoritativeSource()
       return
     }
 
     if (!this.editable) {
+      this.typingGroupId = undefined
       this.ensureAuthoritativeSource()
       return
     }
 
     try {
-      this.store.applyChange(this.locator, {
-        markdown: update.state.doc.toString(),
-        origin: this.origin,
-        expectedRevision: this.displayedRevisionValue,
-      })
+      if (update.startState.doc.toString() !== this.sourceProjection.projected) {
+        throw new Error(
+          'CM6 transaction does not start from the mapped authoritative source',
+        )
+      }
+
+      const sourceChange = projectedChangesToSourceChangeSet(
+        this.sourceProjection,
+        update.changes,
+      )
+      const historyGroup = this.historyGroupFor(update)
+      this.sourceCommitInProgress = true
+      let committed: DocumentState
+      try {
+        committed = this.store.applySourceChange(this.locator, {
+          change: sourceChange,
+          origin: this.origin,
+          expectedRevision: this.displayedRevisionValue,
+          ...(historyGroup === undefined ? {} : { historyGroup }),
+        })
+      } finally {
+        this.sourceCommitInProgress = false
+      }
+      this.sourceProjection = projectMarkdownSource(committed.markdown)
     } catch (error) {
+      this.typingGroupId = undefined
       this.recoverFromStore(error)
     }
   }
@@ -336,6 +440,13 @@ export class SingleDocumentView {
   /** Applies one committed Store event to this local projection. */
   onDocumentEvent(event: DocumentStoreEvent): void {
     if (this.destroyed || event.type !== 'changed') return
+    // The originating editable projection already contains this transaction;
+    // other projections must treat the Store replay as a typing boundary.
+    const ownCommit =
+      this.sourceCommitInProgress &&
+      event.origin.kind === this.origin.kind &&
+      event.origin.source === this.origin.source
+    if (!ownCommit) this.typingGroupId = undefined
 
     if (event.document.revision < this.displayedRevisionValue) {
       this.markApplyFailure(
@@ -347,7 +458,7 @@ export class SingleDocumentView {
     }
 
     try {
-      this.applyAuthoritativeDocument(event.document)
+      this.applyAuthoritativeDocument(event.document, event.change, ownCommit)
     } catch (error) {
       this.markApplyFailure(error)
     }
@@ -377,10 +488,12 @@ export class SingleDocumentView {
       return
     }
 
+    const currentProjection = projectMarkdownSource(current.markdown)
     if (
       current.revision === this.displayedRevisionValue &&
-      this.editorView.state.doc.toString() === current.markdown
+      this.editorView.state.doc.toString() === currentProjection.projected
     ) {
+      this.sourceProjection = currentProjection
       try {
         this.acknowledgeProjection(current.revision)
       } catch (error) {
@@ -403,6 +516,7 @@ export class SingleDocumentView {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.mutationCapabilityController.invalidate()
     this.unsubscribe()
 
     try {
@@ -419,22 +533,85 @@ export class SingleDocumentView {
       return
     }
 
-    if (this.editorView.state.doc.toString() === current.markdown) return
+    const currentProjection = projectMarkdownSource(current.markdown)
+    if (this.editorView.state.doc.toString() === currentProjection.projected) {
+      this.sourceProjection = currentProjection
+      return
+    }
 
     this.recoverFromStore(
       new Error('CM6 document change was not authorized by this adapter'),
     )
   }
 
-  private applyAuthoritativeDocument(document: DocumentState): void {
+  private applyAuthoritativeDocument(
+    document: DocumentState,
+    authoritativeChange?: SourceChangeSet,
+    alreadyAppliedByThisProjection = false,
+  ): void {
+    const nextProjection = projectMarkdownSource(document.markdown)
+    const previousProjection = this.sourceProjection
     const localMarkdown = this.editorView.state.doc.toString()
-    if (localMarkdown !== document.markdown) {
-      this.applyStoreSource(document.markdown)
+    if (
+      localMarkdown !== previousProjection.projected &&
+      !(alreadyAppliedByThisProjection &&
+        localMarkdown === nextProjection.projected)
+    ) {
+      throw new Error(
+        'CM6 projection is not at the expected source before Store fan-out',
+      )
+    }
+
+    const projectedChange =
+      authoritativeChange === undefined
+        ? createSourceChangeSet(
+            previousProjection.projected,
+            nextProjection.projected,
+          )
+        : projectSourceChangeToProjection(
+            previousProjection,
+            nextProjection,
+            authoritativeChange,
+          ) ??
+          createSourceChangeSet(
+            previousProjection.projected,
+            nextProjection.projected,
+          )
+    if (localMarkdown !== nextProjection.projected) {
+      this.applyStoreSource(nextProjection.projected, projectedChange)
     }
     this.requireLocalSource(document.markdown)
 
     this.displayedRevisionValue = document.revision
     this.acknowledgeProjection(document.revision)
+  }
+
+  private historyGroupFor(
+    update: ViewUpdate,
+  ): DocumentHistoryGroup | undefined {
+    const documentTransactions = update.transactions.filter(
+      (transaction) => transaction.docChanged,
+    )
+    const typingTransaction = documentTransactions[0]
+    if (
+      documentTransactions.length !== 1 ||
+      typingTransaction === undefined ||
+      !typingTransaction.isUserEvent('input.type')
+    ) {
+      this.typingGroupId = undefined
+      return undefined
+    }
+
+    const continuation = this.typingGroupId === undefined ? 'start' : 'continue'
+    const groupId =
+      this.typingGroupId ??
+      `${this.projectionId}:typing:${++this.typingGroupSequence}`
+    this.typingGroupId = groupId
+    return Object.freeze({
+      id: groupId,
+      kind: 'typing' as const,
+      continuation,
+    })
   }
 
   private acknowledgeProjection(
@@ -462,19 +639,31 @@ export class SingleDocumentView {
     }
   }
 
-  private applyStoreSource(markdownSource: string): void {
+  private applyStoreSource(
+    markdownSource: string,
+    projectedChange?: SourceChangeSet,
+  ): void {
     const localMarkdown = this.editorView.state.doc.toString()
     if (localMarkdown === markdownSource) return
+
+    const change =
+      projectedChange ?? createSourceChangeSet(localMarkdown, markdownSource)
+    if (change.sourceLength !== localMarkdown.length) {
+      throw new Error('Projected Store change does not start at local source')
+    }
+    if (change.changes.length === 0) {
+      throw new Error('Projected Store change is empty for different source')
+    }
 
     this.syncController.allowNextTransaction = true
     this.syncController.expectedMarkdown = markdownSource
     try {
       this.editorView.dispatch({
-        changes: {
-          from: 0,
-          to: localMarkdown.length,
-          insert: markdownSource,
-        },
+        changes: change.changes.map((sourceChange) => ({
+          from: sourceChange.from,
+          to: sourceChange.to,
+          insert: sourceChange.inserted,
+        })),
         annotations: storeSync.of(this.syncController.token),
       })
     } finally {
@@ -497,7 +686,9 @@ export class SingleDocumentView {
         current.revision,
         `source transaction rejected: ${String(error)}`,
       )
-      this.applyStoreSource(current.markdown)
+      const currentProjection = projectMarkdownSource(current.markdown)
+      this.sourceProjection = currentProjection
+      this.applyStoreSource(currentProjection.projected)
       this.requireLocalSource(current.markdown)
       this.displayedRevisionValue = current.revision
       this.acknowledgeProjection(current.revision, true)
@@ -507,9 +698,11 @@ export class SingleDocumentView {
   }
 
   private requireLocalSource(markdownSource: string): void {
-    if (this.editorView.state.doc.toString() !== markdownSource) {
+    const projection = projectMarkdownSource(markdownSource)
+    if (this.editorView.state.doc.toString() !== projection.projected) {
       throw new Error('CM6 projection did not apply authoritative source')
     }
+    this.sourceProjection = projection
   }
 
   private markApplyFailure(error: unknown): void {
@@ -547,6 +740,16 @@ export function mountSingleDocumentView(
   const syncController = createStoreSyncController()
   let attached = false
   let view: EditorView | undefined
+  const mutationCapabilityController = createProjectionMutationCapability({
+    store: options.store,
+    locator: options.locator,
+    projectionId,
+    editable,
+    isEditable: () =>
+      view !== undefined &&
+      !view.state.readOnly &&
+      view.state.facet(EditorView.editable),
+  })
   let unsubscribe: (() => void) | undefined
   let projection: SingleDocumentView | undefined
   const projectionRef: { current?: SingleDocumentView } = {}
@@ -583,11 +786,13 @@ export function mountSingleDocumentView(
     ]
     view = new EditorView({
       state: createSingleDocumentEditorStateWithController(
-        snapshot.markdown,
+        projectMarkdownSource(snapshot.markdown).projected,
         [...(options.extensions ?? []), ...updateExtensions],
         editable,
         syncController,
         options.presentationMode ?? DEFAULT_PRESENTATION_MODE,
+        mutationCapabilityController.capability,
+        options.imageProjection,
       ),
       parent: options.parent,
     })
@@ -602,6 +807,7 @@ export function mountSingleDocumentView(
       origin,
       editable,
       syncController,
+      mutationCapabilityController,
     )
     projectionRef.current = projection
 
@@ -619,6 +825,7 @@ export function mountSingleDocumentView(
     if (projection) {
       projection.destroy()
     } else {
+      mutationCapabilityController.invalidate()
       unsubscribe?.()
       view?.destroy()
       if (attached) {

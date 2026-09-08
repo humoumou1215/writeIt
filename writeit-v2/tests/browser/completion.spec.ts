@@ -21,6 +21,7 @@ async function mountHarness(page: Page): Promise<void> {
     const root = document.createElement('section')
     root.dataset.browserCompletionHarness = 'true'
     const editorHost = document.createElement('div')
+    editorHost.className = 'editor-host'
     editorHost.dataset.testid = 'completion-editor'
     root.append(editorHost)
     document.body.append(root)
@@ -32,27 +33,47 @@ async function mountHarness(page: Page): Promise<void> {
     store.load({ id, path, markdown: '' })
 
     const registry = new assistance.CompletionProviderRegistry()
+    const referenceSyntax = (path: string, modeId: string): string => {
+      if (modeId === 'embed') return `![[${path}]]`
+      if (modeId === 'embed-readonly') return `![[${path}|ro]]`
+      return `[[${path}]]`
+    }
     registry.register({
       id: 'browser-references',
       triggers: ['@', '[[', '![['],
-      provide: ({ trigger }: { trigger: { kind: string } }) => [
+      modes: [
+        { id: 'link', label: 'Link' },
+        { id: 'embed', label: 'Editable embed' },
+        { id: 'embed-readonly', label: 'Readonly embed' },
+      ],
+      initialMode: (trigger: { kind: string }) =>
+        trigger.kind === '![[' ? 'embed' : 'link',
+      provide: () => [
         {
           id: 'alpha',
           label: 'Alpha document',
           detail: 'alpha.md',
-          insertText:
-            trigger.kind === '![['
-              ? '![[alpha.md]]'
-              : '[[alpha.md]]',
+          apply: ({ trigger, mode }: any) => ({
+            from: trigger.from,
+            to: trigger.to,
+            insert: referenceSyntax(
+              'alpha.md',
+              mode?.id ?? (trigger.kind === '![[' ? 'embed' : 'link'),
+            ),
+          }),
         },
         {
           id: 'beta',
           label: 'Beta document',
           detail: 'beta.md',
-          insertText:
-            trigger.kind === '![['
-              ? '![[beta.md]]'
-              : '[[beta.md]]',
+          apply: ({ trigger, mode }: any) => ({
+            from: trigger.from,
+            to: trigger.to,
+            insert: referenceSyntax(
+              'beta.md',
+              mode?.id ?? (trigger.kind === '![[' ? 'embed' : 'link'),
+            ),
+          }),
         },
       ],
     })
@@ -64,7 +85,7 @@ async function mountHarness(page: Page): Promise<void> {
       projectionId: 'browser-completion-editor',
       editable: true,
       extensions: [
-        cm6.createCompletionExtension({ store, locator, registry }),
+        cm6.createCompletionExtension({ registry }),
       ],
     })
 
@@ -153,7 +174,49 @@ test('supports @, [[, ![[, filtering, keyboard apply, and Escape in Chromium', a
   await destroyHarness(page)
 })
 
-test('normalizes full-width IME triggers without rewriting source before apply', async ({
+test('switches reference insertion modes without refetching or moving editor focus', async ({
+  page,
+}) => {
+  await mountHarness(page)
+  const editor = page.locator('[data-testid="completion-editor"] .cm-content')
+  const menu = page.locator(
+    '[data-testid="completion-editor"] [data-completion-menu]',
+  )
+
+  await editor.click()
+  await page.keyboard.insertText('@al')
+  await expect(menu).toHaveAttribute('data-active-mode', 'link')
+  await expect(menu.locator('[role="tab"]')).toHaveCount(3)
+  const unchanged = await readSource(page)
+
+  await page.keyboard.press('Tab')
+  await expect(menu).toHaveAttribute('data-active-mode', 'embed')
+  expect(await readSource(page)).toEqual(unchanged)
+  await page.keyboard.press('Shift+Tab')
+  await expect(menu).toHaveAttribute('data-active-mode', 'link')
+  expect(await readSource(page)).toEqual(unchanged)
+
+  await menu.locator('[data-completion-mode-id="embed-readonly"]').click()
+  await expect(menu).toHaveAttribute('data-active-mode', 'embed-readonly')
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.activeElement?.closest('[data-testid="completion-editor"] .cm-content') !==
+        null,
+      ),
+    )
+    .toBe(true)
+  expect(await readSource(page)).toEqual(unchanged)
+
+  await page.keyboard.press('Enter')
+  await expect
+    .poll(async () => (await readSource(page)).markdown)
+    .toBe('![[alpha.md|ro]]')
+
+  await destroyHarness(page)
+})
+
+test('normalizes full-width triggers and keeps their initial reference mode', async ({
   page,
 }) => {
   await mountHarness(page)

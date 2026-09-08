@@ -172,13 +172,18 @@ const KEY_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   hyphen: '-',
   equal: '=',
   equals: '=',
-  plus: '+',
+  '+': 'Plus',
+  plus: 'Plus',
   bracketleft: '[',
   bracketright: ']',
 })
 
 function normalizeKeyToken(value: string): string | undefined {
-  const token = value.trim().normalize('NFKC')
+  // A literal single space is KeyboardEvent.key for Space. Preserve it long
+  // enough for the alias lookup; trimming it would make recorder input look
+  // like an empty/unbound value.
+  const normalized = value.normalize('NFKC')
+  const token = normalized === ' ' ? normalized : normalized.trim()
   if (token.length === 0 || modifierName(token)) return undefined
 
   const alias = KEY_ALIASES[token.toLocaleLowerCase()]
@@ -198,6 +203,10 @@ function normalizeKeyToken(value: string): string | undefined {
 }
 
 function splitKeybinding(value: string): readonly string[] {
+  // `+` is both the stroke delimiter and KeyboardEvent.key for the plus key.
+  // Treat a bare plus as a key; recorded combinations use the unambiguous
+  // `Plus` token instead of relying on an escaped delimiter.
+  if (value === '+') return [value]
   if (value.includes('+')) return value.split('+')
 
   // CodeMirror uses `Mod-e`; accept that spelling in addition to the
@@ -218,11 +227,22 @@ export function parseKeybinding(
   value: unknown,
 ): ParsedKeybinding | undefined {
   if (typeof value !== 'string') return undefined
-  const raw = value.trim()
+
+  // Keep a literal Space key as the final token. The normal trim path remains
+  // intentionally permissive for human-entered whitespace around modifiers.
+  const raw =
+    value === ' '
+      ? value
+      : /[+-] $/.test(value)
+        ? value.trimStart()
+        : value.trim()
   if (raw.length === 0) return undefined
 
   const parts = splitKeybinding(raw)
-  if (parts.length === 0 || parts.some((part) => part.trim().length === 0)) {
+  if (
+    parts.length === 0 ||
+    parts.slice(0, -1).some((part) => part.trim().length === 0)
+  ) {
     return undefined
   }
 
@@ -292,7 +312,7 @@ function normalizeOptionalKeybinding(
   if (typeof value !== 'string') {
     throw new KeybindingValidationError(`${name} must be a string or null`)
   }
-  if (value.trim().length === 0) return undefined
+  if (value.trim().length === 0 && value !== ' ') return undefined
   try {
     return normalizeKeybinding(value)
   } catch (error) {
@@ -320,13 +340,20 @@ export function formatKeybindingInput(
     return undefined
   }
 
-  const modifiers: string[] = []
-  if (input.ctrlKey) modifiers.push('Ctrl')
-  if (input.altKey) modifiers.push('Alt')
-  if (input.shiftKey) modifiers.push('Shift')
-  if (input.metaKey) modifiers.push('Meta')
-  const raw = [...modifiers, input.key].join('+')
-  return normalizeKeybinding(raw)
+  // Normalize the key before adding modifiers. In particular, appending the
+  // literal `+` to a modifier list would create ambiguous `Ctrl++` text, and
+  // appending a literal Space would be trimmed as if the input were empty.
+  const key = normalizeKeyToken(input.key)
+  if (!key) return undefined
+
+  return formatParsedKeybinding({
+    ctrl: Boolean(input.ctrlKey),
+    alt: Boolean(input.altKey),
+    shift: Boolean(input.shiftKey),
+    meta: Boolean(input.metaKey),
+    mod: false,
+    key,
+  })
 }
 
 /** Alias emphasizing that the input can come from a non-DOM adapter. */
@@ -347,6 +374,24 @@ function assignmentsFrom(
       keybinding,
     })),
   )
+}
+
+/**
+ * `Mod` is the primary platform modifier. Treat it as equivalent to explicit
+ * Ctrl/Meta assignments for conflict detection so a recorder cannot create a
+ * shortcut that collides on the current platform.
+ */
+function keybindingConflictKey(keybinding: Keybinding): Keybinding {
+  const parsed = parseKeybinding(keybinding)
+  if (!parsed || (!parsed.mod && !parsed.ctrl && !parsed.meta)) {
+    return keybinding
+  }
+  return formatParsedKeybinding({
+    ...parsed,
+    ctrl: false,
+    meta: false,
+    mod: true,
+  })
 }
 
 /**
@@ -372,12 +417,13 @@ export function findKeybindingConflicts(
     )
     if (!keybinding) continue
 
-    const group = byKey.get(keybinding) ?? {
+    const comparisonKey = keybindingConflictKey(keybinding)
+    const group = byKey.get(comparisonKey) ?? {
       keybinding,
       commandIds: [],
     }
     if (!group.commandIds.includes(commandId)) group.commandIds.push(commandId)
-    byKey.set(keybinding, group)
+    byKey.set(comparisonKey, group)
   }
 
   return Object.freeze(
@@ -505,6 +551,30 @@ export class KeybindingRegistry {
       if (this.effective(entry) === normalized) return entry.commandId
     }
     return undefined
+  }
+
+  /**
+   * Resolves a recorder/KeyboardEvent-shaped stroke. `Mod` defaults are the
+   * platform primary modifier, so Ctrl and Meta input both match a Mod entry;
+   * explicit Ctrl/Meta assignments remain distinct.
+   */
+  resolveInput(input: KeybindingKeyInput): CommandId | undefined {
+    const recorded = formatKeybindingInput(input)
+    if (recorded === undefined) return undefined
+
+    const direct = this.resolve(recorded)
+    if (direct !== undefined) return direct
+
+    const parsed = parseKeybinding(recorded)
+    if (!parsed || (!parsed.ctrl && !parsed.meta)) return undefined
+    return this.resolve(
+      formatParsedKeybinding({
+        ...parsed,
+        ctrl: false,
+        meta: false,
+        mod: true,
+      }),
+    )
   }
 
   set(commandId: CommandId, keybinding: string | null): void {

@@ -5,6 +5,13 @@ const unknownMarkdown = readFileSync(
   new URL('../fixtures/source-fidelity/unknown-markdown.md', import.meta.url),
   'utf8',
 )
+const browserLineEndingFixtures = ['crlf', 'mixed'].map((name) => ({
+  name,
+  source: readFileSync(
+    new URL(`../fixtures/source-fidelity/${name}.md`, import.meta.url),
+    'utf8',
+  ),
+}))
 
 type BrowserProjectionState = {
   projectionId: string
@@ -17,7 +24,9 @@ type BrowserProjectionState = {
 type BrowserHarness = {
   locator: unknown
   store: {
-    get(locator: unknown): { markdown: string; revision: number } | undefined
+    get(locator: unknown):
+      | { markdown: string; revision: number; dirty: boolean }
+      | undefined
     getProjections(locator: unknown): readonly BrowserProjectionState[]
   }
   primary: {
@@ -25,6 +34,7 @@ type BrowserHarness = {
     view: {
       state: { doc: { toString(): string } }
       focus(): void
+      dispatch(spec: { changes: unknown }): void
     }
     projectionState: BrowserProjectionState
     destroy(): void
@@ -49,6 +59,7 @@ type BrowserHarness = {
 type BrowserHarnessState = {
   source: string
   revision: number
+  dirty: boolean
   primaryDocument: string
   secondaryDocument: string
   previewText: string
@@ -143,6 +154,7 @@ async function readHarnessState(page: Page): Promise<BrowserHarnessState> {
     return {
       source: state.markdown,
       revision: state.revision,
+      dirty: state.dirty,
       primaryDocument: harness.primary.view.state.doc.toString(),
       secondaryDocument: harness.secondary.view.state.doc.toString(),
       previewText: harness.preview.parent.textContent ?? '',
@@ -179,6 +191,48 @@ async function destroyHarness(page: Page): Promise<{
         '[data-testid="browser-preview"] > *',
       ).length,
     }
+  })
+}
+
+for (const fixture of browserLineEndingFixtures) {
+  test(`preserves ${fixture.name} line endings through a targeted Chromium edit`, async ({
+    page,
+  }) => {
+    await mountHarness(page, fixture.source)
+
+    let state = await readHarnessState(page)
+    expect(state.source).toBe(fixture.source)
+    expect(state.revision).toBe(0)
+    expect(state.dirty).toBe(false)
+
+    const projected = fixture.source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+    expect(state.primaryDocument).toBe(projected)
+
+    await page.evaluate(() => {
+      const harness = (
+        window as unknown as { __writeItV2BrowserHarness?: BrowserHarness }
+      ).__writeItV2BrowserHarness
+      if (!harness) throw new Error('browser harness is not mounted')
+      const source = harness.primary.view.state.doc.toString()
+      const from = source.indexOf('two')
+      if (from < 0) throw new Error('fixture edit marker is missing')
+      harness.primary.view.dispatch({
+        changes: { from, to: from + 'two'.length, insert: 'edited' },
+      })
+    })
+
+    const expected = fixture.source.replace('two', 'edited')
+    await expect
+      .poll(async () => (await readHarnessState(page)).source)
+      .toBe(expected)
+
+    state = await readHarnessState(page)
+    expect(state.revision).toBe(1)
+    expect(state.dirty).toBe(true)
+    expect(state.primaryDocument).toBe(
+      expected.replaceAll('\r\n', '\n').replaceAll('\r', '\n'),
+    )
+    await destroyHarness(page)
   })
 }
 

@@ -16,6 +16,11 @@ describe('keybinding normalization', () => {
     expect(normalizeKeybinding('Mod-Shift-e')).toBe('Mod+Shift+E')
     expect(normalizeKeybinding('Option+ArrowUp')).toBe('Alt+ArrowUp')
     expect(normalizeKeybinding('cmd+,')).toBe('Meta+,')
+    expect(normalizeKeybinding('Ctrl+plus')).toBe('Ctrl+Plus')
+    expect(normalizeKeybinding('Mod+plus')).toBe('Mod+Plus')
+    expect(normalizeKeybinding('Ctrl+ ')).toBe('Ctrl+Space')
+    expect(normalizeKeybinding(' ')).toBe('Space')
+    expect(normalizeKeybinding('+')).toBe('Plus')
     expect(parseKeybinding('Ctrl+Shift+P')).toEqual({
       ctrl: true,
       alt: false,
@@ -23,6 +28,14 @@ describe('keybinding normalization', () => {
       meta: false,
       mod: false,
       key: 'P',
+    })
+    expect(parseKeybinding('Mod+Plus')).toEqual({
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: false,
+      mod: true,
+      key: 'Plus',
     })
   })
 
@@ -36,6 +49,32 @@ describe('keybinding normalization', () => {
     expect(
       formatKeybindingInput({ key: 's', ctrlKey: true, shiftKey: true }),
     ).toBe('Ctrl+Shift+S')
+  })
+
+  it('round-trips recorder values without using Plus or Space as delimiters', () => {
+    const recordedInputs = [
+      { input: { key: '+' }, expected: 'Plus' },
+      { input: { key: '+', ctrlKey: true }, expected: 'Ctrl+Plus' },
+      { input: { key: '+', metaKey: true }, expected: 'Meta+Plus' },
+      { input: { key: ' ' }, expected: 'Space' },
+      { input: { key: ' ', ctrlKey: true }, expected: 'Ctrl+Space' },
+      { input: { key: '+', shiftKey: true }, expected: 'Shift+Plus' },
+      { input: { key: '=', shiftKey: true }, expected: 'Shift+=' },
+      {
+        input: { key: '=', ctrlKey: true, shiftKey: true },
+        expected: 'Ctrl+Shift+=',
+      },
+    ] as const
+
+    for (const { input, expected } of recordedInputs) {
+      const formatted = formatKeybindingInput(input)
+      expect(formatted).toBe(expected)
+      expect(formatted).not.toContain('++')
+      expect(parseKeybinding(formatted as string)).toEqual(
+        parseKeybinding(expected),
+      )
+      expect(normalizeKeybinding(formatted as string)).toBe(expected)
+    }
   })
 })
 
@@ -54,6 +93,32 @@ describe('keybinding conflict detection', () => {
         commandIds: ['file.save', 'editor.save'],
       },
     ])
+  })
+
+  it('uses the canonical Plus token for conflict detection and registry resolution', () => {
+    expect(
+      findKeybindingConflicts({
+        'editor.plus-a': 'Ctrl+Plus',
+        'editor.plus-b': 'ctrl+plus',
+        'editor.space': 'Ctrl+Space',
+      }),
+    ).toEqual([
+      {
+        keybinding: 'Ctrl+Plus',
+        commandIds: ['editor.plus-a', 'editor.plus-b'],
+      },
+    ])
+
+    const registry = createKeybindingRegistry([
+      { commandId: 'editor.plus-a', defaultKeybinding: 'Ctrl+Plus' },
+      { commandId: 'editor.space', defaultKeybinding: 'Ctrl+Space' },
+    ])
+    expect(registry.resolve('Ctrl+plus')).toBe('editor.plus-a')
+    expect(registry.resolveInput({ key: '+', ctrlKey: true })).toBe('editor.plus-a')
+    expect(() => registry.set('editor.space', 'Ctrl+plus')).toThrow(
+      KeybindingConflictError,
+    )
+    expect(registry.get('editor.space')).toBe('Ctrl+Space')
   })
 })
 

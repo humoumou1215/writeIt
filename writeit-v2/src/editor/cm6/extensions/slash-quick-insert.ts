@@ -1,10 +1,15 @@
 import type { EditorState, Extension } from '@codemirror/state'
 import { EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
+import { CaretPopup } from '../caret-popup'
 import {
   createDocumentOrigin,
-  DocumentStore,
-  type DocumentLocator,
+  type Revision,
 } from '../../../core/document'
+import {
+  getProjectionMutationCapability,
+  type ProjectionMutationCapability,
+} from '../projection/mutation-capability'
+import { projectMarkdownSource } from '../projection/source-fidelity'
 
 export interface SlashQuickInsertRange {
   readonly from: number
@@ -30,6 +35,60 @@ export interface SlashQuickInsertCommand {
   readonly label: string
   readonly group: string
   readonly keywords: readonly string[]
+}
+
+export interface SlashQuickInsertCommandGroup {
+  readonly group: string
+  readonly commands: readonly SlashQuickInsertCommand[]
+}
+
+function normalizeSlashSearchText(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase()
+}
+
+export function matchesSlashQuickInsertQuery(
+  command: SlashQuickInsertCommand,
+  query: string,
+): boolean {
+  const normalizedQuery = normalizeSlashSearchText(query.trim())
+  if (normalizedQuery.length === 0) return true
+  return normalizeSlashSearchText(
+    [command.id, command.label, command.group, ...command.keywords].join(' '),
+  ).includes(normalizedQuery)
+}
+
+export function filterSlashQuickInsertCommands(
+  commands: readonly SlashQuickInsertCommand[],
+  query: string,
+): readonly SlashQuickInsertCommand[] {
+  return commands.filter((command) =>
+    matchesSlashQuickInsertQuery(command, query),
+  )
+}
+
+/**
+ * Groups an already filtered command list without sorting it. Map insertion
+ * order preserves provider registration order, and command order within each
+ * group remains the registry order.
+ */
+export function groupSlashQuickInsertCommands(
+  commands: readonly SlashQuickInsertCommand[],
+): readonly SlashQuickInsertCommandGroup[] {
+  const groups = new Map<string, SlashQuickInsertCommand[]>()
+  for (const command of commands) {
+    const entries = groups.get(command.group) ?? []
+    entries.push(command)
+    groups.set(command.group, entries)
+  }
+
+  return Object.freeze(
+    [...groups].map(([group, entries]) =>
+      Object.freeze({
+        group,
+        commands: Object.freeze([...entries]),
+      }),
+    ),
+  )
 }
 
 export interface SlashQuickInsertContext {
@@ -60,13 +119,14 @@ export interface SlashTrigger {
 }
 
 export interface SlashQuickInsertExtensionOptions {
-  readonly store: DocumentStore
-  readonly locator: DocumentLocator
   readonly registry: SlashQuickInsertRegistry
+  /** Optional for direct surface mounts; SingleDocumentView injects it via CM6. */
+  readonly mutation?: ProjectionMutationCapability
 }
 
 const MENU_CLASS = 'writeit-slash-menu'
 const MENU_OPTION_SELECTOR = '[data-quick-insert-index]'
+const MENU_GROUP_SELECTOR = '[data-quick-insert-group-selector]'
 
 function triggerKey(
   trigger: SlashTrigger,
@@ -131,10 +191,27 @@ function formatError(error: unknown): string {
 
 class SlashQuickInsertController {
   private readonly menu: HTMLDivElement
+  private readonly popup: CaretPopup
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (!this.open) return
+    if (
+      this.composing ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      this.view.composing
+    ) {
+      return
+    }
 
+    if (event.key === 'Tab') {
+      // Group navigation is owned by the open popup. Keep Tab from moving
+      // focus out of the CM6 projection while a quick-insert session is live.
+      event.preventDefault()
+      event.stopPropagation()
+      this.moveGroup(event.shiftKey ? -1 : 1)
+      return
+    }
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       event.stopPropagation()
@@ -161,21 +238,60 @@ class SlashQuickInsertController {
   }
 
   private readonly onMouseDown = (event: MouseEvent): void => {
-    if (this.optionFromEvent(event) !== undefined) {
-      // Keep the CM6 cursor and focus in place while a button is selected.
+    if (
+      this.optionFromEvent(event) !== undefined ||
+      this.groupFromEvent(event) !== undefined
+    ) {
+      // Keep the CM6 cursor and focus in place while a popup control is
+      // selected. The click handler still receives the ensuing click event.
       event.preventDefault()
     }
   }
 
   private readonly onClick = (event: MouseEvent): void => {
+    const groupIndex = this.groupFromEvent(event)
+    if (groupIndex !== undefined) {
+      event.preventDefault()
+      this.selectGroup(groupIndex)
+      return
+    }
+
     const index = this.optionFromEvent(event)
     if (index === undefined) return
     event.preventDefault()
     void this.execute(index)
   }
 
+  private readonly onCompositionStart = (): void => {
+    this.composing = true
+    this.compositionEndPending = false
+    this.invalidatePendingMutation()
+    this.dismissedKey = undefined
+    this.hide()
+  }
+
+  private readonly onCompositionEnd = (): void => {
+    this.composing = false
+    this.compositionEndPending = true
+    this.syncFromEditor()
+    this.reconcileCompositionEnd()
+    // The DOM compositionend can precede CM6's composition transaction. A
+    // microtask re-checks the settled editor state without inventing a timer
+    // as a synchronization protocol.
+    if (this.compositionEndPending) {
+      queueMicrotask(() => {
+        if (!this.destroyed) this.reconcileCompositionEnd()
+      })
+    }
+  }
+
   private commands: readonly SlashQuickInsertCommand[] = []
 
+  private groups: readonly SlashQuickInsertCommandGroup[] = []
+
+  private activeGroup: string | undefined
+
+  /** Index within the active group, never within another group's commands. */
   private selectedIndex = 0
 
   private currentTrigger: SlashTrigger | undefined
@@ -184,14 +300,26 @@ class SlashQuickInsertController {
 
   private refreshGeneration = 0
 
+  private compositionEndPending = false
+
+  private mutationGeneration = 0
+
+  private pendingMutationToken: number | undefined
+
   private open = false
 
+  private composing = false
+
   private destroyed = false
+
+  private readonly mutation: ProjectionMutationCapability | undefined
 
   constructor(
     private readonly view: EditorView,
     private readonly options: SlashQuickInsertExtensionOptions,
   ) {
+    this.mutation =
+      options.mutation ?? getProjectionMutationCapability(view.state)
     const document = view.dom.ownerDocument
     this.menu = document.createElement('div')
     this.menu.className = MENU_CLASS
@@ -204,7 +332,14 @@ class SlashQuickInsertController {
     this.menu.addEventListener('mousedown', this.onMouseDown)
     this.menu.addEventListener('click', this.onClick)
     view.dom.addEventListener('keydown', this.onKeyDown, true)
+    view.dom.addEventListener('compositionstart', this.onCompositionStart)
+    view.dom.addEventListener('compositionend', this.onCompositionEnd)
     view.dom.append(this.menu)
+    this.popup = new CaretPopup(
+      view,
+      this.menu,
+      () => this.currentTrigger?.to,
+    )
     this.syncFromEditor()
   }
 
@@ -218,10 +353,17 @@ class SlashQuickInsertController {
 
   update(update: ViewUpdate): void {
     if (this.destroyed) return
+    this.reconcileCompositionEnd()
+    if (
+      (update.docChanged || update.selectionSet) &&
+      this.pendingMutationToken !== undefined
+    ) {
+      this.invalidatePendingMutation()
+    }
     if (update.docChanged || update.selectionSet || update.focusChanged) {
       this.syncFromEditor()
     } else if (this.open && update.geometryChanged) {
-      this.positionMenu()
+      this.popup.reposition()
     }
   }
 
@@ -230,13 +372,34 @@ class SlashQuickInsertController {
     this.destroyed = true
     this.refreshGeneration += 1
     this.open = false
+    this.invalidatePendingMutation()
+    this.popup.destroy()
     this.view.dom.removeEventListener('keydown', this.onKeyDown, true)
+    this.view.dom.removeEventListener('compositionstart', this.onCompositionStart)
+    this.view.dom.removeEventListener('compositionend', this.onCompositionEnd)
     this.menu.removeEventListener('mousedown', this.onMouseDown)
     this.menu.removeEventListener('click', this.onClick)
     this.menu.remove()
   }
 
+  private reconcileCompositionEnd(): void {
+    if (
+      !this.compositionEndPending ||
+      this.composing ||
+      this.view.composing
+    ) {
+      return
+    }
+    this.compositionEndPending = false
+    this.syncFromEditor()
+  }
+
   private syncFromEditor(): void {
+    if (this.composing || this.view.composing) {
+      this.hide()
+      return
+    }
+
     const trigger = findSlashTrigger(this.view.state)
     if (!trigger) {
       this.currentTrigger = undefined
@@ -257,25 +420,31 @@ class SlashQuickInsertController {
     }
 
     this.open = true
-    this.positionMenu()
 
     if (previousKey !== key || this.commands.length === 0) {
-      this.selectedIndex = 0
-      this.refreshCommands(trigger)
+      // A newly opened session starts at the first registered group. While a
+      // query changes, retain the active group when it still has matches so a
+      // global filter does not unexpectedly move the user's context.
+      this.refreshCommands(trigger, previousKey === undefined)
     } else {
       this.renderMenu()
     }
   }
 
-  private refreshCommands(trigger: SlashTrigger): void {
+  private refreshCommands(
+    trigger: SlashTrigger,
+    resetGroup: boolean,
+  ): void {
     const generation = ++this.refreshGeneration
-    const matching = this.options.registry
-      .list()
-      .filter((command) => this.matchesQuery(command, trigger.query))
+    const matching = filterSlashQuickInsertCommands(
+      this.options.registry.list(),
+      trigger.query,
+    )
 
     // Render synchronously for synchronous providers. Availability is then
     // resolved without making typing wait for an async provider.
     this.commands = matching
+    this.updateGroups(resetGroup)
     this.renderMenu()
 
     const source = this.view.state.doc.toString()
@@ -291,56 +460,112 @@ class SlashQuickInsertController {
     ).then((availability) => {
       if (this.destroyed || generation !== this.refreshGeneration) return
       if (!this.currentTrigger || !this.isCurrentTrigger(trigger)) return
+      if (!this.composing && !this.view.composing) this.open = true
       this.commands = matching.filter((_, index) => availability[index])
-      this.selectedIndex = Math.min(
-        this.selectedIndex,
-        Math.max(0, this.commands.length - 1),
-      )
+      this.updateGroups(false)
       this.renderMenu()
     })
   }
 
-  private matchesQuery(
-    command: SlashQuickInsertCommand,
-    query: string,
-  ): boolean {
-    const normalizedQuery = query.normalize('NFKC').toLocaleLowerCase().trim()
-    if (normalizedQuery.length === 0) return true
-    return [command.id, command.label, command.group, ...command.keywords]
-      .join(' ')
-      .normalize('NFKC')
-      .toLocaleLowerCase()
-      .includes(normalizedQuery)
+  private updateGroups(resetGroup: boolean): void {
+    const previousGroup = resetGroup ? undefined : this.activeGroup
+    this.groups = groupSlashQuickInsertCommands(this.commands)
+    const nextGroup = this.groups.find(
+      (group) => group.group === previousGroup,
+    ) ?? this.groups[0]
+    const groupChanged = nextGroup?.group !== this.activeGroup
+    this.activeGroup = nextGroup?.group
+
+    if (resetGroup || groupChanged) {
+      this.selectedIndex = 0
+      return
+    }
+
+    const commandCount = nextGroup?.commands.length ?? 0
+    this.selectedIndex = Math.min(
+      this.selectedIndex,
+      Math.max(0, commandCount - 1),
+    )
+  }
+
+  private activeGroupEntries(): readonly SlashQuickInsertCommand[] {
+    return (
+      this.groups.find((group) => group.group === this.activeGroup)?.commands ??
+      []
+    )
   }
 
   private createContext(
     trigger: SlashTrigger,
     source: string,
     commandId?: string,
+    expectedRevision?: Revision,
+    mutationToken?: number,
   ): SlashQuickInsertContext {
     return {
       source,
       query: trigger.query,
       range: Object.freeze({ from: trigger.from, to: trigger.to }),
       replace: (replacement) =>
-        this.replaceTrigger(trigger, replacement, commandId),
+        this.replaceTrigger(
+          trigger,
+          replacement,
+          commandId,
+          expectedRevision,
+          mutationToken,
+        ),
     }
   }
 
-  private replaceTrigger(
+  private requireMutation(): ProjectionMutationCapability {
+    if (!this.mutation) {
+      throw new Error(
+        'Quick insert surface is not bound to a live editable projection',
+      )
+    }
+    return this.mutation
+  }
+
+  private beginMutation(): number {
+    const token = ++this.mutationGeneration
+    this.pendingMutationToken = token
+    return token
+  }
+
+  private requireMutationToken(token: number): void {
+    if (
+      this.destroyed ||
+      this.composing ||
+      this.pendingMutationToken !== token ||
+      this.mutationGeneration !== token
+    ) {
+      throw new Error('Quick insert mutation capability is no longer active')
+    }
+  }
+
+  private consumeMutationToken(token: number): void {
+    if (this.pendingMutationToken !== token) return
+    this.pendingMutationToken = undefined
+    this.mutationGeneration += 1
+  }
+
+  private invalidatePendingMutation(): void {
+    this.pendingMutationToken = undefined
+    this.mutationGeneration += 1
+  }
+
+  private snapshotForMutation(
     trigger: SlashTrigger,
-    replacementInput: SlashQuickInsertReplacementInput,
-    commandId?: string,
-  ): void {
-    const replacement = requireReplacement(replacementInput)
+    source: string,
+  ) {
     if (!this.isCurrentTrigger(trigger)) {
       throw new Error('Quick insert trigger is no longer active')
     }
-    const document = this.options.store.get(this.options.locator)
-    if (!document) throw new Error('Quick insert document is no longer loaded')
-
-    const source = document.markdown
     if (this.view.state.doc.toString() !== source) {
+      throw new Error('Quick insert editor changed before apply')
+    }
+    const document = this.requireMutation().snapshot()
+    if (projectMarkdownSource(document.markdown).projected !== source) {
       throw new Error('Quick insert editor is not synchronized with DocumentStore')
     }
     if (
@@ -353,23 +578,44 @@ class SlashQuickInsertController {
     if (source.slice(trigger.from, trigger.to) !== `/${trigger.query}`) {
       throw new Error('Quick insert trigger no longer matches the source')
     }
+    return document
+  }
+
+  private replaceTrigger(
+    trigger: SlashTrigger,
+    replacementInput: SlashQuickInsertReplacementInput,
+    commandId?: string,
+    expectedRevision?: Revision,
+    mutationToken?: number,
+  ): void {
+    const replacement = requireReplacement(replacementInput)
+    if (mutationToken === undefined || expectedRevision === undefined) {
+      throw new Error('Quick insert mutation capability is not active')
+    }
+    this.requireMutationToken(mutationToken)
+    const source = this.view.state.doc.toString()
+    const document = this.snapshotForMutation(trigger, source)
+    if (document.revision !== expectedRevision) {
+      throw new Error('Quick insert source changed before apply')
+    }
 
     const markdown =
       source.slice(0, trigger.from) +
       replacement.text +
       source.slice(trigger.to)
-    const next = this.options.store.applyChange(this.options.locator, {
+    this.requireMutation().applyChange({
       markdown,
       origin: createDocumentOrigin('command', commandId ?? 'quick-insert'),
-      expectedRevision: document.revision,
+      expectedRevision,
     })
+    this.consumeMutationToken(mutationToken)
 
     const cursorOffset = replacement.cursorOffset ?? replacement.text.length
     const cursor = Math.min(
       trigger.from + cursorOffset,
-      next.markdown.length,
+      this.view.state.doc.length,
     )
-    this.view.dispatch({ selection: { anchor: cursor } })
+    if (!this.destroyed) this.view.dispatch({ selection: { anchor: cursor } })
   }
 
   private isCurrentTrigger(trigger: SlashTrigger): boolean {
@@ -383,31 +629,76 @@ class SlashQuickInsertController {
   }
 
   private moveSelection(delta: number): void {
-    if (this.commands.length === 0) return
-    const count = this.commands.length
-    this.selectedIndex = (this.selectedIndex + delta + count) % count
+    const commands = this.activeGroupEntries()
+    if (commands.length === 0) return
+    this.selectedIndex =
+      (this.selectedIndex + delta + commands.length) % commands.length
+    this.renderMenu()
+  }
+
+  private moveGroup(delta: number): void {
+    if (this.groups.length === 0) return
+    const currentIndex = Math.max(
+      0,
+      this.groups.findIndex((group) => group.group === this.activeGroup),
+    )
+    const nextIndex =
+      (currentIndex + delta + this.groups.length) % this.groups.length
+    this.activeGroup = this.groups[nextIndex]?.group
+    this.selectedIndex = 0
+    this.renderMenu()
+  }
+
+  private selectGroup(index: number): void {
+    const group = this.groups[index]
+    if (!group) return
+    this.activeGroup = group.group
+    this.selectedIndex = 0
     this.renderMenu()
   }
 
   private async executeSelected(): Promise<void> {
-    if (this.commands.length === 0) return
-    await this.execute(this.selectedIndex)
+    const command = this.activeGroupEntries()[this.selectedIndex]
+    if (!command) return
+    const index = this.commands.indexOf(command)
+    if (index < 0) return
+    await this.execute(index)
   }
 
   private async execute(index: number): Promise<void> {
     const command = this.commands[index]
     const trigger = this.currentTrigger
-    if (!command || !trigger || !this.isCurrentTrigger(trigger)) return
+    if (
+      !command ||
+      !trigger ||
+      !this.isCurrentTrigger(trigger) ||
+      !this.activeGroupEntries().includes(command)
+    ) {
+      return
+    }
 
     const source = this.view.state.doc.toString()
-    const context = this.createContext(trigger, source, command.id)
-    this.hide()
+    let mutationToken: number | undefined
     try {
+      const document = this.snapshotForMutation(trigger, source)
+      mutationToken = this.beginMutation()
+      const context = this.createContext(
+        trigger,
+        source,
+        command.id,
+        document.revision,
+        mutationToken,
+      )
+      this.hide()
       await this.options.registry.execute(command.id, context)
     } catch (error) {
       // A provider failure must not damage source or leave a stale menu open.
       // Keep the failure inspectable on the projection for diagnostics/tests.
-      this.menu.dataset.error = formatError(error)
+      if (!this.destroyed) this.menu.dataset.error = formatError(error)
+    } finally {
+      if (mutationToken !== undefined) {
+        this.invalidatePendingMutation()
+      }
     }
   }
 
@@ -419,16 +710,31 @@ class SlashQuickInsertController {
     return Number.isSafeInteger(index) ? index : undefined
   }
 
+  private groupFromEvent(event: MouseEvent): number | undefined {
+    const target = event.target as HTMLElement | null
+    const selector = target?.closest<HTMLElement>(MENU_GROUP_SELECTOR)
+    if (!selector || !this.menu.contains(selector)) return undefined
+    const groupName = selector.dataset.commandGroup
+    if (!groupName) return undefined
+    const index = this.groups.findIndex((group) => group.group === groupName)
+    return index >= 0 ? index : undefined
+  }
+
   private renderMenu(): void {
     const document = this.menu.ownerDocument
     this.menu.replaceChildren()
     this.menu.dataset.show = this.open ? 'true' : 'false'
     this.menu.hidden = !this.open
+    this.menu.dataset.activeGroup = this.activeGroup ?? ''
+    this.menu.dataset.groupCount = String(this.groups.length)
     this.menu.removeAttribute('data-error')
 
-    if (!this.open) return
+    if (!this.open) {
+      this.popup.hide()
+      return
+    }
 
-    if (this.commands.length === 0) {
+    if (this.groups.length === 0) {
       const group = document.createElement('div')
       group.className = 'writeit-slash-menu__group'
       group.dataset.commandGroup = 'Insert'
@@ -443,23 +749,55 @@ class SlashQuickInsertController {
       group.append(empty)
       this.menu.append(group)
     } else {
-      const groups = new Map<string, Array<[number, SlashQuickInsertCommand]>>()
-      for (const [index, command] of this.commands.entries()) {
-        const entries = groups.get(command.group) ?? []
-        entries.push([index, command])
-        groups.set(command.group, entries)
-      }
+      const groupSelectorBar = document.createElement('div')
+      groupSelectorBar.className = 'writeit-slash-menu__group-selector-bar'
+      groupSelectorBar.setAttribute('role', 'tablist')
+      groupSelectorBar.setAttribute('aria-label', 'Quick insert groups')
 
-      for (const [groupName, entries] of groups) {
+      for (const [index, group] of this.groups.entries()) {
+        const selector = document.createElement('button')
+        selector.type = 'button'
+        selector.className = 'writeit-slash-menu__group-selector'
+        selector.id = `writeit-slash-group-selector-${index}`
+        selector.dataset.quickInsertGroupSelector = 'true'
+        selector.dataset.commandGroup = group.group
+        selector.setAttribute('role', 'tab')
+        selector.setAttribute(
+          'aria-selected',
+          String(group.group === this.activeGroup),
+        )
+        selector.setAttribute(
+          'aria-controls',
+          `writeit-slash-group-content-${index}`,
+        )
+        selector.tabIndex = -1
+        selector.textContent = group.group
+        groupSelectorBar.append(selector)
+      }
+      this.menu.append(groupSelectorBar)
+
+      const activeGroupIndex = this.groups.findIndex(
+        (group) => group.group === this.activeGroup,
+      )
+      const activeGroup = this.groups[activeGroupIndex]
+      if (activeGroup) {
         const group = document.createElement('div')
         group.className = 'writeit-slash-menu__group'
-        group.dataset.commandGroup = groupName
+        group.id = `writeit-slash-group-content-${activeGroupIndex}`
+        group.dataset.commandGroup = activeGroup.group
+        group.dataset.quickInsertGroupContent = 'true'
+        group.setAttribute('role', 'tabpanel')
+        group.setAttribute(
+          'aria-labelledby',
+          `writeit-slash-group-selector-${activeGroupIndex}`,
+        )
         const heading = document.createElement('div')
         heading.className = 'writeit-slash-menu__group-label'
-        heading.textContent = groupName
+        heading.textContent = activeGroup.group
         group.append(heading)
 
-        for (const [index, command] of entries) {
+        for (const [localIndex, command] of activeGroup.commands.entries()) {
+          const index = this.commands.indexOf(command)
           const option = document.createElement('button')
           option.type = 'button'
           option.className = 'writeit-slash-menu__option'
@@ -469,7 +807,7 @@ class SlashQuickInsertController {
           option.setAttribute('role', 'option')
           option.setAttribute(
             'aria-selected',
-            String(index === this.selectedIndex),
+            String(localIndex === this.selectedIndex),
           )
           option.tabIndex = -1
           option.textContent = command.label
@@ -479,33 +817,22 @@ class SlashQuickInsertController {
       }
     }
 
+    const selectedCommand = this.activeGroupEntries()[this.selectedIndex]
+    const selectedIndex = selectedCommand
+      ? this.commands.indexOf(selectedCommand)
+      : -1
     this.menu.setAttribute(
       'aria-activedescendant',
-      this.commands[this.selectedIndex]
-        ? `writeit-slash-option-${this.selectedIndex}`
-        : '',
+      selectedIndex >= 0 ? `writeit-slash-option-${selectedIndex}` : '',
     )
-  }
-
-  private positionMenu(): void {
-    if (!this.open) return
-
-    const menuRect = this.view.dom.getBoundingClientRect()
-    let left = 8
-    let top = 8
-    if (this.currentTrigger) {
-      try {
-        const coords = this.view.coordsAtPos(this.currentTrigger.from)
-        if (coords) {
-          left = Math.max(8, coords.left - menuRect.left)
-          top = Math.max(8, coords.bottom - menuRect.top + 4)
-        }
-      } catch {
-        // CM6 can be between construction and layout in jsdom/initial render.
-      }
-    }
-    this.menu.style.left = `${left}px`
-    this.menu.style.top = `${top}px`
+    this.popup.reposition()
+    this.popup.ensureOptionVisible(
+      selectedIndex >= 0
+        ? this.menu.querySelector<HTMLElement>(
+            `[data-quick-insert-index="${selectedIndex}"]`,
+          )
+        : undefined,
+    )
   }
 
   private hide(): void {
@@ -515,6 +842,7 @@ class SlashQuickInsertController {
   }
 
   private dismiss(): void {
+    this.invalidatePendingMutation()
     const trigger = this.currentTrigger
     if (trigger) {
       this.dismissedKey = triggerKey(trigger, this.view.state.doc.toString())

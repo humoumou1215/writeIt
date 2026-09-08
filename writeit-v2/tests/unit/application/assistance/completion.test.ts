@@ -160,6 +160,71 @@ describe('completion provider registry', () => {
       cursorOffset: 16,
     })
   })
+
+  it('exposes stable provider modes and passes only the initial mode to providers', async () => {
+    const providedModes: string[] = []
+    const registry = new CompletionProviderRegistry()
+    registry.register({
+      id: 'references',
+      triggers: ['@', '[[', '![['],
+      modes: [
+        { id: 'link', label: 'Link' },
+        { id: 'embed', label: 'Editable embed' },
+        { id: 'embed-readonly', label: 'Readonly embed' },
+      ],
+      initialMode: (trigger) => (trigger.kind === '![[' ? 'embed' : 'link'),
+      provide: (context) => {
+        providedModes.push(context.mode?.id ?? 'none')
+        return [
+          {
+            id: 'note',
+            label: 'Note',
+            apply: (current) => ({
+              from: current.trigger.from,
+              to: current.trigger.to,
+              insert:
+                current.mode?.id === 'embed'
+                  ? '![[note.md]]'
+                  : current.mode?.id === 'embed-readonly'
+                    ? '![[note.md|ro]]'
+                    : '[[note.md]]',
+            }),
+          },
+        ]
+      },
+    })
+
+    const linkResult = await registry.complete({
+      source: '@no',
+      cursor: 3,
+      trigger: { kind: '@', from: 0, to: 3, query: 'no' },
+    })
+    expect(linkResult.modes?.map((mode) => mode.id)).toEqual([
+      'link',
+      'embed',
+      'embed-readonly',
+    ])
+    expect(linkResult.initialModeId).toBe('link')
+    expect(providedModes).toEqual(['link'])
+
+    const embedResult = await registry.complete({
+      source: '![[no',
+      cursor: 5,
+      trigger: { kind: '![[' , from: 0, to: 5, query: 'no' },
+    })
+    expect(embedResult.initialModeId).toBe('embed')
+    expect(providedModes).toEqual(['link', 'embed'])
+
+    const readonlyContext: CompletionContext = {
+      source: '@no',
+      cursor: 3,
+      trigger: { kind: '@', from: 0, to: 3, query: 'no' },
+      mode: { id: 'embed-readonly', label: 'Readonly embed' },
+    }
+    await expect(
+      resolveCompletionEdit(linkResult.items[0] as CompletionItem, readonlyContext),
+    ).resolves.toMatchObject({ insert: '![[note.md|ro]]' })
+  })
 })
 
 

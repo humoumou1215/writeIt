@@ -26,6 +26,20 @@ import type {
   DocumentState,
   Revision,
 } from './types'
+import {
+  appendSourceChangeSequence,
+  applySourceChangeSequence,
+  applySourceChangeSet,
+  createSourceChangeSequence,
+  createSourceChangeSet,
+  invertSourceChangeSequence,
+  normalizeSourceChangeSet,
+  sourceChangeSequenceByteSize,
+} from './source-change'
+import type {
+  SourceChangeSequence,
+  SourceChangeSet,
+} from './source-change'
 
 export interface DocumentOrigin {
   readonly kind: string
@@ -38,8 +52,30 @@ export interface DocumentLoadInput {
   readonly markdown: string
 }
 
+export interface DocumentHistoryGroup {
+  /** Stable identity for one uninterrupted typing run. */
+  readonly id: string
+  readonly kind: 'typing'
+  /** `start` never merges with a preceding entry; `continue` may merge. */
+  readonly continuation: 'start' | 'continue'
+}
+
 export interface DocumentChangeInput {
   readonly markdown: string
+  readonly origin: DocumentOrigin
+  readonly expectedRevision?: Revision
+  readonly historyGroup?: DocumentHistoryGroup
+}
+
+export interface DocumentSourceChangeInput {
+  readonly change: SourceChangeSet
+  readonly origin: DocumentOrigin
+  readonly expectedRevision?: Revision
+  readonly historyGroup?: DocumentHistoryGroup
+}
+
+export interface DocumentPathChangeInput {
+  readonly path: DocumentPath
   readonly origin: DocumentOrigin
   readonly expectedRevision?: Revision
 }
@@ -47,6 +83,8 @@ export interface DocumentChangeInput {
 export interface DocumentHistoryOptions {
   /** Maximum undo and redo entries retained for each document. */
   readonly maxEntries?: number
+  /** Maximum UTF-8 bytes retained by source-change payloads per document. */
+  readonly maxBytes?: number
 }
 
 export interface DocumentStoreOptions {
@@ -59,21 +97,32 @@ export interface DocumentStoreOptions {
 }
 
 /**
- * One source-level edit retained for a document's undo/redo history.
+ * One source-level edit exposed by a document's undo/redo history.
  *
- * History stores immutable source snapshots for reversal; it is not a second
- * live document authority. The current Markdown remains owned by
- * `DocumentStore`.
+ * The retained representation is a source-change sequence. Compatibility
+ * before/after snapshots are materialized only when `getHistory` is called;
+ * the current Markdown remains owned by `DocumentStore`.
  */
 export interface DocumentHistoryEntry {
+  /** Compatibility/debug snapshots materialized when getHistory is called. */
   readonly before: string
   readonly after: string
+  /** The retained source delta sequence; it contains no whole-document text. */
+  readonly change: SourceChangeSequence
   readonly origin: DocumentOrigin
+  readonly historyGroup?: DocumentHistoryGroup
+  /** UTF-8 bytes of deleted and inserted source segments. */
+  readonly byteSize: number
 }
 
 export interface DocumentHistorySnapshot {
   readonly undo: readonly DocumentHistoryEntry[]
   readonly redo: readonly DocumentHistoryEntry[]
+  readonly undoBytes: number
+  readonly redoBytes: number
+  readonly totalBytes: number
+  readonly maxEntries: number
+  readonly maxBytes: number
 }
 
 export interface ProjectionAcknowledgementOptions {
@@ -95,10 +144,20 @@ export interface ProjectionState {
   readonly degradedReason?: string
 }
 
+interface StoredDocumentHistoryEntry {
+  readonly change: SourceChangeSequence
+  readonly origin: DocumentOrigin
+  readonly historyGroup?: DocumentHistoryGroup
+  readonly byteSize: number
+}
+
 interface MutableDocumentHistory {
-  readonly undo: DocumentHistoryEntry[]
-  readonly redo: DocumentHistoryEntry[]
+  readonly undo: StoredDocumentHistoryEntry[]
+  readonly redo: StoredDocumentHistoryEntry[]
   readonly maxEntries: number
+  readonly maxBytes: number
+  undoBytes: number
+  redoBytes: number
 }
 
 interface ProjectionRecord {
@@ -117,6 +176,8 @@ export interface DocumentChangedEvent {
   readonly type: 'changed'
   readonly previous: DocumentState
   readonly document: DocumentState
+  /** Source-offset delta that transforms previous.markdown to document.markdown. */
+  readonly change: SourceChangeSet
   readonly origin: DocumentOrigin
 }
 
@@ -127,7 +188,17 @@ export interface DocumentPersistedEvent {
   readonly origin: DocumentOrigin
 }
 
-export type DocumentStoreEvent = DocumentChangedEvent | DocumentPersistedEvent
+export interface DocumentRenamedEvent {
+  readonly type: 'renamed'
+  readonly previous: DocumentState
+  readonly document: DocumentState
+  readonly origin: DocumentOrigin
+}
+
+export type DocumentStoreEvent =
+  | DocumentChangedEvent
+  | DocumentPersistedEvent
+  | DocumentRenamedEvent
 export type DocumentStoreListener = (event: DocumentStoreEvent) => void
 export type Unsubscribe = () => void
 
@@ -160,6 +231,16 @@ export class DocumentIdentityConflictError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'DocumentIdentityConflictError'
+  }
+}
+
+export class DocumentPathConflictError extends DocumentIdentityConflictError {
+  readonly path: DocumentPath
+
+  constructor(path: DocumentPath, documentId: DocumentId) {
+    super(`Document path ${path} is already owned by ${documentId}`)
+    this.name = 'DocumentPathConflictError'
+    this.path = path
   }
 }
 
@@ -248,6 +329,7 @@ function requireMarkdown(markdown: string): void {
 }
 
 const DEFAULT_HISTORY_MAX_ENTRIES = 1_000
+const DEFAULT_HISTORY_MAX_BYTES = 8 * 1024 * 1024
 
 const UNFORMATTABLE_OBSERVER_ERROR = 'Observer threw an unformattable value'
 
@@ -271,6 +353,40 @@ function requireHistoryMaxEntries(maxEntries: number): number {
     )
   }
   return maxEntries
+}
+
+function requireHistoryMaxBytes(maxBytes: number): number {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError(
+      'History maxBytes must be a non-negative safe integer',
+    )
+  }
+  return maxBytes
+}
+
+function requireHistoryGroup(
+  group: DocumentHistoryGroup | undefined,
+): DocumentHistoryGroup | undefined {
+  if (group === undefined) return undefined
+  if (group === null || typeof group !== 'object') {
+    throw new TypeError('Document historyGroup must be an object')
+  }
+  if (typeof group.id !== 'string' || group.id.trim().length === 0) {
+    throw new TypeError('Document historyGroup.id must be non-empty')
+  }
+  if (group.kind !== 'typing') {
+    throw new TypeError('Document historyGroup.kind must be typing')
+  }
+  if (group.continuation !== 'start' && group.continuation !== 'continue') {
+    throw new TypeError(
+      'Document historyGroup.continuation must be start or continue',
+    )
+  }
+  return Object.freeze({
+    id: group.id,
+    kind: group.kind,
+    continuation: group.continuation,
+  })
 }
 
 function requireDocumentLocator(locator: DocumentLocator): DocumentLocator {
@@ -312,10 +428,15 @@ export class DocumentStore {
 
   private readonly historyMaxEntries: number
 
+  private readonly historyMaxBytes: number
+
   constructor(options: DocumentStoreOptions = {}) {
     this.observerErrorSink = options.observerErrorSink ?? (() => undefined)
     this.historyMaxEntries = requireHistoryMaxEntries(
       options.history?.maxEntries ?? DEFAULT_HISTORY_MAX_ENTRIES,
+    )
+    this.historyMaxBytes = requireHistoryMaxBytes(
+      options.history?.maxBytes ?? DEFAULT_HISTORY_MAX_BYTES,
     )
     this.timeline = new EventTimeline({
       ...options.timeline,
@@ -366,6 +487,9 @@ export class DocumentStore {
       undo: [],
       redo: [],
       maxEntries: this.historyMaxEntries,
+      maxBytes: this.historyMaxBytes,
+      undoBytes: 0,
+      redoBytes: 0,
     })
     this.projections.set(state.id, new Map())
     this.dispatchStates.set(state.id, {
@@ -386,6 +510,20 @@ export class DocumentStore {
     return id === undefined ? undefined : this.documents.get(id)
   }
 
+  /** Returns immutable snapshots of every loaded document in path order. */
+  getAll(): readonly DocumentState[] {
+    return Object.freeze(
+      [...this.documents.values()].sort((left, right) =>
+        left.path.localeCompare(right.path) || left.id.localeCompare(right.id),
+      ),
+    )
+  }
+
+  /** Alias for callers that describe the result as loaded documents. */
+  getDocuments(): readonly DocumentState[] {
+    return this.getAll()
+  }
+
   getRevision(locator: DocumentLocator): Revision {
     return this.requireDocument(locator).revision
   }
@@ -396,6 +534,95 @@ export class DocumentStore {
 
   isDirty(locator: DocumentLocator): boolean {
     return this.requireDocument(locator).dirty
+  }
+
+  /**
+   * Moves a loaded document to a new persistence path without changing its
+   * Markdown source or source revision. DocumentId remains stable, while the
+   * explicit path event lets application projections update their linkage.
+   */
+  renamePath(
+    locator: DocumentLocator,
+    path: DocumentPath,
+    origin: DocumentOrigin,
+    expectedRevision?: Revision,
+  ): DocumentState {
+    const current = this.requireDocument(locator)
+    if (!isDocumentPath(path)) {
+      throw new TypeError('Document path must be a non-empty DocumentPath')
+    }
+    const normalizedOrigin = requireOrigin(origin)
+    if (expectedRevision !== undefined) {
+      if (!isRevision(expectedRevision)) {
+        throw new TypeError('expectedRevision must be a valid Revision')
+      }
+      if (expectedRevision !== current.revision) {
+        throw new DocumentRevisionConflictError(
+          expectedRevision,
+          current.revision,
+        )
+      }
+    }
+    if (path === current.path) return current
+
+    const existingId = this.idsByPath.get(path)
+    if (existingId !== undefined && existingId !== current.id) {
+      throw new DocumentPathConflictError(path, existingId)
+    }
+
+    const dispatchState = this.requireDispatchState(current.id)
+    dispatchState.depth += 1
+    try {
+      const next = createDocumentState({
+        id: current.id,
+        path,
+        markdown: current.markdown,
+        revision: current.revision,
+        persistedRevision: current.persistedRevision,
+      })
+
+      this.documents.set(next.id, next)
+      this.idsByPath.delete(current.path)
+      this.idsByPath.set(next.path, next.id)
+      dispatchState.pendingEvents.push({
+        type: 'renamed',
+        previous: current,
+        document: next,
+        origin: normalizedOrigin,
+      })
+      this.timeline.record({
+        type: 'DocumentRenamed',
+        documentId: next.id,
+        previous: createTimelineDocumentState(current),
+        document: createTimelineDocumentState(next),
+        origin: normalizedOrigin,
+      })
+      return next
+    } finally {
+      dispatchState.depth -= 1
+      if (dispatchState.depth === 0 && !dispatchState.dispatching) {
+        this.dispatchPendingEvents(current.id)
+      }
+    }
+  }
+
+  /** Descriptive aliases for application rename/move orchestration. */
+  rename(
+    locator: DocumentLocator,
+    path: DocumentPath,
+    origin: DocumentOrigin,
+    expectedRevision?: Revision,
+  ): DocumentState {
+    return this.renamePath(locator, path, origin, expectedRevision)
+  }
+
+  updatePath(
+    locator: DocumentLocator,
+    path: DocumentPath,
+    origin: DocumentOrigin,
+    expectedRevision?: Revision,
+  ): DocumentState {
+    return this.renamePath(locator, path, origin, expectedRevision)
   }
 
   /**
@@ -625,15 +852,23 @@ export class DocumentStore {
 
   /**
    * Returns a defensive snapshot of the document's source history. The
-   * returned arrays and entries cannot mutate the store's history.
+   * retained entries contain only source deltas; before/after are materialized
+   * here for the existing diagnostic/history API.
    */
   getHistory(locator: DocumentLocator): DocumentHistorySnapshot {
     const document = this.requireDocument(locator)
     const history = this.requireHistoryById(document.id)
+    const undo = this.materializeUndoHistory(document.markdown, history.undo)
+    const redo = this.materializeRedoHistory(document.markdown, history.redo)
 
     return Object.freeze({
-      undo: Object.freeze([...history.undo]),
-      redo: Object.freeze([...history.redo]),
+      undo: Object.freeze(undo),
+      redo: Object.freeze(redo),
+      undoBytes: history.undoBytes,
+      redoBytes: history.redoBytes,
+      totalBytes: history.undoBytes + history.redoBytes,
+      maxEntries: history.maxEntries,
+      maxBytes: history.maxBytes,
     })
   }
 
@@ -660,9 +895,20 @@ export class DocumentStore {
 
     if (!entry) return current
 
+    history.undoBytes -= entry.byteSize
     history.redo.push(entry)
-    this.trimHistory(history.redo, history.maxEntries)
-    return this.commitChange(current, entry.before, normalizedOrigin, false)
+    history.redoBytes += entry.byteSize
+    this.trimHistoryStack(history, 'redo')
+    const restoredMarkdown = applySourceChangeSequence(
+      current.markdown,
+      invertSourceChangeSequence(entry.change),
+    )
+    return this.commitSourceChange(
+      current,
+      createSourceChangeSet(current.markdown, restoredMarkdown),
+      normalizedOrigin,
+      false,
+    )
   }
 
   /**
@@ -677,9 +923,20 @@ export class DocumentStore {
 
     if (!entry) return current
 
+    history.redoBytes -= entry.byteSize
     history.undo.push(entry)
-    this.trimHistory(history.undo, history.maxEntries)
-    return this.commitChange(current, entry.after, normalizedOrigin, false)
+    history.undoBytes += entry.byteSize
+    this.trimHistoryStack(history, 'undo')
+    const reappliedMarkdown = applySourceChangeSequence(
+      current.markdown,
+      entry.change,
+    )
+    return this.commitSourceChange(
+      current,
+      createSourceChangeSet(current.markdown, reappliedMarkdown),
+      normalizedOrigin,
+      false,
+    )
   }
 
   applyChange(
@@ -712,6 +969,7 @@ export class DocumentStore {
     }
     requireMarkdown(change.markdown)
     const origin = requireOrigin(change.origin)
+    const historyGroup = requireHistoryGroup(change.historyGroup)
 
     if (change.expectedRevision !== undefined) {
       if (!isRevision(change.expectedRevision)) {
@@ -729,7 +987,51 @@ export class DocumentStore {
       return current
     }
 
-    return this.commitChange(current, change.markdown, origin, true)
+    return this.commitSourceChange(
+      current,
+      createSourceChangeSet(current.markdown, change.markdown),
+      origin,
+      true,
+      historyGroup,
+    )
+  }
+
+  /**
+   * Applies a source-offset delta directly. This is the Core-facing path for
+   * projections that already translated their local edit into source
+   * coordinates; it avoids reconstructing a full Markdown replacement.
+   */
+  applySourceChange(
+    locator: DocumentLocator,
+    change: DocumentSourceChangeInput,
+  ): DocumentState {
+    const current = this.requireDocument(locator)
+    if (!change || change.origin === undefined) {
+      throw new TypeError('Document source change origin is required')
+    }
+    const origin = requireOrigin(change.origin)
+    const historyGroup = requireHistoryGroup(change.historyGroup)
+    const normalizedChange = normalizeSourceChangeSet(change.change)
+
+    if (change.expectedRevision !== undefined) {
+      if (!isRevision(change.expectedRevision)) {
+        throw new TypeError('expectedRevision must be a valid Revision')
+      }
+      if (change.expectedRevision !== current.revision) {
+        throw new DocumentRevisionConflictError(
+          change.expectedRevision,
+          current.revision,
+        )
+      }
+    }
+
+    return this.commitSourceChange(
+      current,
+      normalizedChange,
+      origin,
+      true,
+      historyGroup,
+    )
   }
 
   /**
@@ -737,12 +1039,17 @@ export class DocumentStore {
    * `recordHistory` is false only for undo/redo, which move an existing entry
    * between stacks instead of recursively recording the reversal.
    */
-  private commitChange(
+  private commitSourceChange(
     current: DocumentState,
-    markdown: string,
+    change: SourceChangeSet,
     origin: DocumentOrigin,
     recordHistory: boolean,
+    historyGroup?: DocumentHistoryGroup,
   ): DocumentState {
+    const normalizedChange = normalizeSourceChangeSet(change)
+    const markdown = applySourceChangeSet(current.markdown, normalizedChange)
+    if (markdown === current.markdown) return current
+
     const dispatchState = this.requireDispatchState(current.id)
     dispatchState.depth += 1
 
@@ -757,15 +1064,7 @@ export class DocumentStore {
 
       const history = this.requireHistoryById(current.id)
       if (recordHistory) {
-        history.undo.push(
-          Object.freeze({
-            before: current.markdown,
-            after: markdown,
-            origin,
-          }),
-        )
-        this.trimHistory(history.undo, history.maxEntries)
-        history.redo.length = 0
+        this.recordHistoryEntry(history, normalizedChange, origin, historyGroup)
       }
 
       this.documents.set(next.id, next)
@@ -773,6 +1072,7 @@ export class DocumentStore {
         type: 'changed',
         previous: current,
         document: next,
+        change: normalizedChange,
         origin,
       })
       this.timeline.record({
@@ -1036,10 +1336,142 @@ export class DocumentStore {
     return history
   }
 
-  private trimHistory(entries: DocumentHistoryEntry[], maxEntries: number): void {
-    if (entries.length > maxEntries) {
-      entries.splice(0, entries.length - maxEntries)
+  private createStoredHistoryEntry(
+    change: SourceChangeSet,
+    origin: DocumentOrigin,
+    historyGroup?: DocumentHistoryGroup,
+  ): StoredDocumentHistoryEntry {
+    const sequence = createSourceChangeSequence(change)
+    return Object.freeze({
+      change: sequence,
+      origin,
+      ...(historyGroup === undefined ? {} : { historyGroup }),
+      byteSize: sourceChangeSequenceByteSize(sequence),
+    })
+  }
+
+  private recordHistoryEntry(
+    history: MutableDocumentHistory,
+    change: SourceChangeSet,
+    origin: DocumentOrigin,
+    historyGroup?: DocumentHistoryGroup,
+  ): void {
+    const previous = history.undo.at(-1)
+    const canMerge =
+      historyGroup?.continuation === 'continue' &&
+      history.redo.length === 0 &&
+      previous?.historyGroup?.kind === 'typing' &&
+      previous.historyGroup.id === historyGroup.id
+
+    if (canMerge && previous) {
+      try {
+        const mergedChange = appendSourceChangeSequence(
+          previous.change,
+          change,
+        )
+        // Preserve the complete grouped sequence rather than just its last
+        // step. The entry carries deltas only, never the complete document.
+        const mergedEntry = Object.freeze({
+          change: mergedChange,
+          origin: previous.origin,
+          historyGroup: previous.historyGroup,
+          byteSize: sourceChangeSequenceByteSize(mergedChange),
+        })
+        const index = history.undo.length - 1
+        history.undo[index] = mergedEntry
+        history.undoBytes += mergedEntry.byteSize - previous.byteSize
+      } catch {
+        // A malformed/reordered continuation cannot make a committed source
+        // mutation fail. Keep it as a separate bounded entry instead.
+        const entry = this.createStoredHistoryEntry(
+          change,
+          origin,
+          historyGroup,
+        )
+        history.undo.push(entry)
+        history.undoBytes += entry.byteSize
+      }
+    } else {
+      const entry = this.createStoredHistoryEntry(change, origin, historyGroup)
+      history.undo.push(entry)
+      history.undoBytes += entry.byteSize
     }
+
+    if (history.redo.length > 0) {
+      history.redo.length = 0
+      history.redoBytes = 0
+    }
+    this.trimHistoryStack(history, 'undo')
+  }
+
+  private trimHistoryStack(
+    history: MutableDocumentHistory,
+    stack: 'undo' | 'redo',
+  ): void {
+    const entries = stack === 'undo' ? history.undo : history.redo
+    let bytes = stack === 'undo' ? history.undoBytes : history.redoBytes
+    while (
+      entries.length > history.maxEntries ||
+      bytes > history.maxBytes
+    ) {
+      const removed = entries.shift()
+      if (!removed) break
+      bytes -= removed.byteSize
+    }
+    if (stack === 'undo') history.undoBytes = Math.max(0, bytes)
+    else history.redoBytes = Math.max(0, bytes)
+  }
+
+  private materializeHistoryEntry(
+    entry: StoredDocumentHistoryEntry,
+    before: string,
+    after: string,
+  ): DocumentHistoryEntry {
+    return Object.freeze({
+      before,
+      after,
+      change: entry.change,
+      origin: entry.origin,
+      ...(entry.historyGroup === undefined
+        ? {}
+        : { historyGroup: entry.historyGroup }),
+      byteSize: entry.byteSize,
+    })
+  }
+
+  private materializeUndoHistory(
+    currentMarkdown: string,
+    entries: readonly StoredDocumentHistoryEntry[],
+  ): DocumentHistoryEntry[] {
+    const materialized = new Array<DocumentHistoryEntry>(entries.length)
+    let state = currentMarkdown
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index] as StoredDocumentHistoryEntry
+      const after = state
+      const before = applySourceChangeSequence(
+        state,
+        invertSourceChangeSequence(entry.change),
+      )
+      materialized[index] = this.materializeHistoryEntry(entry, before, after)
+      state = before
+    }
+    return materialized
+  }
+
+  private materializeRedoHistory(
+    currentMarkdown: string,
+    entries: readonly StoredDocumentHistoryEntry[],
+  ): DocumentHistoryEntry[] {
+    const materialized = new Array<DocumentHistoryEntry>(entries.length)
+    let state = currentMarkdown
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index] as StoredDocumentHistoryEntry
+      const before = state
+      const after = applySourceChangeSequence(state, entry.change)
+      materialized[index] = this.materializeHistoryEntry(entry, before, after)
+      state = after
+    }
+    return materialized
   }
 
   private requireDispatchState(

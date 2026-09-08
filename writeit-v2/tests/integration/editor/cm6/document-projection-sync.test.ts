@@ -8,6 +8,7 @@ import {
   documentById,
   DocumentStore,
 } from '../../../../src/core/document'
+import { Transaction } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { mountSingleDocumentView } from '../../../../src/editor/cm6'
 
@@ -201,6 +202,138 @@ describe('CM6 and DocumentStore projection synchronization', () => {
       stale: false,
       degraded: false,
     })
+
+    projection.destroy()
+  })
+
+  it('maps a secondary selection through a minimal Store fan-out change', () => {
+    const { store, locator } = makeStore('0123456789')
+    const fanoutChanges: Array<{
+      from: number
+      to: number
+      insertedFrom: number
+      insertedTo: number
+    }> = []
+    const captureFanout = EditorView.updateListener.of((update) => {
+      if (!update.docChanged) return
+      update.changes.iterChanges((from, to, insertedFrom, insertedTo) => {
+        fanoutChanges.push({ from, to, insertedFrom, insertedTo })
+      })
+    })
+    const first = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor-a',
+      editable: true,
+    })
+    const second = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor-b',
+      editable: true,
+      extensions: [captureFanout],
+    })
+    const secondRaw = EditorView.findFromDOM(second.view.dom)
+    if (!secondRaw) throw new Error('secondary CM6 view was not found')
+    secondRaw.dispatch({ selection: { anchor: 3, head: 5 } })
+
+    first.view.dispatch({ changes: { from: 0, insert: '!' } })
+
+    expect(second.view.state.doc.toString()).toBe('!0123456789')
+    expect(second.view.state.selection.main).toMatchObject({
+      anchor: 4,
+      head: 6,
+    })
+    expect(fanoutChanges).toEqual([
+      { from: 0, to: 0, insertedFrom: 0, insertedTo: 1 },
+    ])
+    expect(second.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+
+    first.destroy()
+    second.destroy()
+  })
+
+  it('keeps selection and CM6 document unchanged for source-only line-ending changes', () => {
+    const { store, locator } = makeStore('one\r\ntwo\nthree')
+    let documentChangeCount = 0
+    const captureChanges = EditorView.updateListener.of((update) => {
+      if (update.docChanged) documentChangeCount += 1
+    })
+    const first = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor-a',
+      editable: true,
+    })
+    const second = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor-b',
+      editable: true,
+      extensions: [captureChanges],
+    })
+    const secondRaw = EditorView.findFromDOM(second.view.dom)
+    if (!secondRaw) throw new Error('secondary CM6 view was not found')
+    secondRaw.dispatch({ selection: { anchor: 4 } })
+    const selectionBefore = second.view.state.selection.main
+
+    store.applyChange(locator, {
+      markdown: 'one\ntwo\nthree',
+      origin: createDocumentOrigin('test', 'line-ending-only'),
+    })
+
+    expect(documentChangeCount).toBe(0)
+    expect(second.view.state.doc.toString()).toBe('one\ntwo\nthree')
+    expect(second.view.state.selection.main).toEqual(selectionBefore)
+    expect(second.projectionState).toMatchObject({
+      revision: 1,
+      stale: false,
+      degraded: false,
+    })
+
+    first.destroy()
+    second.destroy()
+  })
+
+  it('groups CM6 typing transactions and starts a new step after a caret move', () => {
+    const { store, locator } = makeStore('')
+    const projection = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'typing-editor',
+      editable: true,
+    })
+    const rawView = EditorView.findFromDOM(projection.view.dom)
+    if (!rawView) throw new Error('typing CM6 view was not found')
+    const typed = Transaction.userEvent.of('input.type')
+
+    rawView.dispatch({ changes: { from: 0, insert: 'a' }, annotations: typed })
+    rawView.dispatch({ changes: { from: 1, insert: 'b' }, annotations: typed })
+    expect(store.getHistory(locator).undo).toHaveLength(1)
+    expect(store.getHistory(locator).undo[0]?.after).toBe('ab')
+
+    rawView.dispatch({
+      selection: { anchor: 1 },
+      annotations: Transaction.userEvent.of('select.pointer'),
+    })
+    rawView.dispatch({ changes: { from: 1, insert: 'c' }, annotations: typed })
+
+    expect(store.getHistory(locator).undo).toHaveLength(2)
+    expect(store.undo(locator, createDocumentOrigin('test', 'undo')).markdown).toBe(
+      'ab',
+    )
+    expect(store.undo(locator, createDocumentOrigin('test', 'undo')).markdown).toBe(
+      '',
+    )
 
     projection.destroy()
   })

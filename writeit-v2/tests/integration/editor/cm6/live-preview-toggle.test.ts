@@ -13,6 +13,8 @@ import {
   mountSingleDocumentView,
   type SingleDocumentView,
 } from '../../../../src/editor/cm6'
+import { WorkspaceImageProjectionResolver } from '../../../../src/editor/preview'
+import { MemoryFileSystem } from '../../../../src/platform/filesystem'
 
 const mountedViews: SingleDocumentView[] = []
 
@@ -89,6 +91,48 @@ describe('CM6 raw source / live preview presentation', () => {
     expect(projection.view.contentDOM.textContent).toContain('[safe link]')
     expect(projection.view.state.doc.toString()).toBe(afterEdit.markdown)
     expect(store.getRevision(locator)).toBe(revisionBeforeToggle)
+  })
+
+  it('renders workspace images in the same CM6 live presentation without changing source', async () => {
+    const source = '![diagram](images/diagram.png)'
+    const { store, locator } = makeStore(source)
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem({
+        binaryFiles: {
+          'images/diagram.png': new Uint8Array([1, 2, 3]),
+        },
+      }),
+    })
+    const previews: string[] = []
+    const projection = mountSingleDocumentView({
+      store,
+      locator,
+      parent: document.body,
+      projectionId: 'editor',
+      editable: true,
+      imageProjection: {
+        imageResolver: resolver,
+        documentPath: 'presentation-document.md',
+        onPreview: (image) => previews.push(image.path ?? image.source),
+      },
+    })
+    mountedViews.push(projection)
+    projection.setPresentationMode('live-preview')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const image = projection.view.contentDOM.querySelector<HTMLImageElement>(
+      '.cm-writeit-live-preview-image__content',
+    )
+    expect(image?.dataset.imagePath).toBe('images/diagram.png')
+    expect(image?.src).toContain('data:image/png;base64,AQID')
+    expect(projection.view.state.doc.toString()).toBe(source)
+    expect(store.get(locator)?.markdown).toBe(source)
+    expect(store.getRevision(locator)).toBe(0)
+
+    image?.click()
+    expect(previews).toEqual(['images/diagram.png'])
+    resolver.dispose()
   })
 
   it('allows the presentation extension to be supplied explicitly', () => {

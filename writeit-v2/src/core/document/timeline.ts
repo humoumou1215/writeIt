@@ -81,6 +81,15 @@ export interface DocumentPersistedTimelineEvent {
   readonly origin: DocumentOrigin
 }
 
+export interface DocumentRenamedTimelineEvent {
+  readonly sequence: number
+  readonly type: 'DocumentRenamed'
+  readonly documentId: DocumentId
+  readonly previous: TimelineDocumentState
+  readonly document: TimelineDocumentState
+  readonly origin: DocumentOrigin
+}
+
 export interface ProjectionAttachedTimelineEvent {
   readonly sequence: number
   readonly type: 'ProjectionAttached'
@@ -130,6 +139,7 @@ export type DocumentTimelineEvent =
   | DocumentLoadedTimelineEvent
   | DocumentChangedTimelineEvent
   | DocumentPersistedTimelineEvent
+  | DocumentRenamedTimelineEvent
   | ProjectionAttachedTimelineEvent
   | ProjectionUpdatedTimelineEvent
   | ProjectionDegradedTimelineEvent
@@ -142,6 +152,7 @@ export type DocumentTimelineEventInput =
   | TimelineEventInput<DocumentLoadedTimelineEvent>
   | TimelineEventInput<DocumentChangedTimelineEvent>
   | TimelineEventInput<DocumentPersistedTimelineEvent>
+  | TimelineEventInput<DocumentRenamedTimelineEvent>
   | TimelineEventInput<ProjectionAttachedTimelineEvent>
   | TimelineEventInput<ProjectionUpdatedTimelineEvent>
   | TimelineEventInput<ProjectionDegradedTimelineEvent>
@@ -159,6 +170,7 @@ function compactTimelineEventInput(
       }
     case 'DocumentChanged':
     case 'DocumentPersisted':
+    case 'DocumentRenamed':
       return {
         ...input,
         previous: compactTimelineDocumentState(input.previous),

@@ -11,7 +11,9 @@ import {
 import {
   mountBasicLivePreview,
   renderBasicMarkdownPreview,
+  WorkspaceImageProjectionResolver,
 } from '../../../../src/editor/preview'
+import { MemoryFileSystem } from '../../../../src/platform/filesystem'
 
 function makeStore(markdown: string): {
   store: DocumentStore
@@ -41,6 +43,67 @@ describe('basic live preview', () => {
     expect(parent.textContent).toContain(':::unknown')
     expect(parent.textContent).toContain('raw')
     expect(parent.querySelector('script')).toBeNull()
+  })
+
+  it('projects a relative image path without changing the authoritative Markdown', async () => {
+    const source = 'Before ![diagram](images/diagram.png) after'
+    const { store, locator } = makeStore(source)
+    const fileSystem = new MemoryFileSystem({
+      binaryFiles: {
+        'images/diagram.png': new Uint8Array([1, 2, 3]),
+      },
+    })
+    const resolver = new WorkspaceImageProjectionResolver({ reader: fileSystem })
+    const parent = document.createElement('div')
+    const previews: string[] = []
+    const reveals: string[] = []
+
+    renderBasicMarkdownPreview(parent, source, {
+      imageResolver: resolver,
+      documentPath: 'readme.md',
+      onPreview: (image) => previews.push(image.path ?? image.source),
+      onReveal: (path) => reveals.push(path),
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const image = parent.querySelector<HTMLImageElement>('.live-preview-image__content')
+    expect(image?.dataset.imagePath).toBe('images/diagram.png')
+    expect(image?.src).toContain('data:image/png;base64,AQID')
+    expect(store.get(locator)?.markdown).toBe(source)
+    expect(
+      parent.querySelector<HTMLElement>('.live-preview-image')?.dataset.imageSource,
+    ).toBe('images/diagram.png')
+
+    image?.click()
+    parent.querySelector<HTMLButtonElement>('[data-image-action="reveal"]')?.click()
+    expect(previews).toEqual(['images/diagram.png'])
+    expect(reveals).toEqual(['images/diagram.png'])
+    resolver.dispose()
+  })
+
+  it('shows image read failure in the projection while retaining its source path', async () => {
+    const source = '![missing](images/missing.png)'
+    const { store, locator } = makeStore(source)
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: new MemoryFileSystem(),
+    })
+    const parent = document.createElement('div')
+
+    renderBasicMarkdownPreview(parent, source, {
+      imageResolver: resolver,
+      documentPath: 'readme.md',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const wrapper = parent.querySelector<HTMLElement>('.live-preview-image')
+    expect(wrapper?.dataset.imagePath).toBe('images/missing.png')
+    expect(wrapper?.dataset.imageStatus).toBe('unavailable')
+    expect(wrapper?.textContent).toContain('Image unavailable')
+    expect(store.get(locator)?.markdown).toBe(source)
+    expect(store.get(locator)?.revision).toBe(0)
+    resolver.dispose()
   })
 
   it('updates from the authoritative Store and acknowledges the preview revision', () => {

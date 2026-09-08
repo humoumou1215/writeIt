@@ -9,6 +9,21 @@ export interface CompletionTrigger {
   readonly query: string
 }
 
+/** A provider-owned insertion presentation, not a trigger kind. */
+export type CompletionModeId = string
+
+export interface CompletionMode {
+  /** Stable provider-defined identifier used by apply contracts. */
+  readonly id: CompletionModeId
+  /** Human-readable and accessible label for the mode selector. */
+  readonly label: string
+  readonly description?: string
+}
+
+export type CompletionInitialMode =
+  | CompletionModeId
+  | ((trigger: CompletionTrigger) => CompletionModeId)
+
 /**
  * Chinese IMEs can emit these full-width punctuation characters while the
  * user is entering a reference. Detection uses this exact, one-code-unit
@@ -43,6 +58,8 @@ export interface CompletionContext {
   readonly source: string
   readonly cursor: number
   readonly trigger: CompletionTrigger
+  /** The active provider-declared insertion mode, when one exists. */
+  readonly mode?: CompletionMode
 }
 
 export interface CompletionEdit {
@@ -56,22 +73,48 @@ export interface CompletionEdit {
 
 export type CompletionApplyResult = CompletionEdit | string
 
+export type CompletionItemKind =
+  | 'file'
+  | 'directory'
+  | 'object'
+  | 'heading'
+
+export type CompletionChildrenResult = readonly CompletionItem[] | null | undefined
+
+/**
+ * Opens a provider-owned second level without mutating Markdown. The editor
+ * adapter keeps the original trigger active until a leaf item is applied.
+ */
+export type CompletionChildrenResolver = (
+  context: CompletionContext,
+) => CompletionChildrenResult | Promise<CompletionChildrenResult>
+
 export interface CompletionItem {
   readonly id: string
   readonly label: string
   readonly detail?: string
   readonly keywords?: readonly string[]
+  /** Optional semantic kind used by source-backed workspace candidates. */
+  readonly kind?: CompletionItemKind
   /** Used when the default trigger range is sufficient. */
   readonly insertText?: string
   /** Allows a provider to calculate a source-backed edit without knowing CM6. */
   readonly apply?: (
     context: CompletionContext,
   ) => CompletionApplyResult | Promise<CompletionApplyResult>
+  /** Optional hierarchical candidates (for example file → heading/object). */
+  readonly children?: CompletionChildrenResolver
 }
 
 export interface CompletionProvider {
   readonly id: string
   readonly triggers: readonly CompletionTriggerKind[]
+  /**
+   * Optional insertion modes. Trigger detection remains independent from this
+   * list; the adapter can switch modes without querying the provider again.
+   */
+  readonly modes?: readonly CompletionMode[]
+  readonly initialMode?: CompletionInitialMode
   readonly provide: (
     context: CompletionContext,
   ) => readonly CompletionItem[] | Promise<readonly CompletionItem[]>
@@ -85,6 +128,10 @@ export interface CompletionProviderError {
 export interface CompletionQueryResult {
   readonly items: readonly CompletionItem[]
   readonly errors: readonly CompletionProviderError[]
+  /** The session mode set contributed by the provider(s), if any. */
+  readonly modes?: readonly CompletionMode[]
+  /** Initial mode selected for the current trigger. */
+  readonly initialModeId?: CompletionModeId
 }
 
 export class CompletionValidationError extends TypeError {
@@ -260,6 +307,17 @@ function normalizeCompletionItem(
       `Completion item ${id} detail must be a string when provided`,
     )
   }
+  if (
+    item.kind !== undefined &&
+    item.kind !== 'file' &&
+    item.kind !== 'directory' &&
+    item.kind !== 'object' &&
+    item.kind !== 'heading'
+  ) {
+    throw new CompletionValidationError(
+      `Completion item ${id} kind must be file, directory, object, or heading when provided`,
+    )
+  }
   if (item.keywords !== undefined && !Array.isArray(item.keywords)) {
     throw new CompletionValidationError(
       `Completion item ${id} keywords must be an array when provided`,
@@ -278,9 +336,18 @@ function normalizeCompletionItem(
       `Completion item ${id} apply must be a function when provided`,
     )
   }
-  if (item.insertText === undefined && item.apply === undefined) {
+  if (item.children !== undefined && typeof item.children !== 'function') {
     throw new CompletionValidationError(
-      `Completion item ${id} must provide insertText or apply`,
+      `Completion item ${id} children must be a function when provided`,
+    )
+  }
+  if (
+    item.insertText === undefined &&
+    item.apply === undefined &&
+    item.children === undefined
+  ) {
+    throw new CompletionValidationError(
+      `Completion item ${id} must provide insertText, apply, or children`,
     )
   }
 
@@ -288,9 +355,41 @@ function normalizeCompletionItem(
     id,
     label,
     ...(item.detail === undefined ? {} : { detail: item.detail }),
+    ...(item.kind === undefined ? {} : { kind: item.kind }),
     keywords: Object.freeze(keywords),
     ...(item.insertText === undefined ? {} : { insertText: item.insertText }),
     ...(item.apply === undefined ? {} : { apply: item.apply }),
+    ...(item.children === undefined ? {} : { children: item.children }),
+  })
+}
+
+function normalizeCompletionMode(
+  mode: CompletionMode,
+  providerId: string,
+  index: number,
+): CompletionMode {
+  if (mode === null || typeof mode !== 'object') {
+    throw new CompletionValidationError(
+      `Completion provider ${providerId} mode ${index} must be an object`,
+    )
+  }
+  const id = requireText(
+    mode.id,
+    `Completion provider ${providerId} mode ${index} id`,
+  )
+  const label = requireText(
+    mode.label,
+    `Completion provider ${providerId} mode ${index} label`,
+  )
+  if (mode.description !== undefined && typeof mode.description !== 'string') {
+    throw new CompletionValidationError(
+      `Completion mode ${id} description must be a string when provided`,
+    )
+  }
+  return Object.freeze({
+    id,
+    label,
+    ...(mode.description === undefined ? {} : { description: mode.description }),
   })
 }
 
@@ -316,11 +415,94 @@ function normalizeProvider(provider: CompletionProvider): CompletionProvider {
     )
   }
 
+  let modes: readonly CompletionMode[] | undefined
+  if (provider.modes !== undefined) {
+    if (!Array.isArray(provider.modes) || provider.modes.length === 0) {
+      throw new CompletionValidationError(
+        `Completion provider ${id} must declare at least one mode`,
+      )
+    }
+    const normalizedModes = provider.modes.map((mode, index) =>
+      normalizeCompletionMode(mode, id, index),
+    )
+    if (new Set(normalizedModes.map((mode) => mode.id)).size !== normalizedModes.length) {
+      throw new CompletionValidationError(
+        `Completion provider ${id} declares duplicate completion modes`,
+      )
+    }
+    modes = Object.freeze(normalizedModes)
+  }
+
+  let initialMode: CompletionInitialMode | undefined
+  if (provider.initialMode !== undefined) {
+    if (modes === undefined) {
+      throw new CompletionValidationError(
+        `Completion provider ${id} initialMode requires declared modes`,
+      )
+    }
+    if (
+      typeof provider.initialMode !== 'string' &&
+      typeof provider.initialMode !== 'function'
+    ) {
+      throw new CompletionValidationError(
+        `Completion provider ${id} initialMode must be a mode id or function`,
+      )
+    }
+    initialMode =
+      typeof provider.initialMode === 'string'
+        ? requireText(provider.initialMode, `Completion provider ${id} initialMode`)
+        : provider.initialMode
+    if (
+      typeof initialMode === 'string' &&
+      !modes.some((mode) => mode.id === initialMode)
+    ) {
+      throw new CompletionValidationError(
+        `Completion provider ${id} initial mode ${initialMode} is not declared`,
+      )
+    }
+  }
+
   return Object.freeze({
     id,
     triggers: Object.freeze(triggers),
+    ...(modes === undefined ? {} : { modes }),
+    ...(initialMode === undefined ? {} : { initialMode }),
     provide: provider.provide,
   })
+}
+
+function resolveProviderMode(
+  provider: CompletionProvider,
+  trigger: CompletionTrigger,
+): CompletionMode | undefined {
+  if (!provider.modes) return undefined
+  const requested =
+    typeof provider.initialMode === 'function'
+      ? provider.initialMode(trigger)
+      : provider.initialMode
+  const modeId = requested ?? provider.modes[0]?.id
+  const mode = provider.modes.find((candidate) => candidate.id === modeId)
+  if (!mode) {
+    throw new CompletionValidationError(
+      `Completion provider ${provider.id} initial mode ${String(modeId)} is not declared`,
+    )
+  }
+  return mode
+}
+
+function sameCompletionModes(
+  first: readonly CompletionMode[],
+  second: readonly CompletionMode[],
+): boolean {
+  return (
+    first.length === second.length &&
+    first.every(
+      (mode, index) =>
+        mode.id === second[index]?.id &&
+        mode.label === second[index]?.label &&
+        mode.description === second[index]?.description,
+    )
+  )
 }
 
 export type UnregisterCompletionProvider = () => void
@@ -366,10 +548,27 @@ export class CompletionProviderRegistry {
     const providers = this.providersFor(context.trigger.kind)
     const items: CompletionItem[] = []
     const errors: CompletionProviderError[] = []
+    let sessionModes: readonly CompletionMode[] | undefined
+    let initialModeId: CompletionModeId | undefined
 
     for (const provider of providers) {
       try {
-        const provided = await provider.provide(context)
+        const providerMode = resolveProviderMode(provider, context.trigger)
+        if (provider.modes) {
+          if (sessionModes === undefined) {
+            sessionModes = provider.modes
+            initialModeId = providerMode?.id
+          } else if (!sameCompletionModes(sessionModes, provider.modes)) {
+            throw new CompletionValidationError(
+              `Completion provider ${provider.id} declares modes incompatible with the completion session`,
+            )
+          }
+        }
+
+        const providerContext = providerMode
+          ? { ...context, mode: providerMode }
+          : context
+        const provided = await provider.provide(providerContext)
         if (!Array.isArray(provided)) {
           throw new CompletionValidationError(
             `Completion provider ${provider.id} must return an array`,
@@ -386,6 +585,8 @@ export class CompletionProviderRegistry {
     return Object.freeze({
       items: filterCompletionItems(items, context.trigger.query),
       errors: Object.freeze(errors),
+      modes: sessionModes,
+      ...(initialModeId === undefined ? {} : { initialModeId }),
     })
   }
 }
@@ -394,6 +595,8 @@ export interface StaticCompletionProviderOptions {
   readonly id: string
   readonly triggers: readonly CompletionTriggerKind[]
   readonly items: readonly CompletionItem[]
+  readonly modes?: readonly CompletionMode[]
+  readonly initialMode?: CompletionInitialMode
 }
 
 export function createStaticCompletionProvider(
@@ -402,6 +605,10 @@ export function createStaticCompletionProvider(
   return Object.freeze({
     id: options.id,
     triggers: Object.freeze([...options.triggers]),
+    ...(options.modes === undefined ? {} : { modes: options.modes }),
+    ...(options.initialMode === undefined
+      ? {}
+      : { initialMode: options.initialMode }),
     provide: () => options.items,
   })
 }
@@ -452,6 +659,11 @@ export async function resolveCompletionEdit(
   item: CompletionItem,
   context: CompletionContext,
 ): Promise<CompletionEdit> {
+  if (!item.apply && item.insertText === undefined) {
+    throw new CompletionValidationError(
+      `Completion item ${item.id} does not provide an insertion edit`,
+    )
+  }
   const result = item.apply
     ? await item.apply(context)
     : {

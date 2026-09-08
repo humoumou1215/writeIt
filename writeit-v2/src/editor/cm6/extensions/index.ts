@@ -1,3 +1,7 @@
 export * from './slash-quick-insert'
 export * from './completion'
+export * from './image-paste'
 export * from './live-preview'
+export * from './reference-navigation'
+export * from './reference-clipboard'
+export * from './embed-projection'

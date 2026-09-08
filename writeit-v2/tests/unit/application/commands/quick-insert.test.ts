@@ -21,6 +21,11 @@ describe('basic Markdown quick-insert commands', () => {
       'Code block',
       'Divider',
     ])
+    expect([...new Set(commands.map((command) => command.group))]).toEqual([
+      'Headings',
+      'Lists',
+      'Blocks',
+    ])
     expect(filterQuickInsertCommands(commands, 'head').map((command) => command.id)).toEqual([
       'markdown.heading-1',
       'markdown.heading-2',

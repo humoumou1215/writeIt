@@ -2,7 +2,8 @@
 
 - **Review date:** 2026-09-07
 - **Acceptance baseline:** `30d56e3` (`feat(v2): complete P2A editing foundations`)
-- **Review result:** **CHANGES REQUIRED / HOLD P3**
+- **Initial review result:** **CHANGES REQUIRED / HOLD P3**
+- **Final gate result (P2A-AR1):** **PASS**
 - **Scope:** P2A Editing Assistance & Source UX Foundation
 
 ## 1. Gate decision
@@ -133,6 +134,13 @@ Give slash and completion menus one shared, reliable popup behavior: the active 
 - Scrollbar presentation is deliberate and consistent on Chromium.
 - Existing unit, integration, browser, typecheck, and build gates pass.
 
+### Completion evidence
+
+- Shared `editor/cm6/caret-popup.ts` policy anchors both surfaces at `trigger.to`, fits them inside the visible editor/viewport intersection, flips above at the lower boundary, and hides when coordinates are unavailable.
+- Both controllers reposition on CM6 geometry, editor/page scroll, resize, and observed editor size changes; active options use nearest-edge menu-only scrolling.
+- Unit geometry coverage, jsdom integration coverage for both surfaces, and Chromium coverage with 24 items verify wraparound visibility, lower/right boundaries, long documents, editor/page scrolling, resize, and unchanged source/revision.
+- Verification: `npm run test`, `npm run test:browser`, `npm run typecheck`, and `npm run build` pass.
+
 ### Out of scope
 
 - Slash group tabs and group switching (P2A-R02).
@@ -188,6 +196,13 @@ Make `Command.group` a user-visible navigation mechanism so large command catalo
 - Arrow keys never require traversing commands from inactive groups.
 - Multiple providers can contribute groups without editor adapter changes.
 - P2A-R01 positioning/visibility behavior remains intact.
+
+### Completion evidence
+
+- Slash commands are filtered globally, grouped in deterministic first-registration order, and rendered through a provider-supplied group selector; the active group alone owns ArrowUp/ArrowDown selection.
+- Tab/Shift+Tab, mouse group selection, active-group fallback after filtering, and source/revision-preserving navigation are covered by jsdom integration tests and a Chromium overflow harness with 36 commands across three groups.
+- Built-in Markdown commands now expose Headings, Lists, and Blocks groups without menu-specific provider conditionals.
+- Verification: `npm run test`, `npm run test:browser`, `npm run typecheck`, and `npm run build` pass.
 
 ### Out of scope
 
@@ -247,6 +262,14 @@ Allow one reference completion session to switch among link, editable embed, and
 - Mode switching does not disturb query, candidate selection, source, history, or caret.
 - Existing completion provider isolation and IME behavior remain intact.
 
+### Completion evidence
+
+- Completion providers can declare stable insertion modes and a trigger-dependent initial mode; the CM6 adapter keeps mode changes separate from trigger detection and provider querying.
+- The demo reference provider exposes `link`, `embed`, and `embed-readonly`; `@`/`[[` start in link mode and `![[` starts in editable embed mode.
+- Tab/Shift+Tab and mouse selection preserve the query, selected candidate, caret, DocumentStore source/revision/history, and candidate list; applying emits exactly `[[path]]`, `![[path]]`, or `![[path|ro]]`.
+- Integration and Chromium coverage includes all trigger forms, full-width normalization, mode wraparound, accessible active mode state, mouse focus preservation, and no-refetch navigation.
+- Verification: `npm run test`, `npm run test:browser`, `npm run typecheck`, and `npm run build` pass.
+
 ### Out of scope
 
 - Real workspace reference enumeration and second-level entity candidates (P4).
@@ -299,6 +322,14 @@ Ensure slash/completion interactions cannot submit during composition or mutate 
 - No timeout/sleep is used as a state protocol.
 - Existing Store authority and projection lifecycle tests pass.
 
+### Completion evidence
+
+- Slash and completion key handlers now ignore composition-owned Enter/navigation when controller state, `event.isComposing`, keyCode 229, or `view.composing` indicates an active IME session. Composition start invalidates stale popup work; composition end uses CM6/event-order reconciliation and re-queries an unchanged completion trigger without a timer protocol.
+- `SingleDocumentView` injects a projection-scoped mutation capability through a private CM6 facet. Popup adapters no longer receive `store + locator`; the capability checks live/editable/fresh projection state and expected revision before every source mutation, and is invalidated on composition cancellation, dismissal, readonly/destroyed lifecycle, and failed mount teardown.
+- Async slash commands and completion edits capture the source revision and a popup generation token. Late provider/command results, readonly/stale projections, destroyed views, and source/revision races are rejected without changing Markdown; failures remain exposed through the popup diagnostic attribute.
+- `tests/integration/editor/cm6/popup-lifecycle.test.ts` covers IME Enter/keyCode 229, slash availability cancellation, completion query restart, readonly projections, destroyed command results, and revision races. Chromium coverage in `tests/browser/popup-lifecycle.spec.ts` covers slash/completion IME events, pending query restart, readonly completion, and destruction races.
+- Verification: `npm run test`, `npm run test:browser`, `npm run typecheck`, and `npm run build` pass.
+
 ### Out of scope
 
 - P3 close-confirm UI.
@@ -349,6 +380,13 @@ Make CM6 mounting and targeted editing preserve CRLF, CR, LF, and mixed-line-end
 - Merely opening a Windows document cannot make it dirty or stale.
 - A one-word edit cannot produce a whole-file newline diff.
 
+### Completion evidence
+
+- `editor/cm6/projection/source-fidelity.ts` keeps an LF-normalized CM6 projection plus an explicit projected-boundary → authoritative-source map for CRLF, CR, LF, and mixed input.
+- CM6 `ChangeSet` edits and popup full-document replacements map only their changed ranges back to `DocumentStore`; untouched source separators are not normalized. Store fan-out, undo/redo, and no-edit dirty/revision behavior are covered by integration tests.
+- Permanent source-fidelity fixtures cover LF, CRLF, CR, and mixed endings; Chromium covers CRLF and mixed targeted edits without a whole-file newline rewrite.
+- Verification: `npm run test`, `npm run test:browser`, `npm run typecheck`, and `npm run build` pass.
+
 ### Out of scope
 
 - User-configurable line-ending conversion.
@@ -391,6 +429,12 @@ Ensure canonical keybinding strings can represent and round-trip real `KeyboardE
 - Plus and Space can be recorded, persisted, parsed, displayed, and resolved.
 - Canonical output never produces ambiguous `Ctrl++` text.
 - Existing keybinding tests pass.
+
+### Completion evidence
+
+- Recorder input normalizes literal `KeyboardEvent.key` values `'+'` and `' '` to the canonical `Plus` and `Space` tokens before modifiers are serialized; existing `plus`, `space`, `Mod`, and CM6 key aliases remain accepted where unambiguous.
+- Table-driven unit coverage verifies `parse(format(input))` for bare and modified Plus/Space values, shifted Plus/equal values, and canonical normalization; conflict detection and registry resolution use `Ctrl+Plus` atomically.
+- Verification: `npm run test`, `npm run typecheck`, and `npm run build` pass.
 
 ### Out of scope
 
@@ -446,6 +490,16 @@ Also execute the manual user acceptance checklist above on a real Chromium brows
 - No known HIGH P2A finding remains open.
 - User-facing acceptance is PASS.
 - STATUS truthfully points to P3-01 only after PASS.
+
+### Completion evidence — P2A-AR1
+
+- **Gate result: PASS.** P2A-R01 through P2A-R06 completion evidence is recorded above; no HIGH P2A finding remains open and the P3 HOLD is lifted.
+- Interactive Chromium smoke covered 24-item slash/completion menus at top, middle, lower, and right editor boundaries, wraparound visibility, slash group navigation, all three reference insertion modes, IME composition dismissal/reopen, readonly/destroy races, and Raw Source/Live Preview continuity. The permanent browser suite covers the remaining line-ending and lifecycle assertions.
+- `npm run test`: PASS — architecture boundary check, 24 test files, 145 tests.
+- `npm run test:browser`: PASS — 19 Chromium tests.
+- `npm run typecheck`: PASS.
+- `npm run build`: PASS — Vite production build completed; only the existing non-blocking chunk-size warning remains.
+- Demo label and `README.md` now identify the accepted P2A gate. The next permitted task is P3-01.
 
 ### Out of scope
 

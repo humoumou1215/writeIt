@@ -1,7 +1,7 @@
 # WriteIt v2
 
 WriteIt v2 是基于 Markdown-first、DocumentStore 和 CodeMirror 6 的新主线。
-当前已完成 P2-01 至 P2-06 与 P2A-05：CM6 编辑器与 DocumentStore 双向同步、同一 Document 的多 Projection、revision/stale 协议、基础 Live Preview，以及同一 CM6 状态内的 Raw Source / Live Preview 切换。
+当前已完成 P2-01 至 P2-06、P2A-00 至 P2A-06、P2A-R01 至 P2A-R06 与 P3-01 至 P3-07；P2A-AR1 用户验收门已通过，下一任务为 P3-08。能力包括 CM6 编辑器与 DocumentStore 双向同步、同一 Document 的多 Projection、revision/stale 协议、基础 Live Preview、编辑辅助、同一 CM6 状态内的 Raw Source / Live Preview 切换、Workspace tree/tabs/navigation、manual save/auto-save/dirty/conflict/external-change policy、路径型 workspace recovery 和可持久化的 sidebar/settings shell，以及四种图片粘贴策略、二进制附件落盘和安全 inline fallback、相对路径图片投影/预览/复制与工作区定位。
 
 ## 开发命令
 
@@ -26,3 +26,5 @@ npm run build
 - `src/editor/` 负责 UI/CM6 Projection；Core 不依赖 Vue、DOM、CodeMirror 或 Tauri。
 - `scripts/check-boundaries.mjs`、Playwright Chromium 集成测试和 `.github/workflows/v2.yml` 自动检查依赖边界、真实浏览器行为、类型和构建。
 - `writeit-v2/` 禁止运行时依赖 `../editor-app/`。
+- Persistence policy 只保存 DocumentStore snapshot；保存前校验外部文件基线，冲突时不覆盖外部内容，关闭未保存标签时必须显式丢弃或先保存。
+- Workspace recovery/settings 只通过 platform storage 保存路径、active/selected entry 和 shell preferences，不保存 Markdown、CM6 state 或 revision；桌面持久化由后续 adapter 替换浏览器 storage。

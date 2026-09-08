@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-Current phase: Phase 2A user acceptance remediation
-Current task: P2A-R01 — Ready for implementation
+Current phase: Phase 4 — Reference Graph + Embed
+Current task: P2-AR-06 remediation — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -48,18 +48,37 @@ Current task: P2A-R01 — Ready for implementation
 - [x] P2A-05 Raw Source / Live Preview Toggle — one CM6 document switches between source and source-backed decorations/widgets; `Ctrl/Cmd+E`, selection, source revision and Store history remain continuous
 - [x] P2A-06 Keybinding Foundation — DOM-independent command-id mapping, canonical key-stroke normalization, atomic configurable overrides, reset semantics, and pure conflict detection
 - [x] Initial P2A user acceptance review — CHANGES REQUIRED / HOLD P3 ([report and remediation contracts](./P2A_ACCEPTANCE_REVIEW.md))
+- [x] P2A-R01 Caret popup positioning and visible selection — shared caret-end geometry, viewport/editor fitting, above/below placement, event-driven repositioning, and nearest-edge active-option scrolling
+- [x] P2A-R02 Slash command group navigation — deterministic provider groups, Tab/Shift+Tab switching, active-group arrow navigation, mouse selection, and source-preserving filtering
+- [x] P2A-R03 Reference completion mode switching — provider-declared link/embed/readonly modes, trigger-specific initial mode, source-preserving Tab/mouse switching, and exact reference syntax
+- [x] P2A-R04 Popup IME, editability, and lifecycle safety — composition-safe slash/completion handling, restartable async queries, projection-scoped mutation capability, and late-result rejection
+- [x] P2A-R05 Line-ending source fidelity — explicit CM6/source offset mapping for LF, CRLF, CR, and mixed endings; targeted edits preserve untouched separators
+- [x] P2A-R06 Keybinding recorder round-trip edge cases — canonical Plus/Space recorder tokens, round-trip coverage, and atomic conflict/registry resolution
+- [x] P2A-AR1 Re-run Phase 2A acceptance gate — PASS; P3 HOLD lifted after remediation and user-facing Chromium acceptance
+- [x] P3-01 Workspace tree — recursive refresh, create file/directory, rename, delete, drag move, and browser/mock filesystem coverage
+- [x] P3-02 Tabs & navigation — DocumentId-backed tabs, active/dirty state, close confirmation, tab/file navigation, and current-file reveal
+- [x] P3-03 Persistence policy — manual save, configurable auto-save delay, dirty state, optimistic save-conflict detection, external-file check/reload, and close/reopen persistence journey
+- [x] P3-04 Workspace recovery/settings shell — last-session recovery, persistent shell settings, collapse/pin/resize controls, and browser/mock coverage
+- [x] P3-05 Shortcut Settings UI — command/keybinding catalog, recorder, persistent custom bindings, primary-modifier conflict detection, per-command/all reset, and table add-row command coverage
+- [x] P3-06 Attachment/Image Pipeline — explicit binary filesystem port, root-images/same-dir/file-images/inline strategies, safe inline fallback, Store-backed CM6 paste bridge, and browser/mock coverage
+- [x] P3-07 Image Projection UX — workspace-relative image resolution, source-backed preview/image widgets, decode/read degradation, full preview, clipboard copy, workspace-tree reveal, and browser/integration coverage
+- [x] P3-08 Create from Template hook — application-level provider seam creates exact Markdown through WorkspaceTreeService; catalog discovery and template intelligence remain deferred to P8
+- [x] P4-01 Reference syntax & resolution — source-backed link/embed parsing, readonly `|ro` embeds, exact/extension/basename path resolution, explicit relative paths, and workspace-backed coverage
+- [x] P4-02 ReferenceIndex / ReferenceGraph / Backlink facts — revision-tagged parsed-token index, deterministic path-resolved graph edges, resolved backlinks, incremental replacement, rebuild/remove, and DocumentStore integration coverage
+- [x] P4-03 Reference Completion Provider — workspace-backed `@` / `[[` / `![[` completion, visible directory continuation, supported document filtering, hidden-directory policy, and CM6/Chromium coverage
+- [x] P4-04 Entity Completion — hierarchical file-self/object/heading candidates, static/dynamic suggestion context, heading fallback, source-safe CM6 selection, and unit/integration/Chromium coverage
+- [x] P4-05 Navigation & health — source-backed reference health/diagnostics, heading/object fragment resolution, CM6 click navigation, hover tooltip, broken-token marking, and source-preserving re-selection
+- [x] P4-06 Rename linkage — file rename/move preflight, incoming reference rewrites, stable DocumentId/path rebinding, conflict isolation, and compensating failure handling
+- [x] P4-07 Reference Clipboard Workflow — workspace/system file clipboard parsing, link/embed/readonly paste modes, directory path text, ordered multi-entry edits, and tree/editor Chromium coverage
+- [x] P4-08 Reference Context Actions — open/copy exact reference syntax and source-safe link/editable-embed/readonly-embed mode conversion with CM6/Store/browser coverage
+- [x] P4-09 Embed Projection — source-backed editable/read-only CM6 child projections, multi-projection revision fan-out, nested/circular guards, stale/lifecycle state, Store undo/redo, unopened-target loading seam, and integration/Chromium coverage
+- [x] P2-AR-06 remediation — CM6-independent source deltas, minimal selection-preserving Store fan-out, explicit typing history grouping, and byte-aware delta history budgets
 
 ## Active
-- [ ] P2A-R01 Caret popup positioning and visible selection — ready
-- [ ] P2A-R02 Slash command group navigation
-- [ ] P2A-R03 Reference completion mode switching
-- [ ] P2A-R04 Popup IME, editability, and lifecycle safety
-- [ ] P2A-R05 Line-ending source fidelity
-- [ ] P2A-R06 Keybinding recorder round-trip edge cases
-- [ ] P2A-AR1 Re-run Phase 2A acceptance gate
+None
 
 ## Blocked
-- P3 is on HOLD until P2A-R01 through P2A-R06 complete and P2A-AR1 records PASS.
+None
 
 ## Recent decisions
 - CM6 Architecture Spike = GO; broader office-app clipboard compatibility and large-table performance sampling are post-GO validation, not architecture blockers.
@@ -103,24 +122,62 @@ Current task: P2A-R01 — Ready for implementation
 - P2A-06 keeps command metadata independent from keybindings; the pure registry accepts defaults and user overrides, rejects conflicting active assignments atomically, and leaves Settings UI/event wiring to P3.
 - Initial user acceptance on baseline `30d56e3` found that implementation completion did not equal UX acceptance: P2A is reopened for the remediation sequence defined in `P2A_ACCEPTANCE_REVIEW.md`, and P3 remains on HOLD.
 - Popup geometry/scrolling is a shared slash/completion concern; reference insertion mode is provider-defined state and must remain separate from trigger detection and Markdown authority.
+- P2A-R01 centralizes caret popup placement and active-option scrolling for slash/completion; unavailable coordinates hide the popup rather than falling back to document top, and geometry-only interaction never mutates Markdown authority.
+- P2A-R02 makes command groups registration data, not menu conditionals: filtered groups retain deterministic provider order, group-only navigation preserves the CM6 caret/source/revision, and the active group falls back deterministically when filtering removes it.
+- P2A-R03 keeps insertion mode provider-owned and separate from trigger detection: `@`/`[[` start in `link`, `![[` starts in `embed`, and Tab/Shift+Tab or mouse selection changes only session UI state until apply.
+- P2A-R04 binds popup source changes to a lifecycle-owned, editable CM6 projection capability; composition/dismissal/destroy and expected-revision checks invalidate late work without exposing unrestricted `store + locator` mutation authority to popup adapters.
+- P2A-R05 keeps normalized CM6 text as a projection only: an explicit projected-boundary map converts ChangeSets and popup replacements back to authoritative Markdown, preserving untouched CRLF/CR/LF separators and exact Store history.
+- P2A-R06 canonicalizes recorder `+` and Space values as `Plus` and `Space` tokens before delimiter serialization; conflict detection and registry updates therefore share the same unambiguous stroke representation.
+- P2A-AR1 re-ran the unit, boundary, Chromium, typecheck, and build gates plus interactive acceptance smoke; all remediation criteria passed, no HIGH P2A blocker remained, and P3-01 became the next permitted task.
+- P3-01 keeps the workspace tree as a filesystem-derived projection: mutations go through `WorkspaceFileSystemPort` and refresh publishes a new immutable tree snapshot; open-document/tab/path linkage remains for P3-02/P3-03.
+- P3-02 keeps tab state as application orchestration over stable DocumentIds; DocumentStore remains the only source of Markdown, path, revision, persisted revision, and dirty state, while only the active tab owns mounted CM6/preview projections.
+- P3-03 keeps persistence as an application policy over FileSystemPort: saves validate the last known external Markdown baseline, never overwrite an external conflict implicitly, and reload/discard are explicit Store mutations. Auto-save timers only schedule the same guarded save path.
+- P3-04 keeps recovery metadata and shell preferences outside DocumentStore: only workspace/document paths, active/selected entries, and validated UI settings are persisted; reopening reads Markdown through the filesystem and a desktop adapter can replace the browser storage port later.
+- P3-05 keeps shared shortcut command metadata and assignments outside DocumentStore: the Settings UI projects the command catalog over an independent KeybindingRegistry, persists only validated overrides through SettingsStoragePort, and rejects Mod/Ctrl/Meta-equivalent conflicts atomically. `editor.table.add-row` is exposed in the catalog but remains unavailable until the table editor phase.
+- P3-06 keeps attachment policy in an application service and clipboard/selection handling in a CM6 adapter: only successful binary writes produce workspace-relative Markdown paths, while inline mode and write/host failures produce explicit data URIs; all source changes still go through the projection mutation capability.
+- P3-07 keeps image destinations in Markdown authoritative: workspace-relative and document-relative candidates are resolved only for display, image bytes are projected through object/data URLs, and read/decode/clipboard failures degrade the UI without rewriting source. Preview actions can open a modal, copy bytes, or reveal the path in the workspace tree; system file-manager reveal remains a P11 adapter concern.
+- P3-08 keeps template creation outside the tree projection: a future P8 catalog adapts to the injected provider seam, while the application service validates the target and copies provider Markdown through the normal workspace mutation path.
+- P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
+- P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
+- P4-04 models file → entity completion as a provider-owned child session: selecting a file keeps the trigger/source untouched, and only a leaf file/object/heading candidate commits through the existing projection mutation capability. Static objects and dynamic `objectsFor(ctx)` are resolved through an editor-independent SuggestContext; headings are the safe fallback when no objects are available.
 
 ## Known risks
 - The AST-backed architecture checker now covers side-effect/re-export/dynamic/CommonJS/Vue imports and resolved layer dependencies; the real-browser gate covers the primary CM6 lifecycle path.
-- Full-source Store fan-out resets selection in another editable view and the count-bounded history has no byte-aware budget.
+- P2-AR-06 remediation now uses source/projection deltas for fan-out and retains history deltas under `maxEntries` plus UTF-8 `maxBytes`; `getHistory()` still materializes compatibility before/after snapshots on demand, and generic whole-document replacements use a contiguous fallback when exact disjoint ranges are unavailable.
 - P2-06 preview intentionally covers only headings, emphasis and safe links; richer Markdown rendering remains future work, while source fallback/degraded recovery is covered in unit, jsdom, and real-browser tests.
 - Office-app clipboard coverage currently includes WPS but not the broader target matrix; additional compatibility and large-table performance sampling remain post-GO work.
-- DocumentStore and the minimal FileSystemPort are implemented; real platform adapters, external-file reconciliation and save-conflict policy remain for later phases.
+- DocumentStore and the minimal FileSystemPort are implemented; real platform adapters and push-based filesystem watch/external-change notification remain later work. The P3-03 policy currently detects changes through explicit checks and guarded saves.
 - `.pi/` and `.workbuddy/` debug resources still target the legacy application; they are intentionally retained and are not v2 diagnostics.
 - User-created `fromChatgptWeb.md` is intentionally retained temporarily as reference material and is not a runtime dependency.
 - Legacy `npm run test:unit` still has three failures in `tests/unit/diff/zz-seq-research.test.ts` (Mermaid sequence parsing and jsdom `getBBox`); P0-05 did not change that suite.
 - The granular feature map records migration strategy and coverage obligations; final parity outcomes remain intentionally open until the corresponding phase and Phase 12 review.
 - The audit identifies several legacy UX behaviors whose exact v2 design is intentionally not frozen yet (for example row/column reorder, theme/icon parity, some annotation drawer behavior, and platform GPU/lite-mode controls); they must be explicitly REDESIGNED/DEFERRED/DROPPED rather than silently omitted.
-- The completion surface now covers full-width trigger detection and IME composition boundaries, while the App demo provider is not the P4 workspace/reference implementation.
+- The completion surface now covers full-width trigger detection and IME composition boundaries; P4-03 supplies on-demand workspace enumeration and P4-04 adds the source-backed entity child session, while template catalog/doctype discovery remains deferred to P8.
 - The P2A-05 live presentation intentionally covers the current basic Markdown subset; richer block widgets and position mapping around hidden syntax remain later work.
-- Keybinding Settings UI, persistence policy, and browser/CM6 event dispatch remain P3 work; P2A-06 only establishes the DOM-independent configuration and conflict contract.
-- P2A acceptance blockers include off-screen keyboard selection, caret popup boundary failures, missing slash group/reference mode navigation, slash IME submission risk, popup mutation lifetime, CRLF/mixed-line-ending fidelity, and Plus/Space keybinding round trips.
+- P2A-06 established the DOM-independent keybinding contract; P3-05 now provides browser application-command dispatch and the Settings UI, while native/global OS handling and CM6/table-specific actions remain later work.
+- P3-01 currently uses `MemoryFileSystem` for the browser workspace surface; real platform filesystem adapters and push-based external-change notification remain later work.
+- P3-02/P3-03 close confirmation and persistence use the browser/mock filesystem path; native dialogs, real filesystem watching, and platform-specific atomic-write guarantees remain later work.
+- The P3-06 binary port is implemented by `MemoryFileSystem` for browser/unit coverage; real filesystem binary adapters and system file-manager reveal remain P11 adapter work. Image projection/read/decode behavior is covered by P3-07 but still depends on the later platform binary adapter outside the mock filesystem.
+- P3-04 recovery currently stores one browser session in localStorage and the demo filesystem is recreated on page load; durable multi-workspace identity and native desktop restore remain P11 adapter work.
+- Shortcut dispatch currently covers the browser application commands registered by P3-05; native/global OS shortcut behavior and the real table-row action remain later platform/table work.
+- P3-06 uses workspace-relative attachment paths and defaults to `root-images`; a binary write failure or unavailable document host falls back to an explicit `data:` image reference without losing the paste. P3-07 resolves bare paths workspace-first and then document-relative as a display-only compatibility fallback; ambiguous/missing paths remain visibly unavailable without changing Markdown.
 - Git blame on a dirty Live Preview document needs a source-line mapping policy: committed lines should retain provenance while local/unsaved edits are marked local/uncommitted; Widget-collapsed source ranges must not create false line attribution. Phase 7 now carries this as an explicit design/acceptance risk.
 - Active instructions and SPEC now consistently point to the root `LEGACY_FEATURE_MAP.md`; historical architecture-review evidence may still mention the former path.
+- P3-08 intentionally has no catalog scan, placeholder interpolation, template picker, or default provider; those behaviors belong to P8 and the hook reports unavailable/not-found without creating a partial file.
+- P4-01 intentionally resolves target paths only; graph/backlinks, rename linkage, completion, clipboard, and embed projections remain later P4 tasks, while navigation and heading/object health are provided by P4-05.
+- P4-02 keeps only parsed reference facts, source paths, ids, and revisions; it never retains Markdown or mutates DocumentStore. Workspace paths for unopened files are supplied as a catalog; P4-05 verifies headings/object fragments through a separate derived health service, while full template catalog discovery remains deferred to P8.
+- P4-03 enumerates the workspace on demand rather than maintaining a second file-tree cache; catalog failures degrade to the CompletionProviderRegistry error surface, and real filesystem/remote catalog adapters remain platform work.
+- P4-04 entity discovery currently uses the injected workspace/content reader and suggestion provider seam; template catalog/doctype scanning and full P8 template lifecycle remain deferred.
+- P4-05 keeps navigation and health derived from ReferenceGraph plus target-content reads: source tokens remain unchanged, heading/object fragments are verified before opening, broken facts become diagnostics, and re-selection replaces only the selected token through the projection mutation capability.
+- P4-05 object health uses an application adapter for the existing suggestion contract; full template catalog/doctype discovery remains deferred to P8.
+- P4-06 file linkage covers individual file rename/move; directory rename/move descendant linkage remains a later explicit policy decision.
+- P4-07 browser/system clipboard behavior depends on platform permission and custom MIME support; outside-workspace file URLs degrade to a basename unless a platform resolver can map them to a workspace-relative path. Native Tauri clipboard/root-path adapters remain future platform work.
+- P4-08 text clipboard copy currently depends on the injected browser/platform writer; a native Tauri text-clipboard adapter and richer context-menu command integration remain future platform work.
+- P4-09 keeps embed child projections source-backed and bounded: target loading is delegated to the application persistence seam, nested content uses the current basic live-preview subset, and a depth limit degrades presentation without changing Markdown.
+- P4-06 uses a preserve-when-unambiguous reference spelling policy (with workspace-relative fallback), rejects dirty/external incoming sources and existing targets before mutation, and compensates post-rename filesystem/Store failures without silently leaving broken links.
+- P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is a fallback when browser clipboard permissions or custom MIME support are unavailable. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
+- P4-08 keeps context actions source-backed: copy returns the exact token, open delegates to the application with an optional resolved target, and mode changes replace only the selected token through the projection mutation capability without creating an embed authority.
+- P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes.
 
 ## Next
-P2A-R01 — Caret popup positioning and visible selection
+P5-01 — Table Engine foundation (first split task contract still needs to be defined)

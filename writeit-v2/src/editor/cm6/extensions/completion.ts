@@ -1,10 +1,15 @@
 import type { EditorState, Extension } from '@codemirror/state'
 import { EditorView, ViewPlugin, type ViewUpdate } from '@codemirror/view'
+import { CaretPopup } from '../caret-popup'
 import {
   createDocumentOrigin,
-  DocumentStore,
-  type DocumentLocator,
+  type Revision,
 } from '../../../core/document'
+import {
+  getProjectionMutationCapability,
+  type ProjectionMutationCapability,
+} from '../projection/mutation-capability'
+import { projectMarkdownSource } from '../projection/source-fidelity'
 
 export type CompletionTriggerKind = '@' | '[[' | '![['
 
@@ -13,6 +18,13 @@ export interface CompletionTrigger {
   readonly from: number
   readonly to: number
   readonly query: string
+}
+
+export interface CompletionSurfaceMode {
+  /** Stable provider-defined identifier. */
+  readonly id: string
+  readonly label: string
+  readonly description?: string
 }
 
 /**
@@ -49,6 +61,7 @@ export interface CompletionSurfaceContext {
   readonly source: string
   readonly cursor: number
   readonly trigger: CompletionTrigger
+  readonly mode?: CompletionSurfaceMode
 }
 
 export interface CompletionSurfaceEdit {
@@ -60,15 +73,34 @@ export interface CompletionSurfaceEdit {
 
 export type CompletionSurfaceApplyResult = CompletionSurfaceEdit | string
 
+export type CompletionSurfaceChildrenResult =
+  | readonly CompletionSurfaceItem[]
+  | null
+  | undefined
+
+export type CompletionSurfaceChildrenResolver = (
+  context: CompletionSurfaceContext,
+) => CompletionSurfaceChildrenResult | Promise<CompletionSurfaceChildrenResult>
+
+export type CompletionSurfaceItemKind =
+  | 'file'
+  | 'directory'
+  | 'object'
+  | 'heading'
+
 export interface CompletionSurfaceItem {
   readonly id: string
   readonly label: string
   readonly detail?: string
   readonly keywords?: readonly string[]
+  /** Optional semantic kind for source-backed workspace candidates. */
+  readonly kind?: CompletionSurfaceItemKind
   readonly insertText?: string
   readonly apply?: (
     context: CompletionSurfaceContext,
   ) => CompletionSurfaceApplyResult | Promise<CompletionSurfaceApplyResult>
+  /** Opens provider-owned child candidates without changing the source. */
+  readonly children?: CompletionSurfaceChildrenResolver
 }
 
 export interface CompletionSurfaceQueryResult {
@@ -77,6 +109,8 @@ export interface CompletionSurfaceQueryResult {
     readonly providerId: string
     readonly error: unknown
   }[]
+  readonly modes?: readonly CompletionSurfaceMode[]
+  readonly initialModeId?: string
 }
 
 /**
@@ -93,13 +127,15 @@ export interface CompletionSurfaceRegistry {
 }
 
 export interface CompletionSurfaceOptions {
-  readonly store: DocumentStore
-  readonly locator: DocumentLocator
   readonly registry: CompletionSurfaceRegistry
+  /** Optional for direct surface mounts; SingleDocumentView injects it via CM6. */
+  readonly mutation?: ProjectionMutationCapability
 }
 
 const MENU_CLASS = 'writeit-completion-menu'
 const MENU_OPTION_SELECTOR = '[data-completion-index]'
+const MENU_MODE_SELECTOR = '[data-completion-mode-id]'
+const MENU_BACK_SELECTOR = '[data-completion-back]'
 
 function triggerKey(trigger: CompletionTrigger, source: string): string {
   return `${trigger.kind}:${trigger.from}:${trigger.to}:${trigger.query}:${source}`
@@ -183,6 +219,40 @@ function formatError(error: unknown): string {
   }
 }
 
+function normalizeSurfaceModes(
+  modes: readonly CompletionSurfaceMode[] | undefined,
+): readonly CompletionSurfaceMode[] {
+  if (modes === undefined) return []
+  if (!Array.isArray(modes)) {
+    throw new TypeError('Completion registry modes must be an array')
+  }
+
+  const normalized = modes.map((mode, index) => {
+    if (
+      mode === null ||
+      typeof mode !== 'object' ||
+      typeof mode.id !== 'string' ||
+      mode.id.trim().length === 0 ||
+      typeof mode.label !== 'string' ||
+      mode.label.trim().length === 0
+    ) {
+      throw new TypeError(`Completion mode ${index} is invalid`)
+    }
+    if (mode.description !== undefined && typeof mode.description !== 'string') {
+      throw new TypeError(`Completion mode ${mode.id} description is invalid`)
+    }
+    return Object.freeze({
+      id: mode.id,
+      label: mode.label,
+      ...(mode.description === undefined ? {} : { description: mode.description }),
+    })
+  })
+  if (new Set(normalized.map((mode) => mode.id)).size !== normalized.length) {
+    throw new TypeError('Completion registry modes must have unique ids')
+  }
+  return Object.freeze(normalized)
+}
+
 function normalizeResult(
   result:
     | CompletionSurfaceQueryResult
@@ -201,6 +271,10 @@ function normalizeResult(
   return {
     items: queryResult.items,
     errors: queryResult.errors ?? [],
+    modes: queryResult.modes,
+    ...(queryResult.initialModeId === undefined
+      ? {}
+      : { initialModeId: queryResult.initialModeId }),
   }
 }
 
@@ -268,9 +342,35 @@ async function resolveEdit(
 
 class CompletionController {
   private readonly menu: HTMLDivElement
+  private readonly popup: CaretPopup
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (!this.open || event.isComposing || event.keyCode === 229) return
+    if (!this.open) return
+    if (
+      this.composing ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      this.view.composing
+    ) {
+      return
+    }
+
+    if (event.key === 'Tab' && this.modes.length > 1) {
+      // Mode navigation belongs to the completion session. Preventing the
+      // browser's default focus traversal keeps the CM6 caret and projection
+      // focus untouched while the provider-owned mode changes.
+      event.preventDefault()
+      event.stopPropagation()
+      this.moveMode(event.shiftKey ? -1 : 1)
+      return
+    }
+
+    if (event.key === 'ArrowLeft' && this.level > 0) {
+      event.preventDefault()
+      event.stopPropagation()
+      this.goBack()
+      return
+    }
 
     if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -298,10 +398,31 @@ class CompletionController {
   }
 
   private readonly onMouseDown = (event: MouseEvent): void => {
-    if (this.optionFromEvent(event) !== undefined) event.preventDefault()
+    if (
+      this.optionFromEvent(event) !== undefined ||
+      this.modeFromEvent(event) !== undefined ||
+      this.backFromEvent(event)
+    ) {
+      // Mode and candidate buttons are popup controls, not editor focus
+      // targets. Keep the CM6 caret in place while they are selected.
+      event.preventDefault()
+    }
   }
 
   private readonly onClick = (event: MouseEvent): void => {
+    if (this.backFromEvent(event)) {
+      event.preventDefault()
+      this.goBack()
+      return
+    }
+
+    const modeId = this.modeFromEvent(event)
+    if (modeId !== undefined) {
+      event.preventDefault()
+      this.selectMode(modeId)
+      return
+    }
+
     const index = this.optionFromEvent(event)
     if (index === undefined) return
     event.preventDefault()
@@ -310,37 +431,57 @@ class CompletionController {
 
   private readonly onCompositionStart = (): void => {
     this.composing = true
+    this.compositionEndPending = false
+    this.invalidatePendingMutation()
+    this.dismissedKey = undefined
+    this.activeKey = undefined
     this.hide()
   }
 
   private readonly onCompositionEnd = (): void => {
     this.composing = false
+    this.compositionEndPending = true
     this.syncFromEditor()
-    // CM6 may finish its composition transaction after the DOM event. A
-    // microtask re-check is event ordering, not a state synchronization delay.
-    if (this.view.composing) {
+    this.reconcileCompositionEnd()
+    // CM6 can settle the composition transaction after the DOM event. Use an
+    // event-order microtask, never a fixed timeout, to re-evaluate the trigger.
+    if (this.compositionEndPending) {
       queueMicrotask(() => {
-        if (!this.destroyed) this.syncFromEditor()
+        if (!this.destroyed) this.reconcileCompositionEnd()
       })
     }
   }
 
   private items: readonly CompletionSurfaceItem[] = []
+  private rootItems: readonly CompletionSurfaceItem[] = []
   private errors: readonly { providerId: string; error: unknown }[] = []
+  private modes: readonly CompletionSurfaceMode[] = []
+  private activeModeId: string | undefined
   private selectedIndex = 0
+  private level = 0
+  private parentItem: CompletionSurfaceItem | undefined
+  private childLoading = false
+  private childGeneration = 0
   private currentTrigger: CompletionTrigger | undefined
   private activeKey: string | undefined
   private dismissedKey: string | undefined
   private refreshGeneration = 0
+  private compositionEndPending = false
+  private mutationGeneration = 0
+  private pendingMutationToken: number | undefined
   private loading = false
   private open = false
   private composing = false
   private destroyed = false
 
+  private readonly mutation: ProjectionMutationCapability | undefined
+
   constructor(
     private readonly view: EditorView,
     private readonly options: CompletionSurfaceOptions,
   ) {
+    this.mutation =
+      options.mutation ?? getProjectionMutationCapability(view.state)
     const document = view.dom.ownerDocument
     this.menu = document.createElement('div')
     this.menu.className = MENU_CLASS
@@ -355,6 +496,11 @@ class CompletionController {
     view.dom.addEventListener('compositionstart', this.onCompositionStart)
     view.dom.addEventListener('compositionend', this.onCompositionEnd)
     view.dom.append(this.menu)
+    this.popup = new CaretPopup(
+      view,
+      this.menu,
+      () => this.currentTrigger?.to,
+    )
     this.syncFromEditor()
   }
 
@@ -368,10 +514,17 @@ class CompletionController {
 
   update(update: ViewUpdate): void {
     if (this.destroyed) return
+    this.reconcileCompositionEnd()
+    if (
+      (update.docChanged || update.selectionSet) &&
+      this.pendingMutationToken !== undefined
+    ) {
+      this.invalidatePendingMutation()
+    }
     if (update.docChanged || update.selectionSet || update.focusChanged) {
       this.syncFromEditor()
     } else if (this.open && update.geometryChanged) {
-      this.positionMenu()
+      this.popup.reposition()
     }
   }
 
@@ -380,12 +533,26 @@ class CompletionController {
     this.destroyed = true
     this.refreshGeneration += 1
     this.open = false
+    this.invalidatePendingMutation()
+    this.popup.destroy()
     this.view.dom.removeEventListener('keydown', this.onKeyDown, true)
     this.view.dom.removeEventListener('compositionstart', this.onCompositionStart)
     this.view.dom.removeEventListener('compositionend', this.onCompositionEnd)
     this.menu.removeEventListener('mousedown', this.onMouseDown)
     this.menu.removeEventListener('click', this.onClick)
     this.menu.remove()
+  }
+
+  private reconcileCompositionEnd(): void {
+    if (
+      !this.compositionEndPending ||
+      this.composing ||
+      this.view.composing
+    ) {
+      return
+    }
+    this.compositionEndPending = false
+    this.syncFromEditor()
   }
 
   private syncFromEditor(): void {
@@ -399,6 +566,14 @@ class CompletionController {
       this.currentTrigger = undefined
       this.activeKey = undefined
       this.dismissedKey = undefined
+      this.rootItems = []
+      this.items = []
+      this.level = 0
+      this.parentItem = undefined
+      this.childLoading = false
+      this.childGeneration += 1
+      this.modes = []
+      this.activeModeId = undefined
       this.hide()
       return
     }
@@ -413,7 +588,6 @@ class CompletionController {
     }
 
     this.open = true
-    this.positionMenu()
     if (this.activeKey !== key) {
       this.activeKey = key
       this.selectedIndex = 0
@@ -429,8 +603,15 @@ class CompletionController {
     key: string,
   ): void {
     const generation = ++this.refreshGeneration
+    this.childGeneration += 1
     this.items = []
+    this.rootItems = []
+    this.level = 0
+    this.parentItem = undefined
+    this.childLoading = false
     this.errors = []
+    this.modes = []
+    this.activeModeId = undefined
     this.loading = true
     this.renderMenu()
 
@@ -451,8 +632,18 @@ class CompletionController {
         ) {
           return
         }
+        if (!this.composing && !this.view.composing) this.open = true
+        this.rootItems = result.items
         this.items = result.items
+        this.level = 0
+        this.parentItem = undefined
+        this.childLoading = false
         this.errors = [...(result.errors ?? [])]
+        this.modes = normalizeSurfaceModes(result.modes)
+        const requestedMode = result.initialModeId
+        this.activeModeId = this.modes.some((mode) => mode.id === requestedMode)
+          ? requestedMode
+          : this.modes[0]?.id
         this.loading = false
         this.selectedIndex = Math.min(
           this.selectedIndex,
@@ -468,7 +659,11 @@ class CompletionController {
         ) {
           return
         }
+        this.rootItems = []
         this.items = []
+        this.level = 0
+        this.parentItem = undefined
+        this.childLoading = false
         this.errors = [{ providerId: 'completion-registry', error }]
         this.loading = false
         this.renderMenu()
@@ -479,7 +674,13 @@ class CompletionController {
     trigger: CompletionTrigger,
     source: string,
   ): CompletionSurfaceContext {
-    return { source, cursor: trigger.to, trigger }
+    const mode = this.modes.find((candidate) => candidate.id === this.activeModeId)
+    return {
+      source,
+      cursor: trigger.to,
+      trigger,
+      ...(mode === undefined ? {} : { mode }),
+    }
   }
 
   private isCurrentTrigger(trigger: CompletionTrigger): boolean {
@@ -500,45 +701,98 @@ class CompletionController {
     this.renderMenu()
   }
 
+  private moveMode(delta: number): void {
+    if (this.modes.length < 2) return
+    const currentIndex = Math.max(
+      0,
+      this.modes.findIndex((mode) => mode.id === this.activeModeId),
+    )
+    const nextIndex =
+      (currentIndex + delta + this.modes.length) % this.modes.length
+    this.activeModeId = this.modes[nextIndex]?.id
+    this.resetToRoot()
+    this.renderMenu()
+  }
+
+  private selectMode(modeId: string): void {
+    if (!this.modes.some((mode) => mode.id === modeId)) return
+    this.activeModeId = modeId
+    this.resetToRoot()
+    this.renderMenu()
+  }
+
+  private resetToRoot(): void {
+    this.childGeneration += 1
+    this.level = 0
+    this.parentItem = undefined
+    this.childLoading = false
+    this.items = this.rootItems
+    this.selectedIndex = Math.min(
+      this.selectedIndex,
+      Math.max(0, this.items.length - 1),
+    )
+  }
+
+  private goBack(): void {
+    if (this.level === 0) return
+    this.resetToRoot()
+    this.renderMenu()
+  }
+
   private async executeSelected(): Promise<void> {
     if (this.items.length === 0) return
     await this.execute(this.selectedIndex)
   }
 
-  private async execute(index: number): Promise<void> {
-    const item = this.items[index]
-    const trigger = this.currentTrigger
-    if (!item || !trigger || !this.isCurrentTrigger(trigger)) return
+  private requireMutation(): ProjectionMutationCapability {
+    if (!this.mutation) {
+      throw new Error(
+        'Completion surface is not bound to a live editable projection',
+      )
+    }
+    return this.mutation
+  }
 
-    const source = this.view.state.doc.toString()
-    const context = this.createContext(trigger, source)
-    this.hide()
+  private beginMutation(): number {
+    const token = ++this.mutationGeneration
+    this.pendingMutationToken = token
+    return token
+  }
 
-    try {
-      const edit = await resolveEdit(item, context)
-      this.applyEdit(item, trigger, context, edit)
-    } catch (error) {
-      this.menu.dataset.error = formatError(error)
+  private requireMutationToken(token: number): void {
+    if (
+      this.destroyed ||
+      this.composing ||
+      this.pendingMutationToken !== token ||
+      this.mutationGeneration !== token
+    ) {
+      throw new Error('Completion mutation capability is no longer active')
     }
   }
 
-  private applyEdit(
-    item: CompletionSurfaceItem,
+  private consumeMutationToken(token: number): void {
+    if (this.pendingMutationToken !== token) return
+    this.pendingMutationToken = undefined
+    this.mutationGeneration += 1
+  }
+
+  private invalidatePendingMutation(): void {
+    this.pendingMutationToken = undefined
+    this.mutationGeneration += 1
+  }
+
+  private snapshotForMutation(
     trigger: CompletionTrigger,
-    context: CompletionSurfaceContext,
-    edit: CompletionSurfaceEdit,
-  ): void {
+    source: string,
+  ) {
     if (!this.isCurrentTrigger(trigger)) {
       throw new Error('Completion trigger is no longer active')
     }
-
-    const source = this.view.state.doc.toString()
-    if (source !== context.source) {
+    if (this.view.state.doc.toString() !== source) {
       throw new Error('Completion editor changed before apply')
     }
-    const document = this.options.store.get(this.options.locator)
-    if (!document) throw new Error('Completion document is no longer loaded')
-    if (document.markdown !== source) {
+    const document = this.requireMutation().snapshot()
+    if (projectMarkdownSource(document.markdown).projected !== source) {
       throw new Error('Completion editor is not synchronized with DocumentStore')
     }
     if (
@@ -547,17 +801,149 @@ class CompletionController {
     ) {
       throw new Error('Completion trigger no longer matches the source')
     }
+    return document
+  }
+
+  private async execute(index: number): Promise<void> {
+    const item = this.items[index]
+    const trigger = this.currentTrigger
+    if (!item || !trigger || !this.isCurrentTrigger(trigger)) return
+
+    if (item.children) {
+      await this.openChildren(item)
+      return
+    }
+    await this.executeLeaf(item, trigger)
+  }
+
+  private async openChildren(item: CompletionSurfaceItem): Promise<void> {
+    const trigger = this.currentTrigger
+    if (!trigger || !this.isCurrentTrigger(trigger)) return
+
+    const source = this.view.state.doc.toString()
+    const context = this.createContext(trigger, source)
+    const generation = ++this.childGeneration
+    this.level = 1
+    this.parentItem = item
+    this.items = []
+    this.selectedIndex = 0
+    this.childLoading = true
+    this.renderMenu()
+
+    try {
+      const result = await item.children?.(context)
+      if (
+        this.destroyed ||
+        generation !== this.childGeneration ||
+        this.activeKey === undefined ||
+        !this.isCurrentTrigger(trigger)
+      ) {
+        return
+      }
+      if (result !== null && result !== undefined && !Array.isArray(result)) {
+        throw new TypeError('Completion children must be an array')
+      }
+      if (!result || result.length === 0) {
+        this.resetToRoot()
+        this.renderMenu()
+        await this.executeLeaf(item, trigger)
+        return
+      }
+      this.items = result
+      this.childLoading = false
+      this.selectedIndex = 0
+      this.renderMenu()
+    } catch (error) {
+      if (
+        this.destroyed ||
+        generation !== this.childGeneration ||
+        !this.isCurrentTrigger(trigger)
+      ) {
+        return
+      }
+      // Entity discovery is derived data. If it fails, preserve the existing
+      // file candidate's ordinary insertion behavior instead of blocking it.
+      this.resetToRoot()
+      this.errors = [
+        ...this.errors,
+        { providerId: 'completion-children', error },
+      ]
+      this.renderMenu()
+      await this.executeLeaf(item, trigger)
+    }
+  }
+
+  private async executeLeaf(
+    item: CompletionSurfaceItem,
+    trigger: CompletionTrigger,
+  ): Promise<void> {
+    if (!this.isCurrentTrigger(trigger)) return
+    const source = this.view.state.doc.toString()
+    let mutationToken: number | undefined
+    try {
+      const document = this.snapshotForMutation(trigger, source)
+      mutationToken = this.beginMutation()
+      const context = this.createContext(trigger, source)
+      this.hide()
+
+      const edit = await resolveEdit(item, context)
+      this.requireMutationToken(mutationToken)
+      this.applyEdit(item, trigger, context, edit, document.revision, mutationToken)
+    } catch (error) {
+      if (!this.destroyed) this.menu.dataset.error = formatError(error)
+    } finally {
+      if (mutationToken !== undefined) {
+        this.invalidatePendingMutation()
+      }
+    }
+  }
+
+  private applyEdit(
+    item: CompletionSurfaceItem,
+    trigger: CompletionTrigger,
+    context: CompletionSurfaceContext,
+    edit: CompletionSurfaceEdit,
+    expectedRevision: Revision,
+    mutationToken: number,
+  ): void {
+    this.requireMutationToken(mutationToken)
+    const source = this.view.state.doc.toString()
+    const document = this.snapshotForMutation(trigger, source)
+    if (source !== context.source) {
+      throw new Error('Completion editor changed before apply')
+    }
+    if (document.revision !== expectedRevision) {
+      throw new Error('Completion source changed before apply')
+    }
 
     const markdown =
       source.slice(0, edit.from) + edit.insert + source.slice(edit.to)
-    const next = this.options.store.applyChange(this.options.locator, {
+    this.requireMutation().applyChange({
       markdown,
       origin: createDocumentOrigin('completion', item.id),
-      expectedRevision: document.revision,
+      expectedRevision,
     })
+    this.consumeMutationToken(mutationToken)
     const cursorOffset = edit.cursorOffset ?? edit.insert.length
-    const cursor = Math.min(edit.from + cursorOffset, next.markdown.length)
-    this.view.dispatch({ selection: { anchor: cursor } })
+    const cursor = Math.min(edit.from + cursorOffset, this.view.state.doc.length)
+    if (!this.destroyed) this.view.dispatch({ selection: { anchor: cursor } })
+  }
+
+  private modeFromEvent(event: MouseEvent): string | undefined {
+    const target = event.target as HTMLElement | null
+    const mode = target?.closest<HTMLElement>(MENU_MODE_SELECTOR)
+    if (!mode || !this.menu.contains(mode)) return undefined
+    const modeId = mode.dataset.completionModeId
+    return modeId && this.modes.some((candidate) => candidate.id === modeId)
+      ? modeId
+      : undefined
+  }
+
+  private backFromEvent(event: MouseEvent): boolean {
+    if (this.level === 0) return false
+    const target = event.target as HTMLElement | null
+    const back = target?.closest<HTMLElement>(MENU_BACK_SELECTOR)
+    return Boolean(back && this.menu.contains(back))
   }
 
   private optionFromEvent(event: MouseEvent): number | undefined {
@@ -573,17 +959,66 @@ class CompletionController {
     this.menu.replaceChildren()
     this.menu.dataset.show = this.open ? 'true' : 'false'
     this.menu.hidden = !this.open
-    this.menu.toggleAttribute('data-completion-loading', this.loading)
+    this.menu.toggleAttribute(
+      'data-completion-loading',
+      this.loading || this.childLoading,
+    )
     this.menu.dataset.triggerKind = this.currentTrigger?.kind ?? ''
+    this.menu.dataset.activeMode = this.activeModeId ?? ''
+    this.menu.dataset.modeCount = String(this.modes.length)
+    this.menu.dataset.completionLevel = String(this.level)
+    this.menu.dataset.completionParentId = this.parentItem?.id ?? ''
     this.menu.removeAttribute('data-error')
 
-    if (!this.open) return
+    if (!this.open) {
+      this.popup.hide()
+      return
+    }
 
-    if (this.loading) {
+    if (this.modes.length > 0) {
+      const modeBar = document.createElement('div')
+      modeBar.className = 'writeit-completion-menu__mode-selector'
+      modeBar.setAttribute('role', 'tablist')
+      modeBar.setAttribute('aria-label', 'Reference insertion mode')
+
+      for (const [index, mode] of this.modes.entries()) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'writeit-completion-menu__mode'
+        button.id = `writeit-completion-mode-${index}`
+        button.dataset.completionModeId = mode.id
+        button.dataset.completionMode = mode.id
+        button.setAttribute('role', 'tab')
+        button.setAttribute('aria-selected', String(mode.id === this.activeModeId))
+        button.setAttribute('aria-label', mode.description
+          ? `${mode.label}: ${mode.description}`
+          : mode.label)
+        button.title = mode.description ?? mode.label
+        button.tabIndex = -1
+        button.textContent = mode.label
+        modeBar.append(button)
+      }
+      this.menu.append(modeBar)
+    }
+
+    if (this.level > 0) {
+      const back = document.createElement('button')
+      back.type = 'button'
+      back.className = 'writeit-completion-menu__back'
+      back.dataset.completionBack = 'true'
+      back.setAttribute('aria-label', 'Back to file suggestions')
+      back.tabIndex = -1
+      back.textContent = `‹ ${this.parentItem?.label ?? 'Back'}`
+      this.menu.append(back)
+    }
+
+    if (this.loading || this.childLoading) {
       const loading = document.createElement('div')
       loading.className = 'writeit-completion-menu__status'
       loading.dataset.completionLoading = 'true'
-      loading.textContent = 'Loading suggestions…'
+      loading.textContent = this.childLoading
+        ? 'Loading entities…'
+        : 'Loading suggestions…'
       this.menu.append(loading)
     } else if (this.items.length === 0) {
       const empty = document.createElement('div')
@@ -599,6 +1034,20 @@ class CompletionController {
         option.id = `writeit-completion-option-${index}`
         option.dataset.completionIndex = String(index)
         option.dataset.completionId = item.id
+        option.dataset.completionKind = item.kind ?? ''
+        option.dataset.completionEntityKind =
+          item.kind === 'object' || item.kind === 'heading' || item.kind === 'file'
+            ? item.kind
+            : ''
+        option.dataset.completionExpandable = item.children ? 'true' : 'false'
+        option.classList.toggle(
+          'writeit-completion-menu__option--directory',
+          item.kind === 'directory',
+        )
+        option.classList.toggle(
+          'writeit-completion-menu__option--entity',
+          item.kind === 'object' || item.kind === 'heading' || item.kind === 'file',
+        )
         option.setAttribute('role', 'option')
         option.setAttribute(
           'aria-selected',
@@ -631,37 +1080,25 @@ class CompletionController {
         .map((entry) => `${entry.providerId}: ${formatError(entry.error)}`)
         .join('; ')
     }
-  }
-
-  private positionMenu(): void {
-    if (!this.open) return
-
-    const menuRect = this.view.dom.getBoundingClientRect()
-    let left = 8
-    let top = 8
-    if (this.currentTrigger) {
-      try {
-        const coords = this.view.coordsAtPos(this.currentTrigger.from)
-        if (coords) {
-          left = Math.max(8, coords.left - menuRect.left)
-          top = Math.max(8, coords.bottom - menuRect.top + 4)
-        }
-      } catch {
-        // CM6 can be between construction and layout in jsdom/initial render.
-      }
-    }
-    this.menu.style.left = `${left}px`
-    this.menu.style.top = `${top}px`
+    this.popup.reposition()
+    this.popup.ensureOptionVisible(
+      this.menu.querySelector<HTMLElement>(
+        `[data-completion-index="${this.selectedIndex}"]`,
+      ),
+    )
   }
 
   private hide(): void {
     this.open = false
     this.loading = false
+    this.childLoading = false
+    this.childGeneration += 1
     this.refreshGeneration += 1
     this.renderMenu()
   }
 
   private dismiss(): void {
+    this.invalidatePendingMutation()
     if (this.currentTrigger) {
       this.dismissedKey = triggerKey(
         this.currentTrigger,

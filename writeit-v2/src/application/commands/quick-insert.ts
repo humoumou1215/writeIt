@@ -73,6 +73,7 @@ export function filterQuickInsertCommands<CommandType extends QuickInsertCommand
 interface BasicMarkdownCommandSpec {
   readonly id: string
   readonly label: string
+  readonly group: string
   readonly keywords: readonly string[]
   readonly replacement: QuickInsertReplacement
 }
@@ -82,54 +83,63 @@ const BASIC_MARKDOWN_COMMAND_SPECS: readonly BasicMarkdownCommandSpec[] =
     {
       id: 'markdown.heading-1',
       label: 'Heading 1',
+      group: 'Headings',
       keywords: ['heading', 'title', 'h1', '标题'],
       replacement: { text: '# ' },
     },
     {
       id: 'markdown.heading-2',
       label: 'Heading 2',
+      group: 'Headings',
       keywords: ['heading', 'subtitle', 'h2', '标题'],
       replacement: { text: '## ' },
     },
     {
       id: 'markdown.heading-3',
       label: 'Heading 3',
+      group: 'Headings',
       keywords: ['heading', 'h3', '标题'],
       replacement: { text: '### ' },
     },
     {
       id: 'markdown.bullet-list',
       label: 'Bullet list',
+      group: 'Lists',
       keywords: ['bullet', 'bulleted', 'unordered', 'list', '无序列表'],
       replacement: { text: '- ' },
     },
     {
       id: 'markdown.numbered-list',
       label: 'Numbered list',
+      group: 'Lists',
       keywords: ['numbered', 'ordered', 'list', '有序列表'],
       replacement: { text: '1. ' },
     },
     {
       id: 'markdown.task-list',
       label: 'Task list',
+      group: 'Lists',
       keywords: ['task', 'todo', 'checkbox', 'list', '任务'],
       replacement: { text: '- [ ] ' },
     },
     {
       id: 'markdown.quote',
       label: 'Quote',
+      group: 'Blocks',
       keywords: ['blockquote', 'quote', '引用'],
       replacement: { text: '> ' },
     },
     {
       id: 'markdown.code-block',
       label: 'Code block',
+      group: 'Blocks',
       keywords: ['code', 'fence', 'preformatted', '代码'],
       replacement: { text: '```\n\n```', cursorOffset: 4 },
     },
     {
       id: 'markdown.divider',
       label: 'Divider',
+      group: 'Blocks',
       keywords: ['horizontal rule', 'separator', 'hr', '分隔线'],
       replacement: { text: '---' },
     },
@@ -141,7 +151,7 @@ function createBasicMarkdownCommand(
   return {
     id: spec.id,
     label: spec.label,
-    group: 'Markdown',
+    group: spec.group,
     keywords: spec.keywords,
     availability: () => true,
     execute: (context) => context.replace(spec.replacement),

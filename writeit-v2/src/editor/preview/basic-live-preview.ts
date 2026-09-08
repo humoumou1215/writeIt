@@ -9,6 +9,12 @@ import type {
   DocumentState,
   Revision,
 } from '../../core/document'
+import {
+  mimeTypeForImagePath,
+  resolveWorkspaceImagePath,
+  type ImageProjectionRenderOptions,
+  type ImageProjectionResource,
+} from './image-projection'
 
 export const DEFAULT_LIVE_PREVIEW_PROJECTION_ID: ProjectionId = 'live-preview'
 
@@ -20,9 +26,10 @@ export type BasicLivePreviewRenderMode =
 export type BasicLivePreviewRenderer = (
   parent: HTMLElement,
   markdownSource: string,
+  options?: ImageProjectionRenderOptions,
 ) => void
 
-export interface BasicLivePreviewOptions {
+export interface BasicLivePreviewOptions extends ImageProjectionRenderOptions {
   readonly store: DocumentStore
   readonly locator: DocumentLocator
   readonly parent: HTMLElement
@@ -65,6 +72,7 @@ function setPreviewRenderMode(
 export function renderBasicMarkdownPreview(
   parent: HTMLElement,
   markdownSource: string,
+  options: ImageProjectionRenderOptions = {},
 ): void {
   if (typeof markdownSource !== 'string') {
     throw new TypeError('Preview source must be a string')
@@ -106,14 +114,14 @@ export function renderBasicMarkdownPreview(
     const heading = line.match(/^(#{1,6})\s+(.*)$/)
     if (heading) {
       const element = document.createElement(`h${heading[1].length}`)
-      appendInline(element, heading[2], document)
+      appendInline(element, heading[2], document, options)
       fragment.append(element)
       index += 1
       continue
     }
 
     const paragraph = document.createElement('p')
-    appendInline(paragraph, line, document)
+    appendInline(paragraph, line, document, options)
     index += 1
     while (
       index < lines.length &&
@@ -122,7 +130,7 @@ export function renderBasicMarkdownPreview(
       !/^#{1,6}\s+/.test(lines[index])
     ) {
       paragraph.append(document.createElement('br'))
-      appendInline(paragraph, lines[index], document)
+      appendInline(paragraph, lines[index], document, options)
       index += 1
     }
     fragment.append(paragraph)
@@ -132,13 +140,182 @@ export function renderBasicMarkdownPreview(
   setPreviewRenderMode(parent, 'rich')
 }
 
+const pattern =
+  /!\[([^\]\n]*)\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|_([^_\n]+)_|\[([^\]\n]+)\]\(([^)\s]+)\)/g
+
+function isDirectImageSource(source: string): boolean {
+  const normalized = source.toLowerCase()
+  return (
+    normalized.startsWith('data:') ||
+    normalized.startsWith('blob:') ||
+    normalized.startsWith('http://') ||
+    normalized.startsWith('https://') ||
+    source.startsWith('//')
+  )
+}
+
+function imageResourceWithoutResolver(
+  source: string,
+  alt: string,
+): ImageProjectionResource {
+  if (isDirectImageSource(source)) {
+    return Object.freeze({
+      source,
+      url: source,
+      name: source.split('/').at(-1) || 'image',
+      alt,
+      mimeType: source.toLowerCase().startsWith('data:')
+        ? source.slice(5).split(/[;,]/u)[0] || 'image/png'
+        : 'image/png',
+      status: 'external' as const,
+    })
+  }
+
+  const path = resolveWorkspaceImagePath(source)
+  return Object.freeze({
+    source,
+    url: '',
+    ...(path === undefined ? {} : { path }),
+    name: path ?? source,
+    alt,
+    mimeType: mimeTypeForImagePath(path ?? source),
+    status: 'unavailable' as const,
+    error: 'Image projection resolver is unavailable',
+  })
+}
+
+function appendImageProjection(
+  parent: HTMLElement,
+  source: string,
+  alt: string,
+  document: Document,
+  options: ImageProjectionRenderOptions,
+): void {
+  const wrapper = document.createElement('span')
+  wrapper.className = 'live-preview-image'
+  wrapper.dataset.imageSource = source
+
+  const image = document.createElement('img')
+  image.className = 'live-preview-image__content'
+  image.alt = alt
+  image.loading = 'lazy'
+  image.decoding = 'async'
+  image.dataset.imageSource = source
+  wrapper.append(image)
+
+  const status = document.createElement('span')
+  status.className = 'live-preview-image__status'
+  status.setAttribute('role', 'status')
+  status.textContent = 'Loading image…'
+  wrapper.append(status)
+
+  const actions = document.createElement('span')
+  actions.className = 'live-preview-image__actions'
+  const previewButton = document.createElement('button')
+  previewButton.type = 'button'
+  previewButton.className = 'live-preview-image__action'
+  previewButton.dataset.imageAction = 'preview'
+  previewButton.setAttribute('aria-label', `Preview image ${alt || 'image'}`)
+  previewButton.textContent = 'Preview'
+  const copyButton = document.createElement('button')
+  copyButton.type = 'button'
+  copyButton.className = 'live-preview-image__action'
+  copyButton.dataset.imageAction = 'copy'
+  copyButton.setAttribute('aria-label', `Copy image ${alt || 'image'}`)
+  copyButton.textContent = 'Copy'
+  const revealButton = document.createElement('button')
+  revealButton.type = 'button'
+  revealButton.className = 'live-preview-image__action'
+  revealButton.dataset.imageAction = 'reveal'
+  revealButton.setAttribute('aria-label', `Locate image ${alt || 'image'} in workspace`)
+  revealButton.textContent = 'Locate'
+  actions.append(previewButton, copyButton, revealButton)
+  wrapper.append(actions)
+
+  let currentResource: ImageProjectionResource | undefined
+  const applyResource = (resource: ImageProjectionResource): void => {
+    if (!wrapper.isConnected && parent !== wrapper.parentElement) return
+    currentResource = Object.freeze({ ...resource, alt })
+    wrapper.dataset.imageStatus = resource.status
+    image.dataset.imageStatus = resource.status
+    if (resource.path !== undefined) {
+      wrapper.dataset.imagePath = resource.path
+      image.dataset.imagePath = resource.path
+    } else {
+      delete wrapper.dataset.imagePath
+      delete image.dataset.imagePath
+    }
+
+    if (resource.url !== '') image.src = resource.url
+    else image.removeAttribute('src')
+
+    const unavailable = resource.status === 'unavailable'
+    status.hidden = !unavailable
+    status.textContent = unavailable
+      ? `Image unavailable${resource.error ? `: ${resource.error}` : ''}`
+      : ''
+    previewButton.disabled = unavailable || options.onPreview === undefined
+    copyButton.disabled = resource.bytes === undefined || options.onCopy === undefined
+    revealButton.hidden = resource.path === undefined || options.onReveal === undefined
+    revealButton.disabled = resource.path === undefined || options.onReveal === undefined
+  }
+
+  const invokePreview = (): void => {
+    if (currentResource && options.onPreview) options.onPreview(currentResource)
+  }
+  image.addEventListener('click', invokePreview)
+  previewButton.addEventListener('click', invokePreview)
+  copyButton.addEventListener('click', () => {
+    if (!currentResource || !options.onCopy) return
+    void Promise.resolve(options.onCopy(currentResource)).catch(() => {
+      // Copy feedback belongs to the application shell; a failed observer
+      // must not interrupt the preview or mutate the Markdown source.
+    })
+  })
+  revealButton.addEventListener('click', () => {
+    if (currentResource?.path && options.onReveal) {
+      options.onReveal(currentResource.path)
+    }
+  })
+  image.addEventListener('error', () => {
+    if (!currentResource || currentResource.url === '') return
+    wrapper.dataset.imageStatus = 'unavailable'
+    image.dataset.imageStatus = 'unavailable'
+    status.hidden = false
+    status.textContent = 'Image could not be decoded; Markdown path was kept.'
+  })
+
+  parent.append(wrapper)
+  const initialResource = options.imageResolver
+    ? undefined
+    : imageResourceWithoutResolver(source, alt)
+  if (initialResource) {
+    applyResource(initialResource)
+  } else if (options.imageResolver) {
+    wrapper.dataset.imageStatus = 'pending'
+    image.dataset.imageStatus = 'pending'
+    void options.imageResolver
+      .resolve(source, options.documentPath)
+      .then((resource) => {
+        if (wrapper.isConnected || parent.contains(wrapper)) applyResource(resource)
+      })
+      .catch((error: unknown) => {
+        if (!wrapper.isConnected && !parent.contains(wrapper)) return
+        applyResource({
+          ...imageResourceWithoutResolver(source, alt),
+          error: `Image read failed: ${String(error)}`,
+        })
+      })
+  }
+}
+
 function appendInline(
   parent: HTMLElement,
   source: string,
   document: Document,
+  options: ImageProjectionRenderOptions,
 ): void {
-  const pattern =
-    /\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|_([^_\n]+)_|\[([^\]\n]+)\]\(([^)\s]+)\)/g
+  pattern.lastIndex = 0
   let cursor = 0
   let match: RegExpExecArray | null
 
@@ -147,22 +324,24 @@ function appendInline(
       parent.append(document.createTextNode(source.slice(cursor, match.index)))
     }
 
-    if (match[1] !== undefined) {
-      const strong = document.createElement('strong')
-      strong.textContent = match[1]
-      parent.append(strong)
-    } else if (match[2] !== undefined) {
-      const emphasis = document.createElement('em')
-      emphasis.textContent = match[2]
-      parent.append(emphasis)
+    if (match[1] !== undefined && match[2] !== undefined) {
+      appendImageProjection(parent, match[2], match[1], document, options)
     } else if (match[3] !== undefined) {
+      const strong = document.createElement('strong')
+      strong.textContent = match[3]
+      parent.append(strong)
+    } else if (match[4] !== undefined) {
       const emphasis = document.createElement('em')
-      emphasis.textContent = match[3]
+      emphasis.textContent = match[4]
+      parent.append(emphasis)
+    } else if (match[5] !== undefined) {
+      const emphasis = document.createElement('em')
+      emphasis.textContent = match[5]
       parent.append(emphasis)
     } else {
-      const label = match[4]
-      const href = match[5]
-      if (isSafeHref(href)) {
+      const label = match[6]
+      const href = match[7]
+      if (label !== undefined && href !== undefined && isSafeHref(href)) {
         const link = document.createElement('a')
         link.href = href
         link.textContent = label
@@ -232,6 +411,7 @@ export class BasicLivePreview {
     private readonly unsubscribe: () => void,
     private readonly renderer: BasicLivePreviewRenderer =
       renderBasicMarkdownPreview,
+    private readonly renderOptions: ImageProjectionRenderOptions = {},
   ) {
     this.displayedRevisionValue = initialDocument.revision
   }
@@ -378,7 +558,7 @@ export class BasicLivePreview {
     document: DocumentState,
     forceAcknowledgement = false,
   ): void {
-    this.renderer(this.parent, document.markdown)
+    this.renderer(this.parent, document.markdown, this.renderOptions)
     this.renderModeValue = 'rich'
     setPreviewRenderMode(this.parent, 'rich')
     this.displayedRevisionValue = document.revision
@@ -541,6 +721,13 @@ export function mountBasicLivePreview(
       snapshot,
       unsubscribe,
       options.renderer ?? renderBasicMarkdownPreview,
+      {
+        imageResolver: options.imageResolver,
+        documentPath: options.documentPath,
+        onPreview: options.onPreview,
+        onCopy: options.onCopy,
+        onReveal: options.onReveal,
+      },
     )
 
     // Keep delivery buffered while the initial renderer owns the DOM. This
