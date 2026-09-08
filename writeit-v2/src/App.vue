@@ -67,12 +67,14 @@ import {
   WorkspaceImageProjectionResolver,
   type BasicLivePreview,
   type EmbedProjectionMissingTargetContext,
+  type ImagePasteExtensionOptions,
   type ImageProjectionResource,
   type PresentationMode,
   type SingleDocumentView,
 } from './editor'
 import {
   adjacentWorkspaceFilePath,
+  decideWorkspaceOpen,
   DocumentPersistenceService,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
@@ -210,6 +212,20 @@ const tabs = new WorkspaceTabManager()
 const tabSnapshot = ref(tabs.getSnapshot())
 const documentRevisionSignal = ref(0)
 const documentSubscriptions = new Map<DocumentId, () => void>()
+/**
+ * Tab metadata is a projection of the authoritative Store snapshot. Keep its
+ * Vue invalidation independent from tab lifetime: a loaded Document can lose
+ * its tab while an Embed projection continues editing it.
+ */
+const stopDocumentTimelineSubscription = store.subscribeTimeline((event) => {
+  if (
+    event.type === 'DocumentChanged' ||
+    event.type === 'DocumentPersisted' ||
+    event.type === 'DocumentRenamed'
+  ) {
+    documentRevisionSignal.value += 1
+  }
+})
 const persistenceRevisionSignal = ref(0)
 const persistenceSubscriptions = new Map<DocumentId, () => void>()
 const stopKeybindingSubscription = keybindingSettingsStore.subscribe(() => {
@@ -362,7 +378,6 @@ function observeDocument(documentIdToObserve: DocumentId): void {
   documentSubscriptions.set(
     documentIdToObserve,
     store.subscribe(documentById(documentIdToObserve), (event) => {
-      documentRevisionSignal.value += 1
       if (event.type === 'changed' || event.type === 'renamed') {
         indexReferenceDocument(event.document)
       }
@@ -427,9 +442,16 @@ const documentTabViews = computed(() => {
   persistenceRevisionSignal.value
   return tabSnapshot.value.tabs.map((tab) => {
     const document = store.get(documentById(tab.documentId))
+    // A WorkspaceTab must always have an authoritative Store binding. Fail
+    // visibly on a broken lifecycle invariant; never turn it into a clean tab.
+    if (!document) {
+      throw new Error(
+        `Workspace tab ${tab.documentId} has no DocumentStore snapshot`,
+      )
+    }
     const persistenceState = persistence.getState(documentById(tab.documentId))
-    const path = document?.path ?? String(tab.documentId)
-    let name = path
+    const path = document.path
+    let name: string = path
     try {
       name = workspaceName(createWorkspacePath(path))
     } catch {
@@ -440,7 +462,7 @@ const documentTabViews = computed(() => {
       documentId: tab.documentId,
       path,
       name,
-      dirty: document?.dirty ?? false,
+      dirty: document.dirty,
       persistenceStatus: persistenceState.status,
     }
   })
@@ -707,6 +729,31 @@ function handleImagePasteDiagnostic(
 ): void {
   imagePasteStatus.value =
     `Orphan attachment ${diagnostic.path}: ${diagnostic.reason}`
+}
+
+/**
+ * Shared application policy for both the main editor and editable Embed
+ * children. The Embed adapter supplies the target DocumentState.path and its
+ * own projection mutation capability; this object never captures the host
+ * document path.
+ */
+function createImagePasteBridgeOptions(): Omit<
+  ImagePasteExtensionOptions,
+  'getDocumentPath' | 'mutation'
+> {
+  return {
+    handle: (images, context) =>
+      imageAttachmentService.paste({
+        images,
+        mode: imagePasteMode.value,
+        hostPath: context.documentPath,
+      }),
+    cleanupAttachments: (attachments, context) =>
+      imageAttachmentService.cleanup(attachments, context),
+    onApplied: handleImagePasteApplied,
+    onDiagnostic: handleImagePasteDiagnostic,
+    onError: handleImagePasteError,
+  }
 }
 
 function openImagePreview(resource: ImageProjectionResource): void {
@@ -1043,18 +1090,8 @@ function mountActiveDocument(): void {
           }
         }),
         createImagePasteExtension({
+          ...createImagePasteBridgeOptions(),
           getDocumentPath: () => activeDocument.value?.path ?? null,
-          handle: (images, context) =>
-            imageAttachmentService.paste({
-              images,
-              mode: imagePasteMode.value,
-              hostPath: context.documentPath,
-            }),
-          cleanupAttachments: (attachments, context) =>
-            imageAttachmentService.cleanup(attachments, context),
-          onApplied: handleImagePasteApplied,
-          onDiagnostic: handleImagePasteDiagnostic,
-          onError: handleImagePasteError,
         }),
         createReferenceClipboardExtension({
           store: referenceClipboard.store,
@@ -1107,6 +1144,13 @@ function mountActiveDocument(): void {
           subscribeTargets: (listener) =>
             referenceHealth.subscribe(() => listener()),
           imageProjection: imageProjectionOptions,
+          slashQuickInsert: {
+            registry: quickInsertRegistry,
+          },
+          completion: {
+            registry: completionRegistry,
+          },
+          imagePaste: createImagePasteBridgeOptions(),
           onOpen: (path, fragment) =>
             openReferenceContext({ path, fragment }),
         }),
@@ -1167,23 +1211,51 @@ async function openWorkspaceFile(
   workspaceBusy.value = true
   workspaceError.value = null
   try {
-    let documentIdForPath = documentIdsByPath.get(normalizedPath)
+    const documentPathForOpen = createDocumentPath(normalizedPath)
+    let loadedDocument = store.get(documentByPath(documentPathForOpen))
+    let mappedDocumentId = documentIdsByPath.get(normalizedPath)
+
+    // The Store is authoritative for identity. The path map is only a
+    // navigation hint and may lag behind an Embed/other projection that
+    // loaded the Document without opening a workspace tab.
+    if (!loadedDocument && mappedDocumentId !== undefined) {
+      const mappedDocument = store.get(documentById(mappedDocumentId))
+      if (mappedDocument?.path === documentPathForOpen) {
+        loadedDocument = mappedDocument
+      } else {
+        documentIdsByPath.delete(normalizedPath)
+        mappedDocumentId = undefined
+      }
+    }
+    if (loadedDocument) {
+      mappedDocumentId = loadedDocument.id
+      documentIdsByPath.set(normalizedPath, loadedDocument.id)
+    }
+
     const wasOpen =
-      documentIdForPath !== undefined && tabs.isOpen(documentIdForPath)
-    if (documentIdForPath === undefined) {
-      documentIdForPath = createDocumentId(`workspace:${normalizedPath}`)
+      loadedDocument !== undefined && tabs.isOpen(loadedDocument.id)
+    const decision = decideWorkspaceOpen({
+      loadedDocumentId: loadedDocument?.id,
+      dirty: loadedDocument?.dirty ?? false,
+      tabOpen: wasOpen,
+    })
+    let documentIdForPath: DocumentId
+    if (decision.kind === 'load') {
+      documentIdForPath =
+        mappedDocumentId ?? createDocumentId(`workspace:${normalizedPath}`)
       await persistence.loadFromFile({
         id: documentIdForPath,
-        path: createDocumentPath(normalizedPath),
+        path: documentPathForOpen,
       })
       documentIdsByPath.set(normalizedPath, documentIdForPath)
-    } else if (!store.get(documentById(documentIdForPath))) {
-      await persistence.loadFromFile({
-        id: documentIdForPath,
-        path: createDocumentPath(normalizedPath),
-      })
-    } else if (!wasOpen) {
-      await persistence.reopen(documentById(documentIdForPath))
+    } else {
+      documentIdForPath = decision.documentId
+      if (decision.kind === 'reopen-clean') {
+        // Preserve the existing clean closed-document reconciliation path.
+        // Dirty Documents take the activate-existing branch and never reach
+        // persistence.reopen(), so their in-memory edits cannot be replaced.
+        await persistence.reopen(documentById(documentIdForPath))
+      }
     }
     observeDocument(documentIdForPath)
     observePersistence(documentIdForPath)
@@ -1675,6 +1747,7 @@ onBeforeUnmount(() => {
   documentSubscriptions.clear()
   for (const unsubscribe of persistenceSubscriptions.values()) unsubscribe()
   persistenceSubscriptions.clear()
+  stopDocumentTimelineSubscription()
   persistence.destroy()
   stopTabsSubscription()
   stopKeybindingSubscription()

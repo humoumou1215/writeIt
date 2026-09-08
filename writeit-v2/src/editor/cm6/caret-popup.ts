@@ -196,7 +196,17 @@ export class CaretPopup {
       top: 0,
       bottom: this.ownerWindow.innerHeight,
     }
-    const boundary = intersectPopupRectangles(editorBoundary, viewportBoundary)
+    // An Embed child can be measured while its parent CM6 replaced widget is
+    // still in its compact layout. Constraining the popup to that transient
+    // scroller rectangle can leave only a few pixels for a mode bar plus one
+    // option. Child popups are still positioned relative to their own editor,
+    // but use the stable viewport boundary so the existing popup contract is
+    // usable inside a projection widget as well as the host editor.
+    const isNestedProjection =
+      this.view.dom.closest('.cm-writeit-embed-projection__editor') !== null
+    const boundary = isNestedProjection
+      ? viewportBoundary
+      : intersectPopupRectangles(editorBoundary, viewportBoundary)
     if (!boundary) return this.markUnavailable()
 
     const availableWidth = Math.max(0, boundary.right - boundary.left - 16)

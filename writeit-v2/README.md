@@ -1,7 +1,7 @@
 # WriteIt v2
 
 WriteIt v2 是基于 Markdown-first、DocumentStore 和 CodeMirror 6 的新主线。
-当前已完成 P2-01 至 P2-06、P2A-00 至 P2A-06、P2A-R01 至 P2A-R06、P3-01 至 P3-08、P4-01 至 P4-09 及已批准的 P2-AR-06/P3/P4 remediation；P2A-AR1 用户验收门已通过。P4-AR2 综合 architecture/product-boundary gate 当前为 **CHANGES REQUIRED / HOLD**，P5 尚未开始。能力包括 CM6 编辑器与 DocumentStore 双向同步、同一 Document 的多 Projection、revision/stale 协议、基础 Live Preview、编辑辅助、同一 CM6 状态内的 Raw Source / Live Preview 切换、Workspace tree/tabs/navigation、manual save/auto-save/dirty/conflict/external-change policy、路径型 workspace recovery 和可持久化的 sidebar/settings shell，以及四种图片粘贴策略、二进制附件落盘和相对路径图片投影/预览/复制与工作区定位；attachment compensation、部分 production acceptance 和本次 gate findings 尚未关闭。
+当前已完成 P2-01 至 P2-06、P2A-00 至 P2A-06、P2A-R01 至 P2A-R06、P3-01 至 P3-08、P4-01 至 P4-09 及已批准的 P2-AR-06/P3/P4 remediation；P2A-AR1 用户验收门已通过。P4-AR2 综合 architecture/product-boundary gate 按用户决策 B 已为 **PASS**：当前 Embed controlled harness + workspace/reference `Refresh` retry 作为 acceptance 证据被接受，真实 production loader failure/retry journey 记录为后续非阻断 deferred/test gap。P5 尚未开始，下一建议为 P5-00（Table UX & Behavior Contract）。能力包括 CM6 编辑器与 DocumentStore 双向同步、同一 Document 的多 Projection、revision/stale 协议、基础 Live Preview、编辑辅助、同一 CM6 状态内的 Raw Source / Live Preview 切换、Workspace tree/tabs/navigation、manual save/auto-save/dirty/conflict/external-change policy、路径型 workspace recovery 和可持久化的 sidebar/settings shell，以及四种图片粘贴策略、二进制附件落盘和相对路径图片投影/预览/复制与工作区定位；目录移动影响已打开 descendant 时继续 fail-closed 阻止，完整 directory migration 继续 deferred；真实 production Embed loader failure/retry journey 不属于当前 P4 gate blocker。
 
 ## 开发命令
 

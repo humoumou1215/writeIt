@@ -3,18 +3,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import {
+  CompletionProviderRegistry,
+  createStaticCompletionProvider,
+} from '../../../../src/application/assistance'
+import { createBasicMarkdownCommandRegistry } from '../../../../src/application/commands'
+import { ImageAttachmentService } from '../../../../src/application/attachments'
+import {
   createDocumentId,
   createDocumentOrigin,
   createDocumentPath,
   documentById,
   DocumentStore,
 } from '../../../../src/core/document'
+import { createWorkspacePath } from '../../../../src/core/workspace'
 import {
   ReferenceGraph,
   ReferenceHealthService,
 } from '../../../../src/core/reference'
 import {
   createEmbedProjectionExtension,
+  createImagePasteExtension,
   createReferenceNavigationExtension,
   mountSingleDocumentView,
   type EmbedProjectionExtensionOptions,
@@ -39,12 +47,46 @@ function loadDocument(
   return documentById(document.id)
 }
 
+function createEmbedPopupCompletionRegistry(): CompletionProviderRegistry {
+  const registry = new CompletionProviderRegistry()
+  registry.register(
+    createStaticCompletionProvider({
+      id: 'embed-reference-completion',
+      triggers: ['@', '[[', '![[' ],
+      items: [
+        {
+          id: 'candidate',
+          label: 'Candidate',
+          detail: 'Candidate.md',
+          keywords: ['candidate'],
+          apply: (context) => ({
+            from: context.trigger.from,
+            to: context.trigger.to,
+            insert:
+              context.trigger.kind === '![['
+                ? '![[Candidate.md]]'
+                : '[[Candidate.md]]',
+          }),
+        },
+      ],
+    }),
+  )
+  return registry
+}
+
 function mountEmbed(
   store: DocumentStore,
   locator: ReturnType<typeof documentById>,
   projectionId: string,
   editable = true,
-  options: Pick<EmbedProjectionExtensionOptions, 'imageProjection' | 'onOpen'> = {},
+  options: Pick<
+    EmbedProjectionExtensionOptions,
+    | 'imageProjection'
+    | 'imagePaste'
+    | 'onOpen'
+    | 'slashQuickInsert'
+    | 'completion'
+  > = {},
 ): SingleDocumentView {
   const projection = mountSingleDocumentView({
     store,
@@ -66,8 +108,59 @@ function mountEmbed(
   return projection
 }
 
+function fakeImageFile(
+  bytes: readonly number[],
+  name = 'clipboard.png',
+): File {
+  return {
+    name,
+    type: 'image/png',
+    size: bytes.length,
+    arrayBuffer: async () => new Uint8Array(bytes).buffer,
+  } as unknown as File
+}
+
+function pasteImages(
+  target: HTMLElement,
+  images: readonly {
+    readonly bytes: readonly number[]
+    readonly name?: string
+  }[],
+  redispatch = false,
+): Event {
+  const files = images.map((image) => fakeImageFile(image.bytes, image.name))
+  const items = images.map((image) => ({
+    kind: 'file',
+    type: 'image/png',
+    getAsFile: () => fakeImageFile(image.bytes, image.name),
+  }))
+  const event = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'clipboardData', {
+    configurable: true,
+    value: { files, items },
+  })
+  target.dispatchEvent(event)
+  if (redispatch) target.dispatchEvent(event)
+  return event
+}
+
 async function flush(): Promise<void> {
   for (let index = 0; index < 12; index += 1) await Promise.resolve()
+}
+
+function waitForRevision(
+  store: DocumentStore,
+  locator: ReturnType<typeof documentById>,
+  revision: number,
+): Promise<void> {
+  if (store.getRevision(locator) >= revision) return Promise.resolve()
+  return new Promise((resolve) => {
+    const stop = store.subscribe(locator, (event) => {
+      if (event.type !== 'changed' || event.document.revision < revision) return
+      stop()
+      resolve()
+    })
+  })
 }
 
 function deferred(): {
@@ -207,6 +300,330 @@ describe('CM6 embed projection', () => {
     expect(opened).toHaveBeenCalledWith('Target.md', null)
   })
 
+  it('reuses the shared slash and completion contracts inside an editable child', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'popup-target', 'Target.md', 'target')
+    const host = loadDocument(
+      store,
+      'popup-host',
+      'Host.md',
+      '![[Target.md]]',
+    )
+    const hostDocument = store.get(host)
+    if (!hostDocument) throw new Error('popup host document is missing')
+    const graph = new ReferenceGraph({
+      workspacePaths: ['Host.md', 'Target.md'],
+      documents: [hostDocument],
+    })
+    const health = new ReferenceHealthService({ graph })
+    const opened = vi.fn()
+    const targetMain = mountEmbed(store, target, 'popup-target-main')
+    const popupOptions = {
+      slashQuickInsert: {
+        registry: createBasicMarkdownCommandRegistry(),
+      },
+      completion: {
+        registry: createEmbedPopupCompletionRegistry(),
+      },
+    } satisfies Pick<
+      EmbedProjectionExtensionOptions,
+      'slashQuickInsert' | 'completion'
+    >
+    const projection = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'popup-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createReferenceNavigationExtension({
+          sourcePath: 'Host.md',
+          healthResolver: health,
+          onOpen: opened,
+        }),
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => store.getAll().map((entry) => entry.path),
+          onOpen: (path, fragment) => opened(path, fragment),
+          ...popupOptions,
+        }),
+      ],
+    })
+    mounted.push(projection)
+
+    const wrapper = projection.view.dom.querySelector<HTMLElement>(
+      '[data-writeit-embed][data-embed-status="mounted"]',
+    )
+    const childElement = wrapper?.querySelector<HTMLElement>('.cm-editor')
+    if (!childElement) throw new Error('editable popup child editor is missing')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('editable popup child CM6 view is missing')
+
+    const appendToChild = (text: string): void => {
+      const from = childView.state.doc.length
+      childView.dispatch({
+        changes: { from, insert: text },
+        selection: { anchor: from + text.length },
+      })
+    }
+    const clickOption = (option: HTMLElement): void => {
+      option.dispatchEvent(
+        new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+      )
+      option.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      )
+    }
+
+    appendToChild('\n/')
+    const slashMenu = childView.dom.querySelector<HTMLElement>('[data-slash-menu]')
+    if (!slashMenu) throw new Error('child slash popup is missing')
+    expect(slashMenu.dataset.show).toBe('true')
+    const headingCommand = slashMenu.querySelector<HTMLElement>(
+      '[data-command-id="markdown.heading-2"]',
+    )
+    if (!headingCommand) throw new Error('child heading command is missing')
+    const beforeSlashApply = store.get(target)
+    if (!beforeSlashApply) throw new Error('popup target is missing')
+    const beforeSlashHistory = store.getHistory(target)
+    clickOption(headingCommand)
+    await flush()
+
+    const afterSlash = store.get(target)
+    expect(afterSlash?.markdown).toBe('target\n## ')
+    expect(afterSlash?.revision).toBe(beforeSlashApply.revision + 1)
+    expect(store.getHistory(target).undo).toHaveLength(
+      beforeSlashHistory.undo.length + 1,
+    )
+    expect(targetMain.view.state.doc.toString()).toBe(afterSlash?.markdown)
+    expect(store.get(host)?.markdown).toBe('![[Target.md]]')
+    expect(store.getRevision(host)).toBe(0)
+    expect(opened).not.toHaveBeenCalled()
+
+    for (const [trigger, insertion] of [
+      ['@ca', '[[Candidate.md]]'],
+      ['[[ca', '[[Candidate.md]]'],
+      ['![[ca', '![[Candidate.md]]'],
+    ] as const) {
+      appendToChild(`\n${trigger}`)
+      await flush()
+      const completionMenu = childView.dom.querySelector<HTMLElement>(
+        '[data-completion-menu]',
+      )
+      if (!completionMenu) throw new Error('child completion popup is missing')
+      expect(completionMenu.dataset.show).toBe('true')
+      expect(completionMenu.dataset.triggerKind).toBe(
+        trigger.startsWith('!') ? '![[' : trigger.startsWith('[') ? '[[' : '@',
+      )
+      const candidate = completionMenu.querySelector<HTMLElement>(
+        '[data-completion-id="candidate"]',
+      )
+      if (!candidate) throw new Error(`completion candidate is missing for ${trigger}`)
+      const beforeApply = store.get(target)
+      if (!beforeApply) throw new Error('popup target disappeared')
+      const beforeHistory = store.getHistory(target)
+      clickOption(candidate)
+      await flush()
+
+      const afterApply = store.get(target)
+      expect(afterApply?.markdown).toBe(
+        beforeApply.markdown.slice(0, -trigger.length) + insertion,
+      )
+      expect(afterApply?.revision).toBe(beforeApply.revision + 1)
+      expect(store.getHistory(target).undo).toHaveLength(
+        beforeHistory.undo.length + 1,
+      )
+      expect(targetMain.view.state.doc.toString()).toBe(afterApply?.markdown)
+      expect(store.get(host)?.markdown).toBe('![[Target.md]]')
+      expect(store.getRevision(host)).toBe(0)
+      expect(opened).not.toHaveBeenCalled()
+    }
+
+    expect(store.get(target)?.dirty).toBe(true)
+  })
+
+  it('does not install committing popup surfaces in a readonly child', () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'readonly-popup-target', 'Target.md', 'target')
+    const host = loadDocument(
+      store,
+      'readonly-popup-host',
+      'Host.md',
+      '![[Target.md|ro]]',
+    )
+    const projection = mountEmbed(store, host, 'readonly-popup-host', true, {
+      slashQuickInsert: {
+        registry: createBasicMarkdownCommandRegistry(),
+      },
+      completion: {
+        registry: createEmbedPopupCompletionRegistry(),
+      },
+    })
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('readonly popup child editor is missing')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('readonly popup child CM6 view is missing')
+
+    expect(childView.dom.querySelector('[data-slash-menu]')).toBeNull()
+    expect(childView.dom.querySelector('[data-completion-menu]')).toBeNull()
+    childView.dispatch({
+      changes: { from: childView.state.doc.length, insert: '\n@candidate' },
+      selection: { anchor: childView.state.doc.length + 10 },
+    })
+
+    expect(store.get(target)?.markdown).toBe('target')
+    expect(store.getRevision(target)).toBe(0)
+    expect(store.get(host)?.markdown).toBe('![[Target.md|ro]]')
+  })
+
+  it('keeps child popup IME and dismiss lifecycle source-safe', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'popup-ime-target', 'Target.md', '')
+    const host = loadDocument(
+      store,
+      'popup-ime-host',
+      'Host.md',
+      '![[Target.md]]',
+    )
+    const resolvers: Array<
+      (items: readonly { id: string; label: string; insertText: string }[]) => void
+    > = []
+    const completionRegistry = {
+      complete: () =>
+        new Promise<readonly { id: string; label: string; insertText: string }[]>(
+          (resolve) => resolvers.push(resolve),
+        ),
+    }
+    const projection = mountEmbed(store, host, 'popup-ime-host', true, {
+      completion: { registry: completionRegistry },
+    })
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('IME child editor is missing')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('IME child CM6 view is missing')
+    childView.dispatch({
+      changes: { from: 0, insert: '@a' },
+      selection: { anchor: 2 },
+    })
+    const menu = childView.dom.querySelector<HTMLElement>('[data-completion-menu]')
+    if (!menu) throw new Error('IME child completion popup is missing')
+    expect(resolvers).toHaveLength(1)
+
+    childView.dom.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+    expect(menu.dataset.show).toBe('false')
+    resolvers[0]?.([{ id: 'late', label: 'Late', insertText: 'done' }])
+    await flush()
+    expect(menu.dataset.show).toBe('false')
+    expect(store.get(target)?.markdown).toBe('@a')
+
+    childView.dom.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+    expect(resolvers).toHaveLength(2)
+    resolvers[1]?.([{ id: 'candidate', label: 'Candidate', insertText: 'done' }])
+    await flush()
+    expect(menu.dataset.show).toBe('true')
+    childView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    )
+    expect(menu.dataset.show).toBe('false')
+    expect(store.get(target)?.markdown).toBe('@a')
+    expect(store.getRevision(target)).toBe(1)
+  })
+
+  it('rejects child completion when the target projection is stale', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'popup-stale-target', 'Target.md', '')
+    const host = loadDocument(
+      store,
+      'popup-stale-host',
+      'Host.md',
+      '![[Target.md]]',
+    )
+    const projection = mountEmbed(store, host, 'popup-stale-host', true, {
+      completion: {
+        registry: createEmbedPopupCompletionRegistry(),
+      },
+    })
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('stale child editor is missing')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('stale child CM6 view is missing')
+    childView.dispatch({
+      changes: { from: 0, insert: '@ca' },
+      selection: { anchor: 3 },
+    })
+    await flush()
+    const childProjectionId = childElement.parentElement?.dataset.embedProjectionId
+    if (!childProjectionId) throw new Error('stale child projection id is missing')
+    store.markProjectionStale(target, childProjectionId, 'popup stale')
+    childView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
+    await flush()
+
+    expect(store.get(target)?.markdown).toBe('@ca')
+    expect(store.getRevision(target)).toBe(1)
+  })
+
+  it('rejects a late child completion apply after host detach', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'popup-late-target', 'Target.md', '')
+    const host = loadDocument(
+      store,
+      'popup-late-host',
+      'Host.md',
+      '![[Target.md]]',
+    )
+    const pending = deferred()
+    const projection = mountEmbed(store, host, 'popup-late-host', true, {
+      completion: {
+        registry: {
+          complete: () => [
+            {
+              id: 'late',
+              label: 'Late',
+              apply: async () => {
+                await pending.promise
+                return 'done'
+              },
+            },
+          ],
+        },
+      },
+    })
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('late child editor is missing')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('late child CM6 view is missing')
+    childView.dispatch({
+      changes: { from: 0, insert: '@' },
+      selection: { anchor: 1 },
+    })
+    await flush()
+    const menu = childView.dom.querySelector<HTMLElement>('[data-completion-menu]')
+    if (!menu) throw new Error('late child completion popup is missing')
+    childView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
+
+    projection.destroy()
+    pending.resolve()
+    await flush()
+
+    expect(store.get(target)?.markdown).toBe('@')
+    expect(store.getRevision(target)).toBe(1)
+    expect(store.getProjections(target)).toEqual([])
+  })
+
   it('keeps readonly embed bodies non-editable while the explicit open action navigates', () => {
     const store = new DocumentStore()
     const target = loadDocument(store, 'readonly-action-target', 'Target.md', 'source')
@@ -237,6 +654,279 @@ describe('CM6 embed projection', () => {
     expect(store.getRevision(target)).toBe(0)
     wrapper?.querySelector<HTMLButtonElement>('[data-embed-action="open"]')?.click()
     expect(opened).toHaveBeenCalledWith('Target.md', null)
+  })
+
+  it('pastes through the editable child capability once and resolves nested target paths', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(
+      store,
+      'child-paste-target',
+      'notes/deep/Target.md',
+      '# Target\n',
+    )
+    const host = loadDocument(
+      store,
+      'child-paste-host',
+      'Host.md',
+      '![[notes/deep/Target.md]]',
+    )
+    const fileSystem = new MemoryFileSystem()
+    const service = new ImageAttachmentService({
+      fileSystem,
+      nameGenerator: () => 'capture.png',
+    })
+    const resolver = new WorkspaceImageProjectionResolver({
+      reader: fileSystem,
+    })
+    const applied = vi.fn()
+    const targetRevision = waitForRevision(store, target, 1)
+    const projection = mountEmbed(store, host, 'child-paste-host', true, {
+      imageProjection: {
+        imageResolver: resolver,
+        documentPath: store.get(host)?.path,
+      },
+      imagePaste: {
+        handle: (images, context) =>
+          service.paste({
+            images,
+            mode: 'file-images',
+            hostPath: context.documentPath,
+          }),
+        cleanupAttachments: (attachments, context) =>
+          service.cleanup(attachments, context),
+        onApplied: applied,
+      },
+    })
+
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="notes/deep/Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('editable child editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('editable child CM6 view was not found')
+    childView.dispatch({
+      selection: { anchor: childView.state.doc.length },
+    })
+
+    const event = pasteImages(
+      childView.contentDOM,
+      [{ bytes: [1, 2, 3] }, { bytes: [4, 5, 6] }],
+      true,
+    )
+    await targetRevision
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(store.get(host)?.markdown).toBe('![[notes/deep/Target.md]]')
+    expect(store.get(host)?.revision).toBe(0)
+    expect(store.getHistory(host).undo).toHaveLength(0)
+    expect(store.get(target)?.markdown).toBe(
+      '# Target\n![clipboard](./images/capture.png)\n![clipboard](./images/capture-1.png)',
+    )
+    expect(store.get(target)?.revision).toBe(1)
+    expect(store.getHistory(target).undo).toHaveLength(1)
+    expect(applied).toHaveBeenCalledTimes(1)
+    expect(
+      [...await fileSystem.readBinary(createWorkspacePath('notes/deep/images/capture.png'))],
+    ).toEqual([1, 2, 3])
+    expect(
+      [...await fileSystem.readBinary(createWorkspacePath('notes/deep/images/capture-1.png'))],
+    ).toEqual([4, 5, 6])
+
+    await expect(
+      resolver.resolve('./images/capture.png', 'notes/deep/Target.md'),
+    ).resolves.toMatchObject({
+      path: 'notes/deep/images/capture.png',
+      status: 'ready',
+    })
+    resolver.dispose()
+  })
+
+  it('blocks readonly child paste before an editable host bridge can observe it', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'readonly-paste-target', 'Target.md', 'target')
+    const host = loadDocument(
+      store,
+      'readonly-paste-host',
+      'Host.md',
+      '![[Target.md|ro]]',
+    )
+    const fileSystem = new MemoryFileSystem()
+    const service = new ImageAttachmentService({
+      fileSystem,
+      nameGenerator: () => 'readonly.png',
+    })
+    const hostHandle = vi.fn(async () =>
+      service.paste({
+        images: [{ name: 'host.png', mimeType: 'image/png', bytes: new Uint8Array([9]) }],
+        mode: 'file-images',
+        hostPath: 'Host.md',
+      }),
+    )
+    const projection = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'readonly-paste-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createImagePasteExtension({
+          getDocumentPath: () => 'Host.md',
+          handle: hostHandle,
+        }),
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => store.getAll().map((entry) => entry.path),
+          imagePaste: {
+            handle: (images, context) =>
+              service.paste({
+                images,
+                mode: 'file-images',
+                hostPath: context.documentPath,
+              }),
+            cleanupAttachments: (attachments, context) =>
+              service.cleanup(attachments, context),
+          },
+        }),
+      ],
+    })
+    mounted.push(projection)
+
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('readonly child editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('readonly child CM6 view was not found')
+
+    const event = pasteImages(childView.contentDOM, [{ bytes: [1, 2, 3] }])
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(hostHandle).not.toHaveBeenCalled()
+    expect(store.get(host)?.markdown).toBe('![[Target.md|ro]]')
+    expect(store.get(target)?.markdown).toBe('target')
+    expect(store.get(target)?.revision).toBe(0)
+    expect(fileSystem.snapshotBinary()).toEqual(new Map())
+  })
+
+  it('compensates child attachment writes after detach, revision race, or failed result', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(
+      store,
+      'failed-child-target',
+      'notes/Target.md',
+      'target',
+    )
+    const host = loadDocument(
+      store,
+      'failed-child-host',
+      'Host.md',
+      '![[notes/Target.md]]',
+    )
+    const fileSystem = new MemoryFileSystem({
+      binaryFiles: {
+        'images/capture.png': new Uint8Array([9, 9]),
+      },
+    })
+    const service = new ImageAttachmentService({
+      fileSystem,
+      nameGenerator: () => 'capture.png',
+    })
+    let hostProjection: SingleDocumentView | undefined
+    let failureResolve!: () => void
+    const failure = new Promise<void>((resolve) => {
+      failureResolve = resolve
+    })
+    const projection = mountEmbed(store, host, 'failed-child-host', true, {
+      imagePaste: {
+        handle: async (images, context) => {
+          const result = await service.paste({
+            images,
+            mode: 'root-images',
+            hostPath: context.documentPath,
+          })
+          hostProjection?.destroy()
+          return { ...result, references: [] }
+        },
+        cleanupAttachments: (attachments, context) =>
+          service.cleanup(attachments, context),
+        onError: () => failureResolve(),
+      },
+    })
+    hostProjection = projection
+
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="notes/Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('failed child editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('failed child CM6 view was not found')
+
+    pasteImages(childView.contentDOM, [{ bytes: [1, 2, 3] }])
+    await failure
+
+    expect(store.get(host)?.markdown).toBe('![[notes/Target.md]]')
+    expect(store.get(host)?.revision).toBe(0)
+    expect(store.get(target)?.markdown).toBe('target')
+    expect(store.get(target)?.revision).toBe(0)
+    expect(
+      [...await fileSystem.readBinary(createWorkspacePath('images/capture.png'))],
+    ).toEqual([9, 9])
+    expect(fileSystem.hasFile(createDocumentPath('images/capture-1.png'))).toBe(false)
+  })
+
+  it('rejects a child mutation on a target revision race and preserves the external source', async () => {
+    const store = new DocumentStore()
+    const target = loadDocument(store, 'raced-child-target', 'notes/Target.md', 'target')
+    const host = loadDocument(
+      store,
+      'raced-child-host',
+      'Host.md',
+      '![[notes/Target.md]]',
+    )
+    const fileSystem = new MemoryFileSystem()
+    const service = new ImageAttachmentService({
+      fileSystem,
+      nameGenerator: () => 'race.png',
+    })
+    let failureResolve!: () => void
+    const failure = new Promise<void>((resolve) => {
+      failureResolve = resolve
+    })
+    const projection = mountEmbed(store, host, 'raced-child-host', true, {
+      imagePaste: {
+        handle: async (images, context) => {
+          const result = await service.paste({
+            images,
+            mode: 'file-images',
+            hostPath: context.documentPath,
+          })
+          store.applyChange(target, {
+            markdown: 'external target',
+            origin: createDocumentOrigin('test', 'child-image-race'),
+          })
+          return result
+        },
+        cleanupAttachments: (attachments, context) =>
+          service.cleanup(attachments, context),
+        onError: () => failureResolve(),
+      },
+    })
+    const childElement = projection.view.dom.querySelector<HTMLElement>(
+      '[data-embed-target="notes/Target.md"] .cm-editor',
+    )
+    if (!childElement) throw new Error('raced child editor was not mounted')
+    const childView = EditorView.findFromDOM(childElement)
+    if (!childView) throw new Error('raced child CM6 view was not found')
+
+    pasteImages(childView.contentDOM, [{ bytes: [1, 2, 3] }])
+    await failure
+
+    expect(store.get(host)?.markdown).toBe('![[notes/Target.md]]')
+    expect(store.get(target)?.markdown).toBe('external target')
+    expect(store.get(target)?.revision).toBe(1)
+    expect(fileSystem.hasFile(createDocumentPath('notes/images/race.png'))).toBe(false)
   })
 
   it('uses the target document path and shared resolver for nested embed images', async () => {

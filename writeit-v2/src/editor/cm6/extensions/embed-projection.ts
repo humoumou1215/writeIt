@@ -33,6 +33,18 @@ import {
   getPresentationMode,
 } from './live-preview'
 import {
+  createCompletionExtension,
+  type CompletionSurfaceOptions,
+} from './completion'
+import {
+  createSlashQuickInsertExtension,
+  type SlashQuickInsertExtensionOptions,
+} from './slash-quick-insert'
+import {
+  createImagePasteExtension,
+  type ImagePasteExtensionOptions,
+} from './image-paste'
+import {
   mountSingleDocumentView,
 } from '../projection/single-document-view'
 import type {
@@ -91,6 +103,25 @@ export interface EmbedProjectionExtensionOptions {
   readonly subscribeTargets?: (listener: () => void) => () => void
   /** Source-backed image options shared by nested child projections. */
   readonly imageProjection?: ImageProjectionRenderOptions
+  /**
+   * Existing slash popup contract. The child supplies its own mutation
+   * capability; callers must not provide a second Store mutation bridge.
+   */
+  readonly slashQuickInsert?: Omit<SlashQuickInsertExtensionOptions, 'mutation'>
+  /**
+   * Existing reference completion contract. Trigger/provider business logic
+   * remains shared with the host editor; only the child projection changes.
+   */
+  readonly completion?: Omit<CompletionSurfaceOptions, 'mutation'>
+  /**
+   * Existing application image-paste policy to install only in editable
+   * child projections. The child adapter supplies its own target path and
+   * receives the child projection mutation capability from mountSingleDocumentView.
+   */
+  readonly imagePaste?: Omit<
+    ImagePasteExtensionOptions,
+    'getDocumentPath' | 'mutation'
+  >
   /** Explicit card action for opening the resolved target in a workspace tab. */
   readonly onOpen?: (
     path: DocumentPath,
@@ -398,6 +429,17 @@ class EmbedProjectionWidget extends WidgetType {
     }
   }
 
+  /**
+   * A child editor owns paste events inside its projection. Stop the event at
+   * the child mount after CM6 has handled it so the host editor cannot see a
+   * child paste as a second host paste. Readonly/degraded children reject the
+   * event here rather than letting it bubble to an editable host.
+   */
+  private readonly handleChildPasteBoundary = (event: Event): void => {
+    event.stopPropagation()
+    if (!this.canEdit || this.reference.readonly) event.preventDefault()
+  }
+
   constructor(
     private readonly store: DocumentStore,
     private readonly hostProjectionId: string,
@@ -507,6 +549,7 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.dataset.embedProjectionId = childId
     wrapper.append(childMount)
     this.mount = childMount
+    childMount.addEventListener('paste', this.handleChildPasteBoundary)
 
     const childEditable = this.canEdit && !this.reference.readonly
     const childImageProjection = this.options.imageProjection === undefined
@@ -531,6 +574,42 @@ class EmbedProjectionWidget extends WidgetType {
     }
     const childExtensions: Extension[] = [
       createEmbedProjectionExtension(childEmbedOptions),
+      ...(childEditable && this.options.slashQuickInsert !== undefined
+        ? [
+            createSlashQuickInsertExtension({
+              // Deliberately copy only the registry. The child mutation
+              // capability is supplied by mountSingleDocumentView's facet.
+              registry: this.options.slashQuickInsert.registry,
+            }),
+          ]
+        : []),
+      ...(childEditable && this.options.completion !== undefined
+        ? [
+            createCompletionExtension({
+              // Never forward a caller-provided mutation bridge from the host.
+              registry: this.options.completion.registry,
+            }),
+          ]
+        : []),
+      ...(childEditable && this.options.imagePaste !== undefined
+        ? [
+            createImagePasteExtension({
+              ...this.options.imagePaste,
+              // This callback is deliberately child-scoped. It must resolve
+              // attachment destinations against the target Document, never
+              // against the host document containing the Embed token.
+              getDocumentPath: () => {
+                try {
+                  return this.store.get(locator)?.path ?? null
+                } catch {
+                  return null
+                }
+              },
+              originSource:
+                this.options.imagePaste.originSource ?? 'embed-image-paste',
+            }),
+          ]
+        : []),
       keymap.of([
         {
           key: 'Mod-z',
@@ -575,6 +654,7 @@ class EmbedProjectionWidget extends WidgetType {
     this.unsubscribeDocument = undefined
     this.unsubscribeTimeline = undefined
     this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown)
+    this.mount?.removeEventListener('paste', this.handleChildPasteBoundary)
     this.openButton?.removeEventListener('click', this.handleOpenClick)
     this.openButton = undefined
     this.child?.destroy()

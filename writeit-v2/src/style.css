@@ -2025,7 +2025,8 @@ h1 {
   border-radius: 0.55rem;
   background: #f8faff;
   box-shadow: 0 0.15rem 0.45rem rgb(49 70 120 / 7%);
-  overflow: hidden;
+  /* Nested caret popups may be positioned above/outside the child editor. */
+  overflow: visible;
 }
 
 .cm-writeit-embed-projection__label {

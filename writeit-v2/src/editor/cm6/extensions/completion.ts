@@ -727,6 +727,7 @@ class CompletionController {
     this.parentItem = undefined
     this.childLoading = false
     this.items = this.rootItems
+    this.menu.scrollTop = 0
     this.selectedIndex = Math.min(
       this.selectedIndex,
       Math.max(0, this.items.length - 1),
@@ -828,6 +829,10 @@ class CompletionController {
     this.items = []
     this.selectedIndex = 0
     this.childLoading = true
+    // A browser click can scroll the root menu to reveal a file candidate.
+    // Child content has a different height, so carry-over scrollTop could put
+    // the sticky mode bar over the only child option and make it unclickable.
+    this.menu.scrollTop = 0
     this.renderMenu()
 
     try {
