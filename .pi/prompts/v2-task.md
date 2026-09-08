@@ -38,7 +38,8 @@
 5. 按 `Read → Inspect → Implement → Test` 执行。验证优先使用 pure unit、integration，再使用 browser/E2E；不得用 timeout/sleep 掩盖状态同步问题。
 6. 如果实现会改变已有 ADR、数据所有权或依赖方向，停止并提出架构决策，不要把决策藏在局部代码中。
 7. 只有在验收条件和相关验证完成后，才更新 `writeit-v2/docs/STATUS.md`：标记当前任务、填写 Active/Blocked、保留 Recent decisions 和 Known risks，并写出下一建议 Task ID。STATUS 是短状态文档，不是开发日志。
-8. 最终汇报必须包含：修改文件及原因、验证命令和结果、尚存风险、下一建议 Task ID。除非用户明确要求，不提交 Git commit。
+8. 当前 Task 成功验收后，先执行 `git diff --check`，再严格只暂存当前 Task 允许的文件/变更；检查 `git diff --cached --name-status` 和 `git diff --cached`，确认没有混入既有用户修改或其他 Task。若共享文件无法安全按 hunk 精确拆分，停止提交并报告。确认无误后自动创建一个独立的本地 commit，commit message 明确包含当前 Task；默认不 push，只有用户明确要求时才 push。不得用 commit 覆盖、回滚或隐式包含其他修改。
+9. 最终汇报必须包含：修改文件及原因、验证命令和结果、commit hash、尚存风险、下一建议 Task ID。
 
 ## 硬性边界
 
