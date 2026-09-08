@@ -959,6 +959,8 @@ D = added   / 绿
 - commit detail；
 - compare target。
 
+P7-00 已冻结 Git 入口和端口边界：左侧 Git tool 展示 repo/branch/worktree changed files/history，比较目标明确显示为 Worktree↔HEAD、commit 或双 commit range；UI 只消费 machine-readable GitRepositoryPort/GitBlamePort，不解析 CLI 文本。详见 [P7-00 contract](./P7_00_GIT_DIFF_UX_CONTRACT.md)。
+
 ### 13.2 Diff
 
 首版应同时支持：
@@ -971,6 +973,8 @@ D = added   / 绿
 默认显示 unified；工具栏提供 split/unified 切换，并记住当前工作区会话内的选择。
 
 富 Table/Mermaid diff 是增强，不是唯一显示方式。
+
+Raw Source Diff 永远是保证层；semantic/rich renderer 失败时保留完整 raw change 并显示 degraded 状态。Discard file/hunk 必须先确认并在 dirty/open Document 场景明确处理冲突。
 
 ### 13.3 Blame
 
@@ -988,6 +992,8 @@ Show Git Blame / Annotate
 - 本地未提交行显示 Local/Uncommitted；
 - 不确定时显示 Unknown，而不是猜一个旧作者；
 - 关闭 Blame 不修改 Markdown。
+
+P7-00 已冻结以上 Git/Diff/Blame 入口、Raw Diff 保证层、discard 确认与 machine-readable port contract，详见 [P7-00 contract](./P7_00_GIT_DIFF_UX_CONTRACT.md)。
 
 ---
 

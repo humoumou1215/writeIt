@@ -54,6 +54,8 @@
 
 ## Change log
 
+- **2026-09-09:** P7-00 accepted the Git/Diff/Blame port and UX contract; raw Markdown remains the complete diff guarantee and discard stays confirmation-gated.
+- **2026-09-09:** P7-00 accepted the Git/Diff/Blame UX and machine-readable port contract; Raw Markdown Diff remains the guarantee layer and destructive discard requires explicit confirmation.
 - **2026-09-09:** P6-00 accepted the Annotation/Mermaid UX contract: sidecar-only annotation state with fail-closed anchor mapping, and source-backed Mermaid cards with stale-render/error fallback.
 - **2026-09-09:** P5-00 closed D-005 evidence review; `<br>` is the accepted v2 table-cell newline representation and legacy `<nbr />` remains unmodified source unless an explicit future migration is requested.
 - **2026-09-08:** Goal preparation created; D-001～D-014 and PD-001～PD-006 accepted for the upcoming Codex Goal.

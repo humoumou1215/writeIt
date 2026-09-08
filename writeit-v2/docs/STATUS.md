@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-- **Current phase:** G3 — Phase 7 Git + Diff + Provenance
-- **Current task:** P7-00 — Git / Diff UX & Port Contract
+- **Current phase:** G4 — Phase 8 Derived Services + Template Intelligence
+- **Current task:** P8-00 — Search / Panel / Template UX Contract
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
@@ -20,6 +20,7 @@
 - [x] P4-AR2 — PASS after user decision B ([review](./P4_ARCHITECTURE_REVIEW.md))
 - [x] Goal preparation — contracts, decisions, ADR-0007/0008, task-ID normalization and unified verification commands; 396 Vitest + 63 Chromium + typecheck/build PASS
 - [x] P6 Annotation + Mermaid — gate PASS ([review](./P6_ARCHITECTURE_REVIEW.md)); sidecar anchors/threads/drawer and source-backed Mermaid preview/commands/reference fallback complete
+- [x] P7 Git + Diff + Provenance — gate PASS ([review](./P7_ARCHITECTURE_REVIEW.md)); structured Git ports/workbench, raw diff guarantee, semantic fallback, discard guard and blame projection complete
 
 ## Goal progress
 
@@ -28,8 +29,8 @@
 | G0 | PASS | P4-UX01/P4-UX02 and production Embed retry reconciliation |
 | G1 | PASS | P5 Table |
 | G2 | PASS | P6 Annotation + Mermaid |
-| G3 | ACTIVE | P7 Git + Diff + Provenance |
-| G4 | PENDING | P8 Derived Services + Template Intelligence |
+| G3 | PASS | P7 Git + Diff + Provenance |
+| G4 | ACTIVE | P8 Derived Services + Template Intelligence |
 | G5 | PENDING | P9 Export |
 | G6 | PENDING | P10 Diagnostics |
 | G7 | PENDING | P11 Tauri/Desktop |
@@ -42,6 +43,7 @@
 - production Embed loader failure/retry: closed in G0 with real App browser evidence.
 - P5: **PASS** in [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); core, projection, clipboard/IME, commands, resize and reorder are complete.
 - P6: **PASS** in [P6 Annotation + Mermaid Architecture Review](./P6_ARCHITECTURE_REVIEW.md); annotation sidecar/anchors/drawer and source-backed Mermaid preview/commands/reference fallback are complete.
+- P7: **PASS** in [P7 Git + Diff + Provenance Architecture Review](./P7_ARCHITECTURE_REVIEW.md); structured ports/workbench, raw diff guarantee, semantic fallback and blame projection are complete.
 
 ## Active decisions
 
@@ -63,4 +65,4 @@
 
 ## Next
 
-Execute P7-00, then continue G3 in SPEC order through P7-AR1.
+Execute P8-00, then continue G4 in SPEC order through P8-AR1.

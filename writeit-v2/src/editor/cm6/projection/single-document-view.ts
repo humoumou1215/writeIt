@@ -53,6 +53,7 @@ import {
   executeActiveTableCommand,
 } from '../widgets/table'
 import { updateAnnotations as updateAnnotationDecorations } from '../extensions/annotation'
+import { updateBlame as updateBlameDecorations, type BlameLine } from '../extensions/blame'
 
 export const DEFAULT_SINGLE_DOCUMENT_PROJECTION_ID: ProjectionId =
   'cm6-main-editor'
@@ -137,6 +138,7 @@ export interface SingleDocumentViewSurface {
   canExecuteTableCommand(commandId: TableCommandId): boolean
   executeTableCommand(commandId: TableCommandId): boolean
   updateAnnotations(annotations: readonly DocumentAnnotation[]): void
+  updateBlame(lines: readonly BlameLine[]): void
 }
 
 export interface SingleDocumentUserTransaction {
@@ -301,6 +303,9 @@ function createPublicEditorSurface(
     updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
       updateAnnotationDecorations(editorView, annotations)
     },
+    updateBlame(lines: readonly BlameLine[]): void {
+      updateBlameDecorations(editorView, lines)
+    },
   })
 }
 
@@ -382,6 +387,10 @@ export class SingleDocumentView {
 
   updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
     if (!this.destroyed) updateAnnotationDecorations(this.editorView, annotations)
+  }
+
+  updateBlame(lines: readonly BlameLine[]): void {
+    if (!this.destroyed) updateBlameDecorations(this.editorView, lines)
   }
 
   /** Current authoritative document state, never the CM6 document. */

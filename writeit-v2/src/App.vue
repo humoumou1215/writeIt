@@ -30,6 +30,8 @@ import {
 import { createTableCommands } from './application/table'
 import type { TableCommandId } from './core/table'
 import { AnnotationService, MemoryAnnotationRepository } from './application/annotation'
+import { GitWorkbenchService } from './application/git'
+import { MemoryGitAdapter, type GitDiffResult, type GitFileStatus, type GitRepositoryInfo } from './platform/git'
 import {
   createDocumentId,
   createDocumentPath,
@@ -102,7 +104,7 @@ import {
 } from './ui/workspace'
 import { ShortcutSettings as ShortcutSettingsPanel } from './ui/settings'
 import { ImagePreviewModal } from './ui/media'
-import { AnnotationDrawer } from './ui/review'
+import { AnnotationDrawer, GitWorkbenchPanel } from './ui/review'
 
 const documentId = createDocumentId('welcome')
 const documentPath = createDocumentPath('welcome.md')
@@ -177,6 +179,7 @@ interface ApplicationCommandContext {
 }
 const applicationCommandRegistry = new CommandRegistry<ApplicationCommandContext>()
 const annotationService = new AnnotationService(new MemoryAnnotationRepository())
+const gitService = new GitWorkbenchService(new MemoryGitAdapter({ info: { isGitRepository: false, branches: [] } }))
 const initialDocument = store.load({
   id: documentId,
   path: documentPath,
@@ -307,6 +310,14 @@ const annotationItems = ref<readonly import('./core/annotation').Annotation[]>([
 const activeAnnotationId = ref<string | null>(null)
 const annotationDrawerOpen = ref(false)
 const annotationDrawerWidth = ref(360)
+const gitInfo = ref<GitRepositoryInfo | null>(null)
+const gitStatuses = ref<readonly GitFileStatus[]>([])
+const gitDiff = ref<GitDiffResult | null>(null)
+const gitHistory = ref<readonly import('./platform/git').GitCommit[]>([])
+const gitSelectedPath = ref<string | null>(null)
+const gitLayout = ref<'unified' | 'split'>('unified')
+const gitLoading = ref(false)
+const gitError = ref<string | null>(null)
 let annotationSequence = 0
 let pendingFragmentNavigation: {
   readonly documentId: DocumentId
@@ -479,6 +490,71 @@ function workspacePathForDocument(
     return createWorkspacePath(document.path)
   } catch {
     return undefined
+  }
+}
+
+async function refreshGitWorkbench(): Promise<void> {
+  gitLoading.value = true
+  gitError.value = null
+  try {
+    gitInfo.value = await gitService.repositoryInfo(true)
+    gitStatuses.value = gitInfo.value.isGitRepository
+      ? await gitService.fileStatuses(true)
+      : []
+    gitDiff.value = null
+    gitHistory.value = []
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  } finally {
+    gitLoading.value = false
+  }
+}
+
+async function switchGitBranch(branch: string): Promise<void> {
+  try {
+    await gitService.switchBranch(branch)
+    await refreshGitWorkbench()
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectGitPath(path: string): Promise<void> {
+  gitSelectedPath.value = path
+  gitError.value = null
+  try {
+    gitDiff.value = await gitService.diff({
+      kind: 'worktree-vs-head',
+      path: createWorkspacePath(path),
+    })
+    gitHistory.value = await gitService.history(createWorkspacePath(path))
+  } catch (error) {
+    gitDiff.value = null
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+function toggleGitLayout(): void {
+  gitLayout.value = gitLayout.value === 'unified' ? 'split' : 'unified'
+}
+
+async function discardGitFile(path: string): Promise<void> {
+  if (!window.confirm(`Discard all Git changes in ${path}?`)) return
+  try {
+    await gitService.discardFile(createWorkspacePath(path))
+    await refreshGitWorkbench()
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function discardGitHunk(path: string, hunkId: string): Promise<void> {
+  if (!window.confirm(`Discard Git hunk ${hunkId} in ${path}?`)) return
+  try {
+    await gitService.discardHunk(createWorkspacePath(path), hunkId)
+    await selectGitPath(path)
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
   }
 }
 
@@ -1041,6 +1117,7 @@ function toggleSidebarPinned(): void {
 
 function selectWorkspaceTool(tool: 'files' | 'search' | 'git'): void {
   activeWorkspaceTool.value = tool
+  if (tool === 'git' && gitInfo.value === null) void refreshGitWorkbench()
 }
 
 function maybeAutoCollapseSidebar(): void {
@@ -2373,6 +2450,40 @@ onBeforeUnmount(() => {
         </p>
         </div>
         <section
+          v-else-if="activeWorkspaceTool === 'git'"
+          class="workspace-tool-placeholder"
+          data-testid="workspace-git-tool"
+          aria-label="git workspace tool"
+        >
+          <GitWorkbenchPanel
+            :info="gitInfo"
+            :statuses="gitStatuses"
+            :diff="gitDiff"
+            :history="gitHistory"
+            :selected-path="gitSelectedPath"
+            :layout="gitLayout"
+            :loading="gitLoading"
+            :error="gitError"
+            @refresh="refreshGitWorkbench"
+            @switch-branch="switchGitBranch"
+            @select-path="selectGitPath"
+            @toggle-layout="toggleGitLayout"
+            @discard-file="discardGitFile"
+            @discard-hunk="discardGitHunk"
+          />
+          <ul class="workspace-git-preview" aria-label="Changed files preview">
+            <li
+              v-if="activeDocument?.dirty"
+              class="workspace-git-preview__current"
+              data-testid="workspace-git-current-document"
+            >
+              <span>{{ activeDocument.path }}</span>
+              <span>Unsaved</span>
+            </li>
+            <li v-else class="workspace-git-preview__empty">No current unsaved change.</li>
+          </ul>
+        </section>
+        <section
           v-else
           class="workspace-tool-placeholder"
           :data-testid="`workspace-${activeWorkspaceTool}-tool`"
@@ -2384,17 +2495,6 @@ onBeforeUnmount(() => {
               ? '全文搜索将在 P8 接入；切换工具不会重建当前编辑器。'
               : 'Git 工作台将在 P7 接入；切换工具不会重建当前编辑器。' }}
           </p>
-          <ul v-if="activeWorkspaceTool === 'git'" class="workspace-git-preview" aria-label="Changed files preview">
-            <li
-              v-if="activeDocument?.dirty"
-              class="workspace-git-preview__current"
-              data-testid="workspace-git-current-document"
-            >
-              <span>{{ activeDocument.path }}</span>
-              <span>Unsaved</span>
-            </li>
-            <li v-else class="workspace-git-preview__empty">No current unsaved change.</li>
-          </ul>
         </section>
         </div>
         <div

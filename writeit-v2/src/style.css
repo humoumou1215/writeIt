@@ -2612,6 +2612,127 @@ h1 {
   stroke-dasharray: 3 3;
 }
 
+.git-workbench {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.7rem;
+  border: 1px solid #dce1eb;
+  border-radius: 0.55rem;
+  background: #fbfcff;
+  color: #263044;
+  font-size: 0.72rem;
+}
+
+.git-workbench__header,
+.git-workbench__toolbar,
+.git-workbench__files li,
+.git-workbench__hunk header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.git-workbench__header {
+  justify-content: space-between;
+}
+
+.git-workbench h3,
+.git-workbench__meta,
+.git-workbench__diff-target {
+  margin: 0;
+}
+
+.git-workbench__meta,
+.git-workbench__status,
+.git-workbench__empty {
+  color: #657087;
+}
+
+.git-workbench__error {
+  margin: 0;
+  color: #a32437;
+}
+
+.git-workbench button {
+  border: 1px solid #cfd6e5;
+  border-radius: 0.3rem;
+  padding: 0.2rem 0.35rem;
+  color: #3146b8;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.git-workbench__toggle--active {
+  background: #edf1ff !important;
+}
+
+.git-workbench__files,
+.git-workbench__history ul {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-workbench__files li > button:first-child {
+  flex: 1;
+  text-align: left;
+}
+
+.git-workbench__file--active > button:first-child {
+  background: #eef1ff;
+}
+
+.git-workbench__discard {
+  color: #9a3f3f !important;
+}
+
+.git-workbench__diff {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.git-workbench__hunk {
+  overflow: auto;
+  border: 1px solid #e0e5ef;
+  border-radius: 0.35rem;
+  background: #fff;
+}
+
+.git-workbench__hunk header {
+  justify-content: space-between;
+  padding: 0.3rem 0.45rem;
+  color: #536076;
+  background: #f5f7fb;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.git-workbench__hunk pre {
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  font: 0.7rem/1.45 "SFMono-Regular", Consolas, monospace;
+}
+
+.git-line--added { color: #1f7a45; background: #effbf2; }
+.git-line--removed { color: #a32437; background: #fff1f3; }
+
+.cm-writeit-blame {
+  margin-right: 0.55rem;
+  border: 0;
+  padding: 0;
+  color: #7a8498;
+  background: transparent;
+  font: 0.62rem/1 "SFMono-Regular", Consolas, monospace;
+  cursor: pointer;
+  opacity: 0.78;
+}
+
+.cm-writeit-blame--uncommitted { color: #a05a14; }
+.cm-writeit-blame--unknown { color: #8a90a0; }
+
 .editor-host .cm-writeit-table__cell-button {
   cursor: cell;
 }

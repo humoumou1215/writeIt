@@ -15,6 +15,7 @@
 | 2026-09-08 | G0 P4 UX reconciliation | [G0 review](./G0_P4_UX_RECONCILIATION.md) PASS；production Embed retry gap 关闭；397 Vitest、72 Chromium、typecheck/build PASS |
 | 2026-09-09 | G1 Table Engine | [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md) PASS；Table Core、CM6 projection、clipboard/IME、commands、resize/reorder 完成；434 Vitest、74 Chromium、typecheck/build PASS |
 | 2026-09-09 | G2 Annotation + Mermaid | [P6 Architecture Review](./P6_ARCHITECTURE_REVIEW.md) PASS；annotation sidecar/anchors/drawer、source-backed Mermaid preview、commands/completion/reference fallback 完成；453 Vitest、76 Chromium、typecheck/build PASS |
+| 2026-09-09 | G3 Git + Diff + Provenance | [P7 Architecture Review](./P7_ARCHITECTURE_REVIEW.md) PASS；structured Git ports/workbench、raw diff guarantee、semantic fallback、discard guard、blame projection 完成；461 Vitest、78 Chromium、typecheck/build PASS |
 
 ## Historical detail locations
 

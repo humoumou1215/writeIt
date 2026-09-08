@@ -113,9 +113,9 @@ The Goal is complete only when all of the following are true:
 | Goal preparation | COMPLETE | `docs(v2): prepare Codex goal workflow` | Baseline `03975a7`; contract check, 396 Vitest, 63 Chromium tests, typecheck and build PASS |
 | G0 | PASS | `feat(v2): close G0 P4 UX reconciliation` | [P4 UX reconciliation](./G0_P4_UX_RECONCILIATION.md) PASS；397 Vitest + 72 Chromium；production retry closed |
 | G1 | PASS | `e13e526` | [P5 Table Architecture Review](./P5_TABLE_ARCHITECTURE_REVIEW.md); 434 Vitest + 74 Chromium; typecheck/build PASS |
-| G2 | PASS | `pending local commit` | [P6 Architecture Review](./P6_ARCHITECTURE_REVIEW.md); 453 Vitest + 76 Chromium; typecheck/build PASS |
-| G3 | ACTIVE | — | Starting P7-00 Git / Diff UX & Port Contract |
-| G4 | PENDING | — | — |
+| G2 | PASS | `be9ba45` | [P6 Architecture Review](./P6_ARCHITECTURE_REVIEW.md); 453 Vitest + 76 Chromium; typecheck/build PASS |
+| G3 | PASS | `010c2d6` | [P7 Architecture Review](./P7_ARCHITECTURE_REVIEW.md); 461 Vitest + 78 Chromium; typecheck/build PASS |
+| G4 | ACTIVE | — | Starting P8-00 Search / Panel / Template UX Contract |
 | G5 | PENDING | — | — |
 | G6 | PENDING | — | — |
 | G7 | PENDING | — | Desktop toolchain preflight required before implementation |
