@@ -103,6 +103,40 @@ describe('DocumentPersistenceService', () => {
     expect(noOp.written).toBe(false)
   })
 
+  it('refreshes a known baseline token after conditional deletion rollback without acknowledging Store', async () => {
+    const { fileSystem, store, persistence } = createTestPersistence({
+      autoSaveDelayMs: null,
+    })
+    const loaded = await persistence.loadFromFile({ id, path })
+    const baselineVersion = persistence.getState(locator).baselineVersion
+    if (baselineVersion === undefined) throw new Error('expected a load version')
+
+    const changed = store.applyChange(locator, {
+      markdown: 'local deletion save\n',
+      origin: editorOrigin,
+    })
+    const transaction = await persistence.prepareDeletionSave([id])
+    expect(await fileSystem.readFile(path)).toBe(changed.markdown)
+
+    await transaction.rollback()
+
+    expect(await fileSystem.readFile(path)).toBe(loaded.markdown)
+    expect(persistence.getState(locator)).toMatchObject({
+      dirty: true,
+      revision: changed.revision,
+      persistedRevision: loaded.persistedRevision,
+      baselineMarkdown: loaded.markdown,
+      baselineVersion: expect.any(String),
+    })
+    expect(persistence.getState(locator).baselineVersion).not.toBe(
+      baselineVersion,
+    )
+    await expect(persistence.checkExternalChange(locator)).resolves.toMatchObject({
+      changed: false,
+      kind: 'none',
+    })
+  })
+
   it('does not overwrite an external edit and exposes a save conflict', async () => {
     const { fileSystem, store, persistence } = createTestPersistence({
       autoSaveDelayMs: null,

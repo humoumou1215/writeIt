@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P4-AR2 — P0–P4 Architecture & Product Boundary Re-review (CHANGES REQUIRED / HOLD)
+Current task: F-01 — Dirty delete CAS integration (complete; P4-AR2 remains HOLD for F-02/F-03)
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -82,9 +82,10 @@ Current task: P4-AR2 — P0–P4 Architecture & Product Boundary Re-review (CHAN
 - [x] P4-R04 — Clipboard fallback freshness protocol — current plain-text-only paste evidence must match the latest internal copy fingerprint/binding; changed, empty, ambiguous, or unreadable clipboard payloads fail closed while custom MIME/file URI and existing reference modes remain intact ([Task Contract](./P4_R04_TASK_CONTRACT.md))
 - [x] P4-R05 — Embed failure/recovery lifecycle coverage — generation-bound missing/load requests now support explicit retry after transient failure or target appearance, drop late results after detach, and cover nested rebuild plus close/reopen recovery ([Task Contract](./P4_R05_TASK_CONTRACT.md))
 - [x] P4-AR2 — P0–P4 Architecture & Product Boundary Re-review — **CHANGES REQUIRED / HOLD**; findings and evidence are recorded in [P4 Architecture Review](./P4_ARCHITECTURE_REVIEW.md) and the review contract ([Task Contract](./P4_AR2_TASK_CONTRACT.md))
+- [x] F-01 — Dirty delete CAS integration — dirty Save preparation and conditional rollback now use coherent `FileVersionToken` CAS; conflict/rollback race diagnostics and multi-document failure coverage added ([Task Contract](./F_01_TASK_CONTRACT.md)); F-02/F-03 and P5 remain blocked
 
 ## Active
-None — P4-AR2 review is complete; no remediation implementation or P5 work has started.
+None — F-01 is complete; no image remediation or P5 work has started.
 
 ## Blocked
 - [ ] P5-01 — HOLD until P4-AR2 blockers, production acceptance decisions, and required evidence are closed.
@@ -150,11 +151,11 @@ None — P4-AR2 review is complete; no remediation implementation or P5 work has
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
 - P4-04 models file → entity completion as a provider-owned child session: selecting a file keeps the trigger/source untouched, and only a leaf file/object/heading candidate commits through the existing projection mutation capability. Static objects and dynamic `objectsFor(ctx)` are resolved through an editor-independent SuggestContext; headings are the safe fallback when no objects are available.
 - P4-R03 keeps entity child discovery independent of the active reference insertion mode; the same file-self/object/heading candidates receive the current mode only through the provider/application apply contract, while mode/navigation/filter/back actions remain source-, revision-, history-, and caret-preserving.
-- P3-R02 routes File Tree deletion through an application-owned recursive plan. Dirty Documents are resolved as one explicit Save/Discard/Cancel decision and successful deletion tears down projections, tabs, persistence registrations, recovery bindings, reference facts and Store Documents. The current deletion Save preparation still uses low-level writes for pre-delete save/rollback rather than CAS; external-overwrite/rollback-race coverage is a P4-AR2 blocker (F-01). Directory rename/move safety remains the existing fail-closed block for open descendants.
+- P3-R02 routes File Tree deletion through an application-owned recursive plan. Dirty Documents are resolved as one explicit Save/Discard/Cancel decision and successful deletion tears down projections, tabs, persistence registrations, recovery bindings, reference facts and Store Documents. F-01 now makes deletion Save preparation and conditional rollback use the existing CAS contract; external-overwrite/rollback-race and multi-document failure diagnostics are covered. Directory rename/move safety remains the existing fail-closed block for open descendants.
 - P4-R01 makes directory rename/move fail closed before filesystem mutation when any nested runtime Document or recovery path binding would be stranded. The typed diagnostic includes operation/source/target, affected paths, DocumentIds and dirty state; unaffected directories retain the existing filesystem-refresh behavior.
-- P3-R03 makes normal text persistence and incoming reference rewrites use coherent snapshot versions plus atomic conditional writes; expected changed/deleted outcomes are explicit conflicts, and adapters without strong compare-and-write must return degraded instead of claiming a safe write. MemoryFileSystem preserves logical text tokens across workspace moves so rename path rebinds remain conditional-safe. The P3-R02 deletion preparation path remains outside this CAS contract and is not covered by the broad claim.
+- P3-R03 makes normal text persistence, incoming reference rewrites, and now F-01 dirty-delete Save/rollback use coherent snapshot versions plus atomic conditional writes; expected changed/deleted outcomes are explicit conflicts, and adapters without strong compare-and-write must return degraded instead of claiming a safe write. MemoryFileSystem preserves logical text tokens across workspace moves so rename path rebinds remain conditional-safe.
 
-- P4-AR2 re-review result is **CHANGES REQUIRED / HOLD**: normal P0–P4 authority/boundary/fidelity gates pass, but dirty-delete CAS/rollback, image attachment ownership/compensation, and production Embed acceptance evidence remain open; P5-01 is not authorized.
+- P4-AR2 re-review result is **CHANGES REQUIRED / HOLD**: normal P0–P4 authority/boundary/fidelity gates pass, F-01 is closed, but image attachment ownership/compensation and production Embed acceptance evidence remain open; P5-01 is not authorized.
 - The approved directory policy remains fail-closed blocking for open descendant Document/recovery path bindings. Full directory path migration and closed-document incoming-reference rewrite are explicitly deferred, not completed.
 
 ## Known risks
@@ -184,7 +185,7 @@ None — P4-AR2 review is complete; no remediation implementation or P5 work has
 - P4-02 keeps only parsed reference facts, source paths, ids, and revisions; it never retains Markdown or mutates DocumentStore. Workspace paths for unopened files are supplied as a catalog; P4-05 verifies headings/object fragments through a separate derived health service, while full template catalog discovery remains deferred to P8.
 - P4-03 enumerates the workspace on demand rather than maintaining a second file-tree cache; catalog failures degrade to the CompletionProviderRegistry error surface, and real filesystem/remote catalog adapters remain platform work.
 - P4-04/P4-R03 entity discovery uses the injected workspace/content reader and suggestion provider seam uniformly across link, editable embed, and readonly embed modes; template catalog/doctype scanning and full P8 template lifecycle remain deferred.
-- P3-R02 deletion cleanup is application-transactional for dirty-save preparation and in-memory lifecycle state; a platform adapter that partially mutates a recursive delete or cannot restore a failed pre-delete write still reports an explicit cleanup/rollback diagnostic and remains a later platform atomicity concern.
+- P3-R02 deletion cleanup is application-transactional for dirty-save preparation and in-memory lifecycle state. F-01 uses conditional Save/rollback and reports rollback conflicts without overwriting external bytes; a platform adapter that partially mutates a recursive delete still reports an explicit cleanup/rollback diagnostic and remains a later platform atomicity concern.
 - P4-05 keeps navigation and health derived from ReferenceGraph plus target-content reads: source tokens remain unchanged, heading/object fragments are verified before opening, broken facts become diagnostics, and re-selection replaces only the selected token through the projection mutation capability.
 - P4-05 object health uses an application adapter for the existing suggestion contract; full template catalog/doctype discovery remains deferred to P8.
 - P4-06 file linkage covers individual file rename/move. Directory rename/move with open descendants is currently blocked; directory-wide path migration and closed-document incoming-reference linkage remain explicit deferred risk/user decision, not a completed capability.
@@ -201,4 +202,4 @@ None — P4-AR2 review is complete; no remediation implementation or P5 work has
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes. Unrepresentable source/projection mappings still use a contiguous fallback and need explicit failure-path selection/degraded coverage.
 
 ## Next
-P4-AR2 follow-up remediation decision and Task selection; P5-01 remains unauthorized while this gate is HOLD.
+F-02 — Image attachment ownership/compensation is the next separately approved remediation candidate; it has not started. F-03 production Embed acceptance remains a decision/evidence item, and P5-01 remains unauthorized while the gate is HOLD.

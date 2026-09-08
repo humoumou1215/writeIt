@@ -22,14 +22,18 @@ import {
 import {
   MemoryFileSystem,
 } from '../../../../src/platform/filesystem'
-import type { WorkspaceDeleteOptions as PlatformWorkspaceDeleteOptions } from '../../../../src/platform/filesystem'
+import type {
+  ConditionalWriteResult,
+  FileVersionToken,
+  WorkspaceDeleteOptions as PlatformWorkspaceDeleteOptions,
+} from '../../../../src/platform/filesystem'
 import { MemorySettingsStorage } from '../../../../src/platform/settings'
 import {
   WorkspaceRecoveryStore,
   WorkspaceTabManager,
 } from '../../../../src/application/workspace'
 
-class FailOnceFileSystem extends MemoryFileSystem {
+class FailOnceConditionalWriteFileSystem extends MemoryFileSystem {
   constructor(
     initial: ConstructorParameters<typeof MemoryFileSystem>[0],
     private readonly failPath: string,
@@ -37,11 +41,57 @@ class FailOnceFileSystem extends MemoryFileSystem {
     super(initial)
   }
 
-  override async writeFile(path: DocumentPath, content: string): Promise<void> {
+  override async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
     if (path === this.failPath) {
-      throw new Error(`write failed for ${this.failPath}`)
+      throw new Error(`conditional write failed for ${this.failPath}`)
     }
-    await super.writeFile(path, content)
+    return super.writeTextIfUnchanged(path, expectedVersion, content)
+  }
+}
+
+class RaceDuringDeletionSaveFileSystem extends MemoryFileSystem {
+  private raced = false
+
+  constructor(
+    initial: ConstructorParameters<typeof MemoryFileSystem>[0],
+    private readonly racePath: DocumentPath,
+    private readonly externalContent: string,
+  ) {
+    super(initial)
+  }
+
+  override async writeTextIfUnchanged(
+    path: DocumentPath,
+    expectedVersion: FileVersionToken,
+    content: string,
+  ): Promise<ConditionalWriteResult> {
+    if (!this.raced && path === this.racePath) {
+      this.raced = true
+      await super.writeFile(path, this.externalContent)
+    }
+    return super.writeTextIfUnchanged(path, expectedVersion, content)
+  }
+}
+
+class DeleteFailureAfterExternalChangeFileSystem extends MemoryFileSystem {
+  constructor(
+    initial: ConstructorParameters<typeof MemoryFileSystem>[0],
+    private readonly externalPath: DocumentPath,
+    private readonly externalContent: string,
+  ) {
+    super(initial)
+  }
+
+  override async deleteEntry(
+    path: WorkspacePath,
+    _options?: PlatformWorkspaceDeleteOptions,
+  ): Promise<void> {
+    await super.writeFile(this.externalPath, this.externalContent)
+    throw new Error(`delete failed for ${path}`)
   }
 }
 
@@ -299,8 +349,131 @@ describe('WorkspaceDeletionService', () => {
     expect(harness.store.getAll()).toEqual([])
   })
 
+  it('aborts dirty deletion on a CAS conflict and retains the local conflict diagnosis', async () => {
+    const target = createDocumentPath('notes/deep/dirty.md')
+    const fileSystem = new RaceDuringDeletionSaveFileSystem(
+      {
+        files: {
+          'notes/deep/dirty.md': 'dirty on disk\n',
+          'notes/deep/clean.md': 'clean on disk\n',
+        },
+      },
+      target,
+      'external race\n',
+    )
+    const harness = createHarness(fileSystem)
+    const beforeDocument = harness.store.get(documentById(harness.dirtyId))
+    const deletion = harness.service.delete(target)
+    await Promise.resolve()
+    harness.choose('save')
+    const error = await deletion.catch((value: unknown) => value)
+
+    expect(error).toMatchObject({ phase: 'save' })
+    expect((error as WorkspaceDeletionSaveErrorLike).cause).toBeInstanceOf(
+      PersistenceDeletionSaveError,
+    )
+    const saveError = (error as WorkspaceDeletionSaveErrorLike)
+      .cause as PersistenceDeletionSaveError
+    expect(saveError.cause).toMatchObject({
+      name: 'SaveConflictError',
+      kind: 'changed',
+      expectedVersion: expect.any(String),
+      actualVersion: expect.any(String),
+      actualMarkdown: 'external race\n',
+    })
+    expect(await fileSystem.readFile(target)).toBe('external race\n')
+    expect(fileSystem.hasFile(target)).toBe(true)
+    expect(harness.store.get(documentById(harness.dirtyId))).toBe(
+      beforeDocument,
+    )
+    expect(harness.persistence.getState(documentById(harness.dirtyId))).toMatchObject({
+      dirty: true,
+      status: 'conflict',
+      externalChange: {
+        kind: 'changed',
+        markdown: 'external race\n',
+      },
+    })
+    expect(harness.tabs.getSnapshot().tabs).toHaveLength(2)
+  })
+
+  it('treats a same-content external rewrite as a deletion-save CAS conflict', async () => {
+    const target = createDocumentPath('notes/deep/dirty.md')
+    const fileSystem = new RaceDuringDeletionSaveFileSystem(
+      {
+        files: {
+          'notes/deep/dirty.md': 'dirty on disk\n',
+          'notes/deep/clean.md': 'clean on disk\n',
+        },
+      },
+      target,
+      'dirty on disk\n',
+    )
+    const harness = createHarness(fileSystem)
+    const deletion = harness.service.delete(target)
+    await Promise.resolve()
+    harness.choose('save')
+    const error = await deletion.catch((value: unknown) => value)
+
+    expect(error).toMatchObject({ phase: 'save' })
+    expect((error as WorkspaceDeletionSaveErrorLike).cause).toMatchObject({
+      name: 'PersistenceDeletionSaveError',
+    })
+    const saveError = (error as WorkspaceDeletionSaveErrorLike)
+      .cause as PersistenceDeletionSaveError
+    expect(saveError.cause).toMatchObject({
+      name: 'SaveConflictError',
+      kind: 'changed',
+      actualMarkdown: 'dirty on disk\n',
+    })
+    expect(await fileSystem.readFile(target)).toBe('dirty on disk\n')
+    expect(fileSystem.hasFile(target)).toBe(true)
+    expect(harness.persistence.getState(documentById(harness.dirtyId))).toMatchObject({
+      dirty: true,
+      status: 'conflict',
+    })
+  })
+
+  it('uses CAS for rollback and never restores over an external change after delete failure', async () => {
+    const target = createDocumentPath('notes/deep/dirty.md')
+    const fileSystem = new DeleteFailureAfterExternalChangeFileSystem(
+      {
+        files: {
+          'notes/deep/dirty.md': 'dirty on disk\n',
+          'notes/deep/clean.md': 'clean on disk\n',
+          'outside.md': 'outside\n',
+        },
+      },
+      target,
+      'external during rollback\n',
+    )
+    const harness = createHarness(fileSystem)
+    const beforeDocument = harness.store.get(documentById(harness.dirtyId))
+    const deletion = harness.service.delete('notes')
+    await Promise.resolve()
+    harness.choose('save')
+    const error = await deletion.catch((value: unknown) => value)
+
+    expect(error).toMatchObject({ phase: 'filesystem' })
+    expect(error).toMatchObject({ rollbackErrors: [expect.any(Error)] })
+    expect(fileSystem.hasEntry(createWorkspacePath('notes'))).toBe(true)
+    expect(await fileSystem.readFile(target)).toBe('external during rollback\n')
+    expect(harness.store.get(documentById(harness.dirtyId))).toBe(
+      beforeDocument,
+    )
+    expect(harness.persistence.getState(documentById(harness.dirtyId))).toMatchObject({
+      dirty: true,
+      status: 'conflict',
+      externalChange: {
+        kind: 'changed',
+        markdown: 'external during rollback\n',
+      },
+    })
+    expect(harness.tabs.getSnapshot().tabs).toHaveLength(2)
+  })
+
   it('rolls back earlier guarded saves when a later dirty file cannot be saved', async () => {
-    const fileSystem = new FailOnceFileSystem(
+    const fileSystem = new FailOnceConditionalWriteFileSystem(
       {
         files: {
           'notes/deep/dirty.md': 'dirty on disk\n',

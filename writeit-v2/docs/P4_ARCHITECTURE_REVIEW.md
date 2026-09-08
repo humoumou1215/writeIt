@@ -11,9 +11,9 @@
 
 P0–P4 的核心 authority、Projection、source-fidelity、依赖边界和 P2-AR-06 的正常 fan-out/history 路径有充分自动化证据；本次完整 gate 全部通过，不能据此伪称 P0–P4 产品边界已经无风险。
 
-本次 Gate 保持 HOLD，原因是发现了会影响数据安全或生产验收的未关闭事项：
+本次 Gate 保持 HOLD，原因是仍有会影响数据安全或生产验收的未关闭事项；F-01 的独立 remediation 已在后续 follow-up 中关闭：
 
-1. **HIGH / blocker：** dirty recursive delete 的 Save preparation/rollback 仍使用低层无条件 `writeFile`，没有沿用 P3-R03 的 CAS；在 filesystem delete 失败或检查与写入之间发生外部变化时，可能覆盖外部内容。
+1. **F-01：已由本任务关闭。** dirty recursive delete 的 Save preparation/rollback 现使用 P3-R03 CAS；race、same-content rewrite、delete-failure rollback conflict 和多文档部分失败均有证据。
 2. **HIGH / blocker：** image attachment 写入先于 DocumentStore mutation，目标路径可被覆盖；cleanup 是 best-effort 且失败结果没有被 editor adapter 充分呈现，存在 orphan 和潜在覆盖已有图片的风险。
 3. **HIGH / production acceptance gap：** Embed controller 的 generation/retry/late-result 协议已有证据，但 production App wiring 只间接依赖 workspace/reference refresh 触发 retry；没有针对真实 persistence loader failure 的 production Chromium 用户旅程证据，也没有明确的 embed retry surface。
 
@@ -88,15 +88,15 @@ file-self/object/heading child session 在 link、editable embed、readonly embe
 
 ### P3-R02 — dirty-aware recursive delete
 
-**结论：生命周期 cleanup PASS；Save safety **CHANGES REQUIRED**。**
+**结论：生命周期 cleanup PASS；F-01 CAS remediation PASS。**
 
-recursive plan、任意深度 runtime bindings、Save/Discard/Cancel、autosave lock、projection/tab/persistence/recovery/ReferenceGraph cleanup 和 no-ghost tests 通过；但其 Save preparation 实际未满足“guarded Save”的完整 external-overwrite 要求，见 F-01。
+recursive plan、任意深度 runtime bindings、Save/Discard/Cancel、autosave lock、projection/tab/persistence/recovery/ReferenceGraph cleanup 和 no-ghost tests 通过。F-01 进一步让 dirty Save preparation 使用 coherent snapshot token + `writeTextIfUnchanged`，并让 delete-failure/multi-document rollback 使用成功 CAS 返回的 token；冲突会在 filesystem delete 前中止并保留 local conflict diagnosis。证据见 [F-01 contract](./F_01_TASK_CONTRACT.md) 与 follow-up 小节。
 
 ### P3-R03 — conditional filesystem writes/CAS
 
-**结论：normal persistence/rename PASS；delete preparation 不在 CAS 保护内。**
+**结论：normal persistence/rename PASS；dirty delete integration 已接入 CAS。**
 
-manual/auto save 和 P4-06 incoming-reference rewrite 使用 coherent snapshot + `writeTextIfUnchanged`；changed/deleted、same-content version change、degraded adapter、conditional rollback 和 graph compensation evidence 通过。P3-R03 contract 明确把 dirty delete 列为 out of scope，但当前 STATUS 的宽泛“text persistence uses CAS”不能覆盖 `prepareDeletionSave()` 的低层 `writeFile` 路径。
+manual/auto save、P4-06 incoming-reference rewrite 和 F-01 dirty-delete Save/rollback 均使用 coherent snapshot + `writeTextIfUnchanged`；changed/deleted、same-content version change、degraded adapter、conditional rollback 和 graph compensation evidence 通过。P3-R03 原合同不负责重新设计 dirty delete；F-01 只复用既有 adapter contract，将 deletion preparation/rollback 接入同一条件写语义。
 
 ### P4-R04 — clipboard fallback freshness
 
@@ -112,17 +112,13 @@ request 绑定 host revision/projection generation；missing → appears、trans
 
 ## 5. Gate findings
 
-### F-01 — HIGH / BLOCKER — dirty delete Save/rollback bypasses CAS
+### F-01 — RESOLVED — dirty delete Save/rollback CAS integration
 
-**证据：** `src/application/persistence/index.ts:567-598` 先读 `readDisk()`，`src/application/persistence/index.ts:639-642` 再调用无条件 `writeFile(targetMarkdown)`；rollback 在 `:609-615`、`:688-697` 再调用无条件 `writeFile(originalMarkdown)`。相比之下，普通 save 在 `:1015-1019` 使用 `writeTextIfUnchanged`。调用链位于 `WorkspaceDeletionService.executePlan()` 的 Save path（`src/application/workspace/deletion.ts:787-835`）。
+**Baseline finding：** 原评审在 baseline `65103f3` 发现 `prepareDeletionSave()` 使用无条件 `writeFile`，其 rollback 也可能覆盖外部修改。
 
-**风险：**
+**Follow-up result：** F-01 只修改 dirty-delete Save/rollback integration：每个 dirty Document 先读取并保留 coherent content/version；Save 使用 `writeTextIfUnchanged`；成功写入返回的 version 作为 rollback expected token。CAS changed/deleted/degraded、adapter failure、Store race 和 rollback conflict 都阻止 filesystem delete，并返回包含 phase、affected paths/DocumentIds、cause/rollback errors 的诊断。rollback 不会用重新读取的 token 强行覆盖外部 bytes；conflict 会保留 Document dirty/conflict state。相关实现/测试见 [F-01 contract](./F_01_TASK_CONTRACT.md)。
 
-- 外部修改发生在 deletion preflight/read 与 `writeFile` 之间时，dirty local source 可以覆盖外部 bytes。
-- local save 已写入、filesystem delete 随后失败时，rollback 的无条件 write 可以覆盖 rollback 期间发生的外部修改。
-- 现有 tests 验证 save failure/delete failure 的静态结果，但没有验证上述两个 race；`PersistenceDeletionSaveError` 只能报告 write/rollback failure，不能证明未覆盖外部内容。
-
-**要求：** 后续独立 remediation 必须让 deletion preparation、commit/rollback 使用 coherent version token 和 conditional write/conditional restore，或明确设计不覆盖外部变化的 compensation；补充 race、same-content rewrite、delete-failure rollback conflict 和 diagnostic assertions。此次不在评审中修改产品实现。
+**Follow-up evidence：** deletion/persistence unit suites 覆盖不同内容 race、相同 bytes 的 version race、multi-document partial save failure、delete-failure rollback conflict，以及 rollback 后已知 baseline token 的刷新；完整 Vitest 61 files / 362 tests、Chromium 51 tests、typecheck、build、boundary 和 whitespace checks 均通过。图片 attachment、目录 migration 和 Embed production acceptance 不在本 remediation 内。
 
 ### F-02 — HIGH / BLOCKER — image attachment compensation/orphan/collision strategy 未闭合
 
@@ -140,7 +136,7 @@ request 绑定 host revision/projection generation；missing → appears、trans
 
 **证据：** P4-R05 controlled harness 已覆盖 retry/generation，但 App 的 `ensureEmbeddedDocument()`（`src/App.vue:480-533`）把 persistence load failure 交给 Embed controller；实际 retry 依赖后续 tree/reference refresh event。当前 browser tests 直接注入 `onTargetMissing`/`subscribeTargets`，未验证真实 App loader failure → 用户可见诊断 → Refresh/retry → child mount 的完整旅程。
 
-**要求：** 在不引入 timer 的前提下补真实 production wiring acceptance，或由用户明确接受“Refresh 是 retry surface、controlled harness 足够”的 deferred decision。该项与 F-01/F-02 一起使本次 gate 不能宣称 P5-ready。
+**要求：** 在不引入 timer 的前提下补真实 production wiring acceptance，或由用户明确接受“Refresh 是 retry surface、controlled harness 足够”的 deferred decision。该项与 F-02 一起使本次 gate 不能宣称 P5-ready。
 
 ### F-04 — MEDIUM / DEFERRED RISK — directory policy 的语义范围与 preflight race
 
@@ -156,7 +152,6 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 
 ### 必须返工后才能关闭的 blocker
 
-- F-01：dirty delete Save/rollback 的 external-overwrite/CAS gap。
 - F-02：image attachment ownership/compensation/orphan/collision gap。
 - F-03：如果用户验收要求 production Embed loader failure/retry 证据，则必须补 production journey；当前不能把 controlled harness 直接冒充 production acceptance。
 
@@ -180,13 +175,13 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 
 - `writeit-v2/README.md` 仍写成“下一任务为 P3-08”，与已完成 P4-R05 不一致；已改为当前 P4 gate HOLD，明确 P5 未开始。
 - `STATUS.md` 原本 `Blocked: None` 且 `Next: P5-01`，会错误授权 P5；已改为 P4-AR2 review complete / HOLD，并将 P5-01 标为 blocked。
-- `STATUS.md` 原本把 P3-R02/P3-R03 的 CAS/guarded-save 描述写得过宽；已保留真实实现但明确 deletion preparation 的 F-01 gap。
+- `STATUS.md` 原本把 P3-R02/P3-R03 的 CAS/guarded-save 描述写得过宽；F-01 follow-up 已将 deletion preparation/rollback 的 CAS 边界补齐，并保留 F-02/F-03 风险。
 - `LEGACY_FEATURE_MAP.md` 的 `Strategy` 仍是迁移策略，不是 parity completion；本次不把 broad `File CRUD`/`References` 行误标为已完成，也没有创建第二份 Feature Map。
 - P2/P2A 历史 review 中的旧 gate 结论保留为历史证据；P4-AR2 不重写已接受的 PASS，只明确其覆盖边界和本次新增的 evidence gap。
 
 ## 8. 用户验收与决策点
 
-1. 是否接受 F-01 dirty-delete external-overwrite 风险作为 P5 前 blocker（本报告建议不接受）。
+1. F-01 dirty-delete external-overwrite/CAS gap 已由本任务关闭；本报告不再把它作为未关闭 blocker。
 2. 是否批准 attachment 的 ownership/compensation 方案并要求 collision/orphan evidence（本报告建议在关闭前不进入 P5）。
 3. 是否接受当前 Embed 的“controller + explicit workspace/reference refresh retry”作为 production acceptance，还是要求真实 App loader failure/retry journey。
 4. 是否继续批准当前目录策略：有打开 descendant 时阻止；完整 directory migration 明确 deferred。若要改成 transactional migration，必须另立架构决策，本 Task 不自行改变。
@@ -197,6 +192,6 @@ P4-R01 的当前 block policy 可以保护已知 runtime path binding，但不�
 **CHANGES REQUIRED / HOLD。**
 
 - P0–P4 核心 authority/boundary 和正常 remediation paths 有充分证据。
-- F-01、F-02 尚未关闭；F-03 的生产验收证据也未闭合。
+- F-01 已关闭；F-02 尚未关闭，F-03 的生产验收证据也未闭合。
 - 因此 `STATUS.md` 不指向 `P5-01`，不开始 P5，不改变 accepted ADR，不改变已批准目录策略。
 - 后续应由用户批准独立 remediation Task；本评审不自动开始下一 Task。

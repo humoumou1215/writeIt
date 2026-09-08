@@ -16,6 +16,7 @@ import type {
 } from '../../core/document'
 import {
   isFileVersionToken,
+  type ConditionalWriteConflict,
   type ConditionalWriteDegraded,
   type FileSystemPort,
   type FileVersionToken,
@@ -101,7 +102,10 @@ export interface PersistenceRebindPathOptions {
 /**
  * A guarded batch of writes used by workspace deletion. The transaction does
  * not acknowledge a Store revision: if deletion is cancelled or fails, the
- * DocumentStore and persistence records remain dirty and unchanged.
+ * DocumentStore source/revision and dirty state remain unchanged. When a
+ * conditional rollback succeeds, a known persistence version may be refreshed
+ * to the token returned by that rollback write so the baseline still matches
+ * the adapter's logical file version.
  */
 export interface PersistenceDeletionSaveTransaction {
   commit(): void
@@ -205,6 +209,44 @@ export class PersistenceDeletionSaveError extends Error {
     this.path = input.path
     this.cause = input.cause
     this.rollbackErrors = Object.freeze([...(input.rollbackErrors ?? [])])
+  }
+}
+
+/**
+ * A conditional rollback could not restore a pre-delete write because the
+ * bytes/version changed after the successful CAS. The rollback deliberately
+ * does not retry with the newly observed version: doing so could overwrite
+ * an external writer's content.
+ */
+export class PersistenceDeletionRollbackConflictError extends Error {
+  readonly code = 'persistence-deletion-rollback-conflict' as const
+  readonly path: DocumentPath
+  readonly reason: ConditionalWriteConflict['reason']
+  readonly expectedVersion: FileVersionToken
+  readonly actualVersion?: FileVersionToken
+  readonly actualMarkdown?: string
+
+  constructor(input: {
+    readonly path: DocumentPath
+    readonly outcome: ConditionalWriteConflict
+  }) {
+    const actual =
+      input.outcome.reason === 'deleted'
+        ? 'the file was deleted externally'
+        : 'the file changed externally'
+    super(
+      `Unable to restore ${input.path} after deletion preparation: ${actual}`,
+    )
+    this.name = 'PersistenceDeletionRollbackConflictError'
+    this.path = input.path
+    this.reason = input.outcome.reason
+    this.expectedVersion = input.outcome.expectedVersion
+    if (input.outcome.actualVersion !== undefined) {
+      this.actualVersion = input.outcome.actualVersion
+    }
+    if (input.outcome.actualContent !== undefined) {
+      this.actualMarkdown = input.outcome.actualContent
+    }
   }
 }
 
@@ -525,9 +567,12 @@ export class DocumentPersistenceService {
   }
 
   /**
-   * Prepares guarded writes for dirty documents without changing Store or
-   * persistence state. The caller commits by deleting the workspace entry;
-   * rollback restores every byte written by this preparation.
+   * Prepares guarded writes for dirty documents without acknowledging a Store
+   * revision or changing the local source state. Every write uses the coherent
+   * version read during the preflight. The caller commits by deleting the
+   * workspace entry; rollback restores every byte written by this preparation
+   * with the version returned by that successful CAS, and may refresh a known
+   * persistence baseline token to match the restored adapter state.
    */
   async prepareDeletionSave(
     documentIds: readonly DocumentId[],
@@ -540,8 +585,11 @@ export class DocumentPersistenceService {
       readonly record: TrackedDocument
       readonly document: DocumentState
       readonly originalMarkdown: string
+      readonly originalVersion: FileVersionToken
+      readonly hadPersistedVersion: boolean
       readonly targetMarkdown: string
       written: boolean
+      writtenVersion?: FileVersionToken
     }
 
     const prepared: PreparedWrite[] = []
@@ -576,24 +624,22 @@ export class DocumentPersistenceService {
       if (disk.kind === 'deleted') {
         throw new PersistenceDeletionSaveError({
           path: record.path,
-          cause: new SaveConflictError({
-            path: record.path,
-            kind: 'deleted',
-            expectedMarkdown: record.persistedMarkdown,
-            revision: document.revision,
-          }),
+          cause: this.createConflict(record, document, 'deleted'),
         })
       }
-      if (disk.markdown !== record.persistedMarkdown) {
+      const baselineVersionChanged =
+        record.persistedVersion !== undefined &&
+        record.persistedVersion !== disk.version
+      if (disk.markdown !== record.persistedMarkdown || baselineVersionChanged) {
         throw new PersistenceDeletionSaveError({
           path: record.path,
-          cause: new SaveConflictError({
-            path: record.path,
-            kind: 'changed',
-            expectedMarkdown: record.persistedMarkdown,
-            actualMarkdown: disk.markdown,
-            revision: document.revision,
-          }),
+          cause: this.createConflict(
+            record,
+            document,
+            'changed',
+            disk.markdown,
+            disk.version,
+          ),
         })
       }
 
@@ -601,6 +647,8 @@ export class DocumentPersistenceService {
         record,
         document,
         originalMarkdown: disk.markdown,
+        originalVersion: disk.version,
+        hadPersistedVersion: record.persistedVersion !== undefined,
         targetMarkdown: document.markdown,
         written: false,
       })
@@ -609,12 +657,46 @@ export class DocumentPersistenceService {
     const rollbackWrites = async (): Promise<readonly unknown[]> => {
       const rollbackErrors: unknown[] = []
       for (const item of [...prepared].reverse()) {
-        if (!item.written) continue
+        if (!item.written || item.writtenVersion === undefined) continue
         try {
-          await this.fileSystem.writeFile(item.record.path, item.originalMarkdown)
+          const outcome = await this.fileSystem.writeTextIfUnchanged(
+            item.record.path,
+            item.writtenVersion,
+            item.originalMarkdown,
+          )
+          if (outcome.status === 'conflict') {
+            this.noteExternalChange(item.record, item.document, {
+              kind: outcome.reason,
+              markdown: outcome.actualContent,
+              actualVersion: outcome.actualVersion,
+            })
+            rollbackErrors.push(
+              new PersistenceDeletionRollbackConflictError({
+                path: item.record.path,
+                outcome,
+              }),
+            )
+            continue
+          }
+          if (outcome.status === 'degraded') {
+            const error = new PersistenceConditionalWriteDegradedError(
+              item.record.path,
+              outcome,
+            )
+            this.noteDeletionRollbackFailure(item.record, error)
+            rollbackErrors.push(error)
+            continue
+          }
+          if (item.hadPersistedVersion) {
+            item.record.persistedVersion = outcome.version
+            this.notify(item.record)
+          }
           item.written = false
+          item.writtenVersion = undefined
         } catch (error) {
-          rollbackErrors.push(error)
+          const wrapped = new PersistenceWriteError(item.record.path, error)
+          this.noteDeletionRollbackFailure(item.record, wrapped)
+          rollbackErrors.push(wrapped)
         }
       }
       return Object.freeze(rollbackErrors)
@@ -636,11 +718,38 @@ export class DocumentPersistenceService {
             ),
           })
         }
-        if (item.targetMarkdown === item.originalMarkdown) continue
         try {
-          await this.fileSystem.writeFile(item.record.path, item.targetMarkdown)
+          const outcome = await this.fileSystem.writeTextIfUnchanged(
+            item.record.path,
+            item.originalVersion,
+            item.targetMarkdown,
+          )
+          if (outcome.status === 'conflict') {
+            throw new PersistenceDeletionSaveError({
+              path: item.record.path,
+              cause: this.createConflict(
+                item.record,
+                current,
+                outcome.reason,
+                outcome.actualContent,
+                outcome.actualVersion,
+                outcome.expectedVersion,
+              ),
+            })
+          }
+          if (outcome.status === 'degraded') {
+            throw new PersistenceDeletionSaveError({
+              path: item.record.path,
+              cause: new PersistenceConditionalWriteDegradedError(
+                item.record.path,
+                outcome,
+              ),
+            })
+          }
           item.written = true
+          item.writtenVersion = outcome.version
         } catch (error) {
+          if (error instanceof PersistenceDeletionSaveError) throw error
           throw new PersistenceDeletionSaveError({
             path: item.record.path,
             cause: new PersistenceWriteError(item.record.path, error),
@@ -1182,7 +1291,8 @@ export class DocumentPersistenceService {
       this.records.get(record.id) !== record ||
       record.timer !== undefined ||
       !record.pendingAutoSave ||
-      this.autoSaveDelayMs === null
+      this.autoSaveDelayMs === null ||
+      record.phase === 'error'
     ) {
       return
     }
@@ -1234,6 +1344,17 @@ export class DocumentPersistenceService {
       ...(actualVersion === undefined ? {} : { actualVersion }),
       revision: document.revision,
     })
+  }
+
+  private noteDeletionRollbackFailure(
+    record: TrackedDocument,
+    error: unknown,
+  ): void {
+    record.externalChange = undefined
+    record.phase = 'error'
+    record.lastError = errorMessage(error)
+    this.cancelAutoSave(record)
+    this.notify(record)
   }
 
   private noteExternalChange(
