@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P3-R01 — Complete
+Current task: P4-R03 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -76,6 +76,7 @@ Current task: P3-R01 — Complete
 - [x] P4-R01 — Directory rename/move safety for open Documents — fail-closed nested-directory preflight, typed displayable diagnostics, and unit/integration/Chromium coverage ([Task Contract](./P4_R01_TASK_CONTRACT.md))
 - [x] P4-R02 — ReferenceGraph rollback safety — compensation re-syncs graph facts from the current Store/filesystem state, preserves revision consistency, and exposes rollback-step diagnostics ([Task Contract](./P4_R02_TASK_CONTRACT.md))
 - [x] P3-R01 — Standard document-relative image paths — nested attachment source paths, document-relative resolution, source-backed preview/copy, and workspace-tree location share one path semantics ([Task Contract](./P3_R01_TASK_CONTRACT.md))
+- [x] P4-R03 — Entity completion across reference modes — file-self/object/heading child candidates now use one provider contract for link, editable embed, and readonly embed modes, with source-safe CM6 navigation and trigger-normalization coverage ([Task Contract](./P4_R03_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -143,6 +144,7 @@ None
 - P4-01 keeps references source-backed and projection-neutral: the supported grammar is `[[path]]`, `[[path#fragment]]`, `![[path]]`, and `![[path|ro]]`; resolution tries exact path, configured extensions (`.md`, `.markdown`, `.txt`), then unambiguous workspace basename matches without rewriting Markdown.
 - P4-03 uses an application-level workspace catalog provider: each query recursively reads the current catalog, returns visible directories for incomplete path continuation and `.md`/`.markdown`/`.txt` files, and applies the selected candidate through the existing CM6 projection mutation bridge. Dot-prefixed directories (including descendants) are hidden; dot-prefixed document files in visible directories remain eligible.
 - P4-04 models file → entity completion as a provider-owned child session: selecting a file keeps the trigger/source untouched, and only a leaf file/object/heading candidate commits through the existing projection mutation capability. Static objects and dynamic `objectsFor(ctx)` are resolved through an editor-independent SuggestContext; headings are the safe fallback when no objects are available.
+- P4-R03 keeps entity child discovery independent of the active reference insertion mode; the same file-self/object/heading candidates receive the current mode only through the provider/application apply contract, while mode/navigation/filter/back actions remain source-, revision-, history-, and caret-preserving.
 - P4-R01 makes directory rename/move fail closed before filesystem mutation when any nested runtime Document or recovery path binding would be stranded. The typed diagnostic includes operation/source/target, affected paths, DocumentIds and dirty state; unaffected directories retain the existing filesystem-refresh behavior.
 
 ## Known risks
@@ -171,7 +173,7 @@ None
 - P4-01 intentionally resolves target paths only; graph/backlinks, rename linkage, completion, clipboard, and embed projections remain later P4 tasks, while navigation and heading/object health are provided by P4-05.
 - P4-02 keeps only parsed reference facts, source paths, ids, and revisions; it never retains Markdown or mutates DocumentStore. Workspace paths for unopened files are supplied as a catalog; P4-05 verifies headings/object fragments through a separate derived health service, while full template catalog discovery remains deferred to P8.
 - P4-03 enumerates the workspace on demand rather than maintaining a second file-tree cache; catalog failures degrade to the CompletionProviderRegistry error surface, and real filesystem/remote catalog adapters remain platform work.
-- P4-04 entity discovery currently uses the injected workspace/content reader and suggestion provider seam; template catalog/doctype scanning and full P8 template lifecycle remain deferred.
+- P4-04/P4-R03 entity discovery uses the injected workspace/content reader and suggestion provider seam uniformly across link, editable embed, and readonly embed modes; template catalog/doctype scanning and full P8 template lifecycle remain deferred.
 - P4-05 keeps navigation and health derived from ReferenceGraph plus target-content reads: source tokens remain unchanged, heading/object fragments are verified before opening, broken facts become diagnostics, and re-selection replaces only the selected token through the projection mutation capability.
 - P4-05 object health uses an application adapter for the existing suggestion contract; full template catalog/doctype discovery remains deferred to P8.
 - P4-06 file linkage covers individual file rename/move; directory rename/move descendant linkage remains a later explicit policy decision.

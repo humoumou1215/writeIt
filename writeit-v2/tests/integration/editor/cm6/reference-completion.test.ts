@@ -113,17 +113,15 @@ describe('workspace-backed CM6 reference completion', () => {
         }),
       )
       await flushCompletion()
-      if (triggerKind !== '![[') {
-        expect(store.get(locator)?.markdown).toBe(source)
-        rawView.dom.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: 'Enter',
-            bubbles: true,
-            cancelable: true,
-          }),
-        )
-        await flushCompletion()
-      }
+      expect(store.get(locator)?.markdown).toBe(source)
+      rawView.dom.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+      await flushCompletion()
       expect(store.get(locator)?.markdown).toBe(expected)
     }
   })
@@ -187,6 +185,15 @@ describe('workspace-backed CM6 reference completion', () => {
 
     const popup = menu(rawView)
     expect(popup.dataset.activeMode).toBe('embed')
+    rawView.dom.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await flushCompletion()
+    expect(store.get(locator)?.markdown).toBe('![[alp')
     rawView.dom.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'Enter',

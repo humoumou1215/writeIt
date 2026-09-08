@@ -767,10 +767,10 @@ function itemForEntry(
     }),
     ...(entry.kind === 'file'
       ? {
-          children: async (context: CompletionContext) => {
-            if (modeIdForContext(context) !== 'link') return undefined
-            return loadReferenceCompletionEntities(entry.path, entityOptions)
-          },
+          // Entity availability is mode-independent; each leaf applies the
+          // current provider mode through its normal CompletionContext.
+          children: async (_context: CompletionContext) =>
+            loadReferenceCompletionEntities(entry.path, entityOptions),
         }
       : {}),
   } satisfies CompletionItem

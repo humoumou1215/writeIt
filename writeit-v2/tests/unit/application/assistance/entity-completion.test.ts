@@ -32,7 +32,15 @@ async function fileItem(provider: CompletionProvider, name: string) {
 }
 
 describe('reference entity completion', () => {
-  it('opens file-self and heading candidates as a second level', async () => {
+  it.each([
+    ['link', '[[meeting.md]]', '[[meeting.md#Decisions]]'],
+    ['embed', '![[meeting.md]]', '![[meeting.md#Decisions]]'],
+    ['embed-readonly', '![[meeting.md|ro]]', '![[meeting.md#Decisions|ro]]'],
+  ] as const)('uses one file-self/heading contract for %s mode', async (
+    mode,
+    fileInsert,
+    headingInsert,
+  ) => {
     const fileSystem = new MemoryFileSystem({
       files: {
         'meeting.md': '# Meeting\n\n## Decisions\n\nKeep the source authoritative.\n',
@@ -42,21 +50,29 @@ describe('reference entity completion', () => {
     const file = await fileItem(provider, 'meeting')
     if (!file?.children) throw new Error('file entity expansion is missing')
 
-    const entities = await file.children(context('@meeting'))
+    const completionContext = context('@meeting', '@', mode)
+    const entities = await file.children(completionContext)
     expect(entities?.map((item) => [item.kind, item.label])).toEqual([
       ['file', 'meeting'],
       ['heading', 'Meeting'],
       ['heading', 'Decisions'],
     ])
-    expect(entities?.[0]?.apply?.(context('@meeting'))).toMatchObject({
-      insert: '[[meeting.md]]',
+    expect(entities?.[0]?.apply?.(completionContext)).toMatchObject({
+      insert: fileInsert,
     })
-    expect(entities?.[2]?.apply?.(context('@meeting'))).toMatchObject({
-      insert: '[[meeting.md#Decisions]]',
+    expect(entities?.[2]?.apply?.(completionContext)).toMatchObject({
+      insert: headingInsert,
     })
   })
 
-  it('uses static and dynamic template objects before heading fallback', async () => {
+  it.each([
+    ['link', '[[report.md#Fields]]'],
+    ['embed', '![[report.md#Fields]]'],
+    ['embed-readonly', '![[report.md#Fields|ro]]'],
+  ] as const)('uses static and dynamic template objects in %s mode', async (
+    mode,
+    objectInsert,
+  ) => {
     const dynamic = vi.fn((suggestContext: { allText(): string }) => [
       { id: 'field', label: 'Field', fragment: 'Fields' },
       { id: 'static', label: 'Dynamic collision should lose' },
@@ -78,7 +94,8 @@ describe('reference entity completion', () => {
     const file = await fileItem(provider, 'report')
     if (!file?.children) throw new Error('file entity expansion is missing')
 
-    const entities = await file.children(context('[[report'))
+    const completionContext = context('[[report', '[[', mode)
+    const entities = await file.children(completionContext)
     expect(dynamic).toHaveBeenCalledTimes(1)
     expect(entities?.map((item) => item.kind)).toEqual([
       'file',
@@ -92,8 +109,8 @@ describe('reference entity completion', () => {
       'Field',
       expect.stringContaining('Progress Body text'),
     ])
-    expect(entities?.[2]?.apply?.(context('[[report'))).toMatchObject({
-      insert: '[[report.md#Fields]]',
+    expect(entities?.[2]?.apply?.(context('[[report', '[[', mode))).toMatchObject({
+      insert: objectInsert,
     })
   })
 
@@ -109,15 +126,29 @@ describe('reference entity completion', () => {
     })
   })
 
-  it('does not enter entity mode for embed insertion', async () => {
+  it.each([
+    ['@', '@', 'link'],
+    ['[[', '[[', 'link'],
+    ['embed', '![[' , 'embed'],
+  ] as const)('enters entity candidates for the %s trigger', async (
+    _label,
+    triggerKind,
+    mode,
+  ) => {
     const fileSystem = new MemoryFileSystem({ files: { 'note.md': '# Note\n' } })
     const provider = createReferenceCompletionProvider({ workspace: fileSystem })
+    const source = triggerKind === '@' ? '@note' : `${triggerKind}note`
     const file = await fileItem(provider, 'note')
     if (!file?.children) throw new Error('file entity expansion is missing')
 
-    expect(await file.children(context('![[note', '![[' , 'embed'))).toBeUndefined()
-    expect(file.apply?.(context('![[note', '![[' , 'embed'))).toMatchObject({
-      insert: '![[note.md]]',
+    const completionContext = context(source, triggerKind, mode)
+    const entities = await file.children(completionContext)
+    expect(entities?.map((item) => item.kind)).toEqual(['file', 'heading'])
+    expect(file.apply?.(completionContext)).toMatchObject({
+      insert: mode === 'link' ? '[[note.md]]' : '![[note.md]]',
+    })
+    expect(entities?.[1]?.apply?.(completionContext)).toMatchObject({
+      insert: mode === 'link' ? '[[note.md#Note]]' : '![[note.md#Note]]',
     })
   })
 

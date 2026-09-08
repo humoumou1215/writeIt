@@ -79,7 +79,19 @@ afterEach(() => {
 })
 
 describe('CM6 entity completion surface', () => {
-  it('keeps the source unchanged while opening file-self and heading candidates', async () => {
+  it.each([
+    ['@meet', '@', 'link', '[[meeting.md#Decisions]]'],
+    ['[[meet', '[[', 'link', '[[meeting.md#Decisions]]'],
+    ['![[meet', '![[' , 'embed', '![[meeting.md#Decisions]]'],
+    ['＠meet', '@', 'link', '[[meeting.md#Decisions]]'],
+    ['［［meet', '[[', 'link', '[[meeting.md#Decisions]]'],
+    ['！【【meet', '![[' , 'embed', '![[meeting.md#Decisions]]'],
+  ] as const)('opens file-self and heading candidates for %s', async (
+    source,
+    triggerKind,
+    initialMode,
+    expected,
+  ) => {
     const fileSystem = new MemoryFileSystem({
       files: {
         'meeting.md': '# Meeting\n\n## Decisions\n',
@@ -89,19 +101,26 @@ describe('CM6 entity completion surface', () => {
     registry.register(createReferenceCompletionProvider({ workspace: fileSystem }))
     const { store, locator, rawView } = makeView(registry)
 
-    typeSource(rawView, '[[meet')
+    typeSource(rawView, source)
     await flushCompletion()
     const popup = menu(rawView)
+    expect(popup.dataset.triggerKind).toBe(triggerKind)
+    expect(popup.dataset.activeMode).toBe(initialMode)
     const file = popup.querySelector<HTMLElement>(
       '[data-completion-id="reference:file:meeting.md"]',
     )
     if (!file) throw new Error('meeting file completion is missing')
 
+    const before = store.get(locator)
+    const history = store.getHistory(locator)
+    const selection = rawView.state.selection.main
     file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
     file.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
     await flushCompletion()
 
-    expect(store.get(locator)?.markdown).toBe('[[meet')
+    expect(store.get(locator)).toEqual(before)
+    expect(store.getHistory(locator)).toEqual(history)
+    expect(rawView.state.selection.main).toEqual(selection)
     expect(popup.dataset.completionLevel).toBe('1')
     expect(popup.querySelector('[data-completion-kind="file"]')).not.toBeNull()
     expect(
@@ -116,10 +135,89 @@ describe('CM6 entity completion surface', () => {
     heading.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
     await flushCompletion()
 
-    expect(store.get(locator)?.markdown).toBe('[[meeting.md#Decisions]]')
+    expect(store.get(locator)?.markdown).toBe(expected)
   })
 
-  it('uses dynamic suggestion objects through the same completion surface', async () => {
+  it.each([
+    ['link', '[[meeting.md#Decisions]]'],
+    ['embed', '![[meeting.md#Decisions]]'],
+    ['embed-readonly', '![[meeting.md#Decisions|ro]]'],
+  ] as const)('keeps navigation source-safe and applies heading in %s mode', async (
+    mode,
+    expected,
+  ) => {
+    const fileSystem = new MemoryFileSystem({
+      files: { 'meeting.md': '# Meeting\n\n## Decisions\n' },
+    })
+    const registry = new CompletionProviderRegistry()
+    registry.register(createReferenceCompletionProvider({ workspace: fileSystem }))
+    const { store, locator, rawView } = makeView(registry)
+
+    typeSource(rawView, '@meet')
+    await flushCompletion()
+    const popup = menu(rawView)
+    const beforeMode = store.get(locator)
+    const beforeHistory = store.getHistory(locator)
+    const beforeSelection = rawView.state.selection.main
+    if (mode !== 'link') {
+      const modeButton = popup.querySelector<HTMLElement>(
+        `[data-completion-mode-id="${mode}"]`,
+      )
+      if (!modeButton) throw new Error(`${mode} mode is missing`)
+      modeButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+      modeButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    }
+    expect(popup.dataset.activeMode).toBe(mode)
+    expect(store.get(locator)).toEqual(beforeMode)
+    expect(store.getHistory(locator)).toEqual(beforeHistory)
+    expect(rawView.state.selection.main).toEqual(beforeSelection)
+    expect(popup.querySelectorAll('[data-completion-kind="file"]')).toHaveLength(1)
+
+    const openFile = popup.querySelector<HTMLElement>(
+      '[data-completion-id="reference:file:meeting.md"]',
+    )
+    if (!openFile) throw new Error('meeting file completion is missing')
+    openFile.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    openFile.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushCompletion()
+    expect(store.get(locator)).toEqual(beforeMode)
+    expect(store.getHistory(locator)).toEqual(beforeHistory)
+    expect(rawView.state.selection.main).toEqual(beforeSelection)
+
+    const back = popup.querySelector<HTMLElement>('[data-completion-back]')
+    if (!back) throw new Error('entity back control is missing')
+    back.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    back.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(popup.dataset.completionLevel).toBe('0')
+    expect(store.get(locator)).toEqual(beforeMode)
+    expect(store.getHistory(locator)).toEqual(beforeHistory)
+    expect(rawView.state.selection.main).toEqual(beforeSelection)
+
+    const reopenFile = popup.querySelector<HTMLElement>(
+      '[data-completion-id="reference:file:meeting.md"]',
+    )
+    if (!reopenFile) throw new Error('meeting file completion is missing after back')
+    reopenFile.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    reopenFile.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushCompletion()
+    const heading = popup.querySelector<HTMLElement>(
+      '[data-completion-id="reference:heading:meeting.md#Decisions"]',
+    )
+    if (!heading) throw new Error('heading entity is missing')
+    heading.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    heading.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flushCompletion()
+    expect(store.get(locator)?.markdown).toBe(expected)
+  })
+
+  it.each([
+    ['link', '[[report.md#rows]]'],
+    ['embed', '![[report.md#rows]]'],
+    ['embed-readonly', '![[report.md#rows|ro]]'],
+  ] as const)('uses dynamic suggestion objects through the same %s surface', async (
+    mode,
+    expected,
+  ) => {
     const fileSystem = new MemoryFileSystem({
       files: { 'report.md': '# Report\n\nRows: 3\n' },
     })
@@ -142,13 +240,21 @@ describe('CM6 entity completion surface', () => {
     typeSource(rawView, '@report')
     await flushCompletion()
     const popup = menu(rawView)
+    const modeButton = popup.querySelector<HTMLElement>(
+      `[data-completion-mode-id="${mode}"]`,
+    )
+    if (!modeButton) throw new Error(`${mode} mode is missing`)
+    modeButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    modeButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
     const file = popup.querySelector<HTMLElement>(
       '[data-completion-id="reference:file:report.md"]',
     )
     if (!file) throw new Error('report file completion is missing')
+    const before = store.get(locator)
     file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
     file.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
     await flushCompletion()
+    expect(store.get(locator)).toEqual(before)
 
     const object = popup.querySelector<HTMLElement>(
       '[data-completion-kind="object"]',
@@ -158,6 +264,6 @@ describe('CM6 entity completion surface', () => {
     object?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
     await flushCompletion()
 
-    expect(store.get(locator)?.markdown).toBe('[[report.md#rows]]')
+    expect(store.get(locator)?.markdown).toBe(expected)
   })
 })
