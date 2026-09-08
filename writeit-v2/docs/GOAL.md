@@ -118,8 +118,8 @@ The Goal is complete only when all of the following are true:
 | G4 | PASS | `d52183f` | [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md); search/replace, derived services, validation and template intelligence implemented |
 | G5 | PASS | `pending` | [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md); snapshot-based built-in/custom/batch export implemented |
 | G6 | PASS | `pending` | [P10 Architecture Review](./P10_ARCHITECTURE_REVIEW.md); bounded diagnostics, privacy report and permissioned debug API implemented |
-| G7 | ACTIVE | — | Starting P11 desktop capability contract |
-| G8 | PENDING | — | — |
+| G7 | PASS | `pending` | [P11 Architecture Review](./P11_ARCHITECTURE_REVIEW.md); desktop adapters, debug policy and package workflow implemented |
+| G8 | PASS | `pending` | [P12 RC Audit](./P12_RC_AUDIT.md); feature-map parity classifications and approved deferrals are explicit |
 
 ## Activation
 

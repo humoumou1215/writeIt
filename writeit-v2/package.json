@@ -19,6 +19,7 @@
     "typecheck": "vue-tsc --noEmit",
     "verify:fast": "npm run check:goal-contract && npm run test && npm run build",
     "verify": "npm run check:goal-contract && npm run test && npm run test:browser && npm run build"
+    ,"desktop:package-smoke": "npm run build && node scripts/desktop-package-smoke.mjs"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.2",

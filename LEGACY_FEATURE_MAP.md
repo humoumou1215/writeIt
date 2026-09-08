@@ -99,6 +99,25 @@ The following rows are the authoritative decomposition of the legacy user-visibl
 
 ## Boundary and provenance rules
 
+## Phase 12 final parity audit
+
+The granular workflows below are closed for the RC. `MIGRATED` means implemented and verified in v2; `DEFERRED` is limited to the approved Goal list and includes recovery conditions.
+
+| Workflow family | Final parity | Evidence / recovery condition |
+|---|---|---|
+| Template scan, doctype, domains, create, slash insertion, placeholder, rules and suggestions | MIGRATED | P8 catalog/service, Search/Templates browser journey and provider failure tests |
+| Template export provider contract and export formats | MIGRATED | P8 provider contract + P9 snapshot export and batch tests |
+| Workspace search, precise jump/highlight, replace | MIGRATED | Search core/application tests and `search-template.spec.ts` |
+| Outline, backlinks, composed content statistics | MIGRATED | Derived-service tests and App panels |
+| Validation and strict save gate | MIGRATED | Validation core/application tests and App issue surface |
+| Markdown/PDF/DOCX/custom/batch export | MIGRATED | P9 export contract and partial-failure tests |
+| Last workspace restore and desktop reveal | MIGRATED | Existing recovery/browser tests; desktop adapter contract |
+| Diagnostics report/privacy and debug permissions | MIGRATED | P10 diagnostics/debug tests |
+| Blame core provenance and local-line safety | MIGRATED | P7 blame projection tests |
+| Advanced blame heuristics (copy/move/whitespace options) | DEFERRED | Approved Goal deferral; recover when Git provenance quality evidence requires it |
+| Lite/GPU/occlusion tuning | DEFERRED | Approved Goal deferral; recover only with measured low-performance evidence |
+| Themes/icon redesign and final legacy-tree cutover | DEFERRED | Approved Goal deferral; recover during post-RC UI/cutover project |
+
 1. v2 代码只能把本表列出的 legacy 内容当作参考输入；禁止 `writeit-v2/` runtime import `editor-app/`。
 2. 复制纯逻辑时，必须在 v2 中说明新的 owner，并用 v2 的 unit/integration tests 证明行为；不得携带旧 manager、Crepe、Vue、DOM 或 Tauri 的隐式状态。
 3. Markdown source、Document revision、persisted revision 和 dirty state 的最终所有权属于 v2 `DocumentStore`；任何 editor view、embed、table widget、preview 或 diff view 都只是 projection。

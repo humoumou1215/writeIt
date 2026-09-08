@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
-- **Current phase:** G7 — Phase 11 Tauri + Desktop Platform
-- **Current task:** P11-00 — Desktop capability contract
+- **Current phase:** G8 — Phase 12 Parity + RC Audit
+- **Current task:** RC audit complete
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
 - **Goal contract:** [GOAL.md](./GOAL.md)
@@ -33,8 +33,8 @@
 | G4 | PASS | P8 Derived Services + Template Intelligence |
 | G5 | PASS | P9 Export |
 | G6 | PASS | P10 Diagnostics |
-| G7 | ACTIVE | P11 Tauri/Desktop |
-| G8 | PENDING | P12 parity + RC audit |
+| G7 | PASS | P11 Tauri/Desktop |
+| G8 | PASS | P12 parity + RC audit |
 
 ## Gate state
 
@@ -48,6 +48,8 @@
 
 - P8: **PASS** in [P8 Architecture Review](./P8_ARCHITECTURE_REVIEW.md); search/replace, derived outline/backlinks/stats, validation gate and template catalog/provider contracts are complete.
 - P9: **PASS** in [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md); snapshot-based Markdown/PDF/DOCX/custom export and itemized batch failures are complete.
+- P11: **PASS** in [P11 Architecture Review](./P11_ARCHITECTURE_REVIEW.md); desktop adapters, debug policy, package smoke and Windows CI artifact workflow are complete.
+- P12: **PASS** in [P12 RC Audit](./P12_RC_AUDIT.md); feature-map parity classifications and approved deferrals are explicit.
 
 ## Active decisions
 
