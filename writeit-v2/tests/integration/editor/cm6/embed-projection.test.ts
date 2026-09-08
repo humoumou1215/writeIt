@@ -57,6 +57,20 @@ function mountEmbed(
   return projection
 }
 
+function deferred(): {
+  readonly promise: Promise<void>
+  readonly resolve: () => void
+} {
+  let resolvePromise!: () => void
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve
+  })
+  return {
+    promise,
+    resolve: resolvePromise,
+  }
+}
+
 afterEach(() => {
   for (const projection of mounted.splice(0)) projection.destroy()
 })
@@ -221,6 +235,172 @@ describe('CM6 embed projection', () => {
     expect(projection.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()
     expect(store.get(host)?.markdown).toBe('![[LazyTarget.md]]')
     expect(store.getRevision(host)).toBe(0)
+  })
+
+  it('re-resolves a missing target when it appears during an in-flight load', async () => {
+    const store = new DocumentStore()
+    const host = loadDocument(store, 'appears-host', 'AppearsHost.md', '![[Appears.md]]')
+    let notifyTargets: () => void = () => undefined
+    const pending = deferred()
+    let loadAttempts = 0
+    const projection = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'appears-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => ['AppearsHost.md', 'Appears.md'],
+          onTargetMissing: ({ path }) => {
+            expect(path).toBe('Appears.md')
+            loadAttempts += 1
+            return pending.promise
+          },
+          subscribeTargets: (listener) => {
+            notifyTargets = listener
+            return () => undefined
+          },
+        }),
+      ],
+    })
+    mounted.push(projection)
+
+    expect(projection.view.dom.querySelector('[data-embed-status="unloaded"]')).not.toBeNull()
+    const target = loadDocument(store, 'appears-target', 'Appears.md', 'appeared')
+    notifyTargets()
+
+    expect(loadAttempts).toBe(1)
+    expect(projection.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()
+    expect(store.getProjections(target)).toHaveLength(1)
+    expect(store.get(host)?.markdown).toBe('![[Appears.md]]')
+
+    // The old loader may settle after an independent target event. It must no
+    // longer own the current request or cause another refresh loop.
+    pending.resolve()
+    await Promise.resolve()
+    expect(projection.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()
+  })
+
+  it('does not permanently consume a transient load failure before retry', async () => {
+    const store = new DocumentStore()
+    const host = loadDocument(store, 'retry-host', 'RetryHost.md', '![[Retry.md]]')
+    let notifyTargets: () => void = () => undefined
+    let loadAttempts = 0
+    const projection = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'retry-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => ['RetryHost.md', 'Retry.md'],
+          onTargetMissing: () => {
+            loadAttempts += 1
+            if (loadAttempts === 1) {
+              return Promise.reject(new Error('transient target load failure'))
+            }
+            loadDocument(store, 'retry-target', 'Retry.md', 'recovered target')
+          },
+          subscribeTargets: (listener) => {
+            notifyTargets = listener
+            return () => undefined
+          },
+        }),
+      ],
+    })
+    mounted.push(projection)
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(loadAttempts).toBe(1)
+    expect(projection.view.dom.dataset.embedTargetError).toContain(
+      'transient target load failure',
+    )
+    expect(projection.view.dom.querySelector('[data-embed-status="error"]')).not.toBeNull()
+
+    notifyTargets()
+    await Promise.resolve()
+    expect(loadAttempts).toBe(2)
+    expect(projection.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()
+    expect(projection.view.dom.dataset.embedTargetError).toBeUndefined()
+    expect(store.get(host)?.markdown).toBe('![[Retry.md]]')
+  })
+
+  it('rebuilds a nested target projection after removal and recreation', () => {
+    const store = new DocumentStore()
+    const a = loadDocument(store, 'rebuild-a', 'RebuildA.md', 'A')
+    const b = loadDocument(store, 'rebuild-b', 'RebuildB.md', '![[RebuildA.md]]')
+    const c = loadDocument(store, 'rebuild-c', 'RebuildC.md', '![[RebuildB.md]]')
+    const projection = mountEmbed(store, c, 'rebuild-c-host')
+
+    expect(
+      projection.view.dom.querySelector('[data-embed-target="RebuildA.md"] .cm-editor'),
+    ).not.toBeNull()
+    store.applyChange(b, {
+      markdown: 'B without target',
+      origin: createDocumentOrigin('test', 'nested-remove'),
+    })
+    expect(
+      projection.view.dom.querySelector('[data-embed-target="RebuildA.md"]'),
+    ).toBeNull()
+
+    store.unload(a)
+    const replacement = loadDocument(store, 'rebuild-a-new', 'RebuildA.md', 'A recreated')
+    store.applyChange(b, {
+      markdown: '![[RebuildA.md]]',
+      origin: createDocumentOrigin('test', 'nested-recreate'),
+    })
+
+    expect(
+      projection.view.dom.querySelector('[data-embed-target="RebuildA.md"] .cm-editor'),
+    ).not.toBeNull()
+    expect(store.getProjections(replacement)).toHaveLength(1)
+    expect(store.get(c)?.markdown).toBe('![[RebuildB.md]]')
+  })
+
+  it('drops a late load after parent detach and recovers on reopen', async () => {
+    const store = new DocumentStore()
+    const host = loadDocument(store, 'detach-host', 'DetachHost.md', '![[Detach.md]]')
+    const pending = deferred()
+    const first = mountSingleDocumentView({
+      store,
+      locator: host,
+      parent: document.body,
+      projectionId: 'detach-host-first',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        createEmbedProjectionExtension({
+          store,
+          locator: host,
+          getAvailablePaths: () => ['DetachHost.md', 'Detach.md'],
+          onTargetMissing: () => pending.promise,
+        }),
+      ],
+    })
+    mounted.push(first)
+    expect(first.view.dom.querySelector('[data-embed-status="unloaded"]')).not.toBeNull()
+
+    first.destroy()
+    mounted.splice(mounted.indexOf(first), 1)
+    const target = loadDocument(store, 'detach-target', 'Detach.md', 'late target')
+    pending.resolve()
+    await Promise.resolve()
+
+    expect(store.getProjections(host)).toEqual([])
+    expect(store.getProjections(target)).toEqual([])
+
+    const reopened = mountEmbed(store, host, 'detach-host-reopened')
+    expect(reopened.view.dom.querySelector('[data-embed-status="mounted"]')).not.toBeNull()
+    expect(store.getProjections(target)).toHaveLength(1)
   })
 
   it('cleans nested projection registrations when a host closes and reopens', () => {

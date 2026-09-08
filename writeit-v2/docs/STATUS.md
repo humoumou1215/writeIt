@@ -1,7 +1,7 @@
 # WriteIt v2 Status
 
 Current phase: Phase 4 — Reference Graph + Embed
-Current task: P4-R04 — Complete
+Current task: P4-R05 — Complete
 
 ## Completed
 - [x] Initial v2 implementation spec prepared
@@ -80,6 +80,7 @@ Current task: P4-R04 — Complete
 - [x] P3-R02 — Dirty-aware recursive workspace deletion — unified file/directory application deletion, nested dirty Save/Discard/Cancel protection, guarded save rollback, projection/tab/persistence/recovery/ReferenceIndex cleanup, and unit/integration/Chromium coverage ([Task Contract](./P3_R02_TASK_CONTRACT.md))
 - [x] P3-R03 — Conditional filesystem writes / conflict-safe mutation — coherent text snapshots, immutable version tokens, deterministic MemoryFileSystem CAS, guarded persistence save, and rename rewrite/rollback conflict diagnostics ([Task Contract](./P3_R03_TASK_CONTRACT.md))
 - [x] P4-R04 — Clipboard fallback freshness protocol — current plain-text-only paste evidence must match the latest internal copy fingerprint/binding; changed, empty, ambiguous, or unreadable clipboard payloads fail closed while custom MIME/file URI and existing reference modes remain intact ([Task Contract](./P4_R04_TASK_CONTRACT.md))
+- [x] P4-R05 — Embed failure/recovery lifecycle coverage — generation-bound missing/load requests now support explicit retry after transient failure or target appearance, drop late results after detach, and cover nested rebuild plus close/reopen recovery ([Task Contract](./P4_R05_TASK_CONTRACT.md))
 
 ## Active
 None
@@ -192,6 +193,7 @@ None
 - P4-07 keeps clipboard payloads and paste planning source-safe and editor-independent; the CM6 adapter commits only through the projection mutation capability, while the app-local store is used only when the current plain-text payload matches the latest internal-copy binding. Ctrl/Cmd+V defaults to links, context-menu modes produce editable/readonly embeds, directories remain path text, and multiple entries preserve clipboard order.
 - P4-08 keeps context actions source-backed: copy returns the exact token, open delegates to the application with an optional resolved target, and mode changes replace only the selected token through the projection mutation capability without creating an embed authority.
 - P4-R04 makes internal reference fallback freshness explicit: the event/platform extractor prioritizes recognized custom MIME/file URI, accepts local nodes only when plain-text-only data matches the latest copy's exact normalized text and deterministic fingerprint, and fails closed on changed, empty, ambiguous, or permission-unreadable payloads.
+- P4-R05 found a real Embed lifecycle defect: the former permanent `missingRequests` set prevented a transient loader failure or a later recreation at the same source range from retrying. Requests now carry host revision/projection generation; settled failures wait for an explicit retry event, while detached or stale results are discarded without source mutation. App/platform loaders still need to provide an explicit target/catalog event when a missing file becomes retryable; no timer is used.
 - P2-AR-06 keeps source changes CM6-independent: Store events carry frozen source deltas, editable fan-out maps minimal projected ranges/selection, typing grouping is explicit rather than time-based, and history retention is bounded by entry count and UTF-8 payload bytes.
 
 ## Next

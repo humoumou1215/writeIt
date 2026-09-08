@@ -117,6 +117,238 @@ test('edits an embed target through the nested CM6 projection and keeps host sou
   await destroyHarness(page)
 })
 
+test('retries a transient embed load failure after an explicit target event', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.evaluate(async () => {
+    const loadModule = (path: string): Promise<any> =>
+      import(new URL(path, window.location.origin).href)
+    const core = await loadModule('/src/core/document/index.ts')
+    const cm6 = await loadModule('/src/editor/cm6/index.ts')
+    const store = new core.DocumentStore()
+    const host = store.load({
+      id: core.createDocumentId('browser-retry-host'),
+      path: core.createDocumentPath('BrowserRetryHost.md'),
+      markdown: '![[BrowserRetry.md]]',
+    })
+    const root = document.createElement('section')
+    root.dataset.testid = 'browser-retry-host'
+    document.body.append(root)
+
+    let attempts = 0
+    let retryTargets: () => void = () => undefined
+    const projection = cm6.mountSingleDocumentView({
+      store,
+      locator: core.documentById(host.id),
+      parent: root,
+      projectionId: 'browser-retry-host',
+      editable: true,
+      presentationMode: 'live-preview',
+      extensions: [
+        cm6.createEmbedProjectionExtension({
+          store,
+          locator: core.documentById(host.id),
+          getAvailablePaths: () => ['BrowserRetryHost.md', 'BrowserRetry.md'],
+          onTargetMissing: () => {
+            attempts += 1
+            if (attempts === 1) {
+              return Promise.reject(new Error('browser transient failure'))
+            }
+            store.load({
+              id: core.createDocumentId('browser-retry-target'),
+              path: core.createDocumentPath('BrowserRetry.md'),
+              markdown: 'recovered in browser',
+            })
+          },
+          subscribeTargets: (listener: () => void) => {
+            retryTargets = listener
+            return () => undefined
+          },
+        }),
+      ],
+    })
+    ;(
+      window as unknown as {
+        __writeItV2RetryHarness?: {
+          readonly store: any
+          readonly hostLocator: unknown
+          readonly projection: { destroy(): void }
+          readonly attempts: () => number
+          readonly retry: () => void
+        }
+      }
+    ).__writeItV2RetryHarness = {
+      store,
+      hostLocator: core.documentById(host.id),
+      projection,
+      attempts: () => attempts,
+      retry: () => retryTargets(),
+    }
+  })
+
+  const host = page.locator('[data-testid="browser-retry-host"]')
+  await expect(host.locator('[data-embed-status="error"]')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const harness = (
+          window as unknown as {
+            __writeItV2RetryHarness?: { attempts: () => number }
+          }
+        ).__writeItV2RetryHarness
+        return harness?.attempts() ?? 0
+      }),
+    )
+    .toBe(1)
+
+  await page.evaluate(() => {
+    const harness = (
+      window as unknown as { __writeItV2RetryHarness?: { retry(): void } }
+    ).__writeItV2RetryHarness
+    harness?.retry()
+  })
+  await expect(host.locator('[data-embed-status="mounted"]')).toBeVisible()
+
+  const state = await page.evaluate(() => {
+    const harness = (
+      window as unknown as {
+        __writeItV2RetryHarness?: {
+          store: { get(locator: unknown): { markdown: string } | undefined }
+          hostLocator: unknown
+        }
+      }
+    ).__writeItV2RetryHarness
+    if (!harness) throw new Error('retry harness is not mounted')
+    return {
+      host: harness.store.get(harness.hostLocator)?.markdown,
+      error: document.querySelector('[data-testid="browser-retry-host"]')?.getAttribute(
+        'data-embed-target-error',
+      ),
+    }
+  })
+  expect(state.host).toBe('![[BrowserRetry.md]]')
+  expect(state.error).toBeNull()
+
+  await page.evaluate(() => {
+    ;(
+      window as unknown as { __writeItV2RetryHarness?: { projection: { destroy(): void } } }
+    ).__writeItV2RetryHarness?.projection.destroy()
+  })
+})
+
+test('ignores a late target load after detach and mounts the target on reopen', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.evaluate(async () => {
+    const loadModule = (path: string): Promise<any> =>
+      import(new URL(path, window.location.origin).href)
+    const core = await loadModule('/src/core/document/index.ts')
+    const cm6 = await loadModule('/src/editor/cm6/index.ts')
+    const store = new core.DocumentStore()
+    const host = store.load({
+      id: core.createDocumentId('browser-detach-host'),
+      path: core.createDocumentPath('BrowserDetachHost.md'),
+      markdown: '![[BrowserDetach.md]]',
+    })
+    const root = document.createElement('section')
+    root.dataset.testid = 'browser-detach-host'
+    document.body.append(root)
+    let releaseLoad!: () => void
+    const pending = new Promise<void>((resolve) => {
+      releaseLoad = resolve
+    })
+    const mount = (projectionId: string) =>
+      cm6.mountSingleDocumentView({
+        store,
+        locator: core.documentById(host.id),
+        parent: root,
+        projectionId,
+        editable: true,
+        presentationMode: 'live-preview',
+        extensions: [
+          cm6.createEmbedProjectionExtension({
+            store,
+            locator: core.documentById(host.id),
+            getAvailablePaths: () => ['BrowserDetachHost.md', 'BrowserDetach.md'],
+            onTargetMissing: () => pending,
+          }),
+        ],
+      })
+    const projection = mount('browser-detach-first')
+    ;(
+      window as unknown as {
+        __writeItV2DetachHarness?: {
+          store: any
+          hostLocator: unknown
+          root: HTMLElement
+          projection: { destroy(): void }
+          release: () => void
+          mount: (id: string) => { destroy(): void }
+        }
+      }
+    ).__writeItV2DetachHarness = {
+      store,
+      hostLocator: core.documentById(host.id),
+      root,
+      projection,
+      release: () => releaseLoad(),
+      mount,
+    }
+  })
+
+  const host = page.locator('[data-testid="browser-detach-host"]')
+  await expect(host.locator('[data-embed-status="unloaded"]')).toBeVisible()
+  const detachedState = await page.evaluate(async () => {
+    const core = await import(new URL('/src/core/document/index.ts', window.location.origin).href)
+    const harness = (
+      window as unknown as {
+        __writeItV2DetachHarness?: {
+          store: { getProjections(locator: unknown): readonly unknown[] }
+          hostLocator: unknown
+          projection: { destroy(): void }
+          release: () => void
+        }
+      }
+    ).__writeItV2DetachHarness
+    if (!harness) throw new Error('detach harness is not mounted')
+    harness.projection.destroy()
+    harness.release()
+    const target = (harness.store as any).load({
+      id: core.createDocumentId('browser-detach-target'),
+      path: core.createDocumentPath('BrowserDetach.md'),
+      markdown: 'loaded after close',
+    })
+    return {
+      hostProjectionCount: harness.store.getProjections(harness.hostLocator).length,
+      targetId: target.id,
+    }
+  })
+  expect(detachedState.hostProjectionCount).toBe(0)
+
+  await page.evaluate(() => {
+    const harness = (
+      window as unknown as {
+        __writeItV2DetachHarness?: {
+          mount: (id: string) => { destroy(): void }
+          projection: { destroy(): void }
+        }
+      }
+    ).__writeItV2DetachHarness
+    if (!harness) throw new Error('detach harness is not mounted')
+    harness.projection = harness.mount('browser-detach-reopened')
+  })
+  await expect(host.locator('[data-embed-status="mounted"]')).toBeVisible()
+  await expect(host.locator('.cm-writeit-embed-projection__editor .cm-editor')).toHaveCount(1)
+
+  await page.evaluate(() => {
+    ;(
+      window as unknown as { __writeItV2DetachHarness?: { projection: { destroy(): void } } }
+    ).__writeItV2DetachHarness?.projection.destroy()
+  })
+})
+
 test('renders circular embeds as a bounded diagnostic instead of recursing', async ({
   page,
 }) => {

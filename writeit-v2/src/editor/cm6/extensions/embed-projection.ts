@@ -71,6 +71,8 @@ export interface EmbedProjectionMissingTargetContext
   extends EmbedProjectionResolutionContext {
   readonly reference: ParsedReference
   readonly path?: DocumentPath
+  /** Generation of the host Projection that issued this load request. */
+  readonly generation: number
 }
 
 export interface EmbedProjectionExtensionOptions {
@@ -111,7 +113,21 @@ interface EmbedRenderTarget {
   readonly error?: string
 }
 
-const refreshEmbedProjectionEffect = StateEffect.define<number>()
+interface EmbedRefreshRequest {
+  readonly sequence: number
+  readonly retryMissing: boolean
+}
+
+interface MissingTargetRequest {
+  readonly key: string
+  readonly hostId: DocumentState['id']
+  readonly hostRevision: DocumentState['revision']
+  readonly generation: number
+  status: 'in-flight' | 'awaiting-retry' | 'failed'
+  error?: string
+}
+
+const refreshEmbedProjectionEffect = StateEffect.define<EmbedRefreshRequest>()
 const EMBED_WIDGET_SELECTOR = '[data-writeit-embed]'
 const DEFAULT_MAX_EMBED_DEPTH = 24
 let hostSequence = 0
@@ -306,6 +322,15 @@ function createChildProjectionId(
   target: string,
 ): string {
   return `${hostProjectionId}/embed-${from}-${to}-${safeProjectionPart(target)}`
+}
+
+function missingTargetKey(
+  host: DocumentState,
+  reference: ParsedReference,
+  target: NormalizedTarget | undefined,
+): string {
+  const path = targetPath(target) ?? reference.path
+  return `${host.id}:${reference.from}:${reference.to}:${path}:${reference.raw}`
 }
 
 function modeLabel(readonly: boolean): string {
@@ -575,8 +600,15 @@ export class EmbedProjectionController {
   private readonly depth: number
   private readonly maxDepth: number
   private readonly canEdit: boolean
-  private readonly missingRequests = new Set<string>()
+  /**
+   * One state per source reference/load attempt. A settled request is kept in
+   * `awaiting-retry` or `failed` until an explicit target/source event permits
+   * another attempt; this prevents a resolved-but-still-missing loader from
+   * creating an unbounded microtask loop while still making failures retryable.
+   */
+  private readonly missingRequests = new Map<string, MissingTargetRequest>()
   private refreshSequence = 0
+  private projectionGeneration = 0
   private mode
   private destroyed = false
 
@@ -599,7 +631,7 @@ export class EmbedProjectionController {
           : [],
     )
     try {
-      this.unsubscribeTargets = options.subscribeTargets?.(() => this.requestRefresh())
+      this.unsubscribeTargets = options.subscribeTargets?.(() => this.requestRefresh(true))
     } catch {
       this.unsubscribeTargets = undefined
       view.dom.dataset.embedTargetError = 'Embed target subscription failed'
@@ -615,36 +647,57 @@ export class EmbedProjectionController {
   update(update: ViewUpdate): void {
     if (this.destroyed) return
     let refreshRequested = false
+    let retryMissing = false
+    let invalidateGeneration = false
     for (const transaction of update.transactions) {
-      if (transaction.docChanged) refreshRequested = true
+      if (transaction.docChanged) {
+        refreshRequested = true
+        retryMissing = true
+        invalidateGeneration = true
+      }
       for (const effect of transaction.effects) {
-        if (effect.is(refreshEmbedProjectionEffect)) refreshRequested = true
+        if (!effect.is(refreshEmbedProjectionEffect)) continue
+        refreshRequested = true
+        retryMissing ||= effect.value.retryMissing
       }
     }
     const nextMode = getPresentationMode(update.state)
     if (nextMode !== this.mode) {
       this.mode = nextMode
       refreshRequested = true
+      retryMissing = true
+      invalidateGeneration = true
     }
-    if (refreshRequested) this.refresh()
+    if (invalidateGeneration) this.projectionGeneration += 1
+    if (refreshRequested) this.refresh(retryMissing)
   }
 
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
+    this.projectionGeneration += 1
     this.unsubscribeTargets?.()
     this.missingRequests.clear()
     delete this.view.dom.dataset.embedTargetError
     delete this.view.dom.dataset.embedCount
   }
 
-  private refresh(): void {
+  private refresh(retryMissing = false): void {
     if (this.destroyed) return
+    for (const [key, request] of this.missingRequests) {
+      if (request.generation !== this.projectionGeneration) {
+        // A source/mode generation owns its requests. The promise itself
+        // cannot be cancelled, but its result must not affect a later one.
+        this.missingRequests.delete(key)
+      }
+    }
+
     const source = this.view.state.doc.toString()
     const host = this.options.store.get(this.options.locator)
     if (this.mode !== 'live-preview' || !host) {
       this.decorations = Decoration.none
       this.view.dom.dataset.embedCount = '0'
+      this.updateTargetErrorDataset()
       return
     }
 
@@ -655,13 +708,23 @@ export class EmbedProjectionController {
     }>
     for (const reference of parseEmbedReferences(source)) {
       if (source.slice(reference.from, reference.to) !== reference.raw) continue
-      const rendered = this.resolveRenderTarget(reference, host)
-      if (rendered.target && !isCircular(rendered.target, this.stack)) {
-        // The target may be unloaded; the application callback gets one
-        // source-backed opportunity to load it without changing the host.
-        if (!rendered.target.document) this.requestMissingTarget(reference, host, rendered.target)
+      let rendered = this.resolveRenderTarget(reference, host)
+      const key = missingTargetKey(host, reference, rendered.target)
+      if (rendered.target?.document) {
+        // A target can become available independently of the load promise.
+        // It is now safe to forget the old missing/failed attempt.
+        this.clearMissingTargetRequest(key)
+      } else if (rendered.target && !isCircular(rendered.target, this.stack)) {
+        rendered = this.renderWithMissingFailure(rendered, key)
+        this.requestMissingTarget(
+          reference,
+          host,
+          rendered.target,
+          retryMissing,
+        )
       } else if (!rendered.target) {
-        this.requestMissingTarget(reference, host, undefined)
+        rendered = this.renderWithMissingFailure(rendered, key)
+        this.requestMissingTarget(reference, host, undefined, retryMissing)
       }
       ranges.push({
         from: reference.from,
@@ -688,6 +751,7 @@ export class EmbedProjectionController {
           true,
         )
     this.view.dom.dataset.embedCount = String(ranges.length)
+    this.updateTargetErrorDataset()
   }
 
   private resolveRenderTarget(
@@ -706,41 +770,135 @@ export class EmbedProjectionController {
     }
   }
 
+  private renderWithMissingFailure(
+    rendered: EmbedRenderTarget,
+    key: string,
+  ): EmbedRenderTarget {
+    const request = this.missingRequests.get(key)
+    if (
+      request?.generation !== this.projectionGeneration ||
+      request.status !== 'failed' ||
+      request.error === undefined
+    ) {
+      return rendered
+    }
+    return {
+      ...rendered,
+      error: request.error,
+    }
+  }
+
   private requestMissingTarget(
     reference: ParsedReference,
     host: DocumentState,
     target: NormalizedTarget | undefined,
+    retryMissing: boolean,
   ): void {
     const loader = this.options.onTargetMissing
     if (!loader) return
     const path = targetPath(target)
-    const key = `${host.id}:${reference.from}:${reference.to}:${path ?? reference.path}`
-    if (this.missingRequests.has(key)) return
-    this.missingRequests.add(key)
+    const key = missingTargetKey(host, reference, target)
+    const previous = this.missingRequests.get(key)
+    if (previous?.generation === this.projectionGeneration) {
+      if (previous.status === 'in-flight' || !retryMissing) return
+    }
+
+    const request: MissingTargetRequest = {
+      key,
+      hostId: host.id,
+      hostRevision: host.revision,
+      generation: this.projectionGeneration,
+      status: 'in-flight',
+    }
+    this.missingRequests.set(key, request)
     let result: void | PromiseLike<void>
     try {
       result = loader({
         host,
         reference,
         stack: this.stack,
+        generation: this.projectionGeneration,
         ...(path === undefined ? {} : { path }),
       })
     } catch (error) {
-      this.view.dom.dataset.embedTargetError = errorText(error)
+      this.failMissingTarget(request, error)
       return
     }
     void Promise.resolve(result).then(
-      () => this.requestRefresh(),
-      (error: unknown) => {
-        if (!this.destroyed) this.view.dom.dataset.embedTargetError = errorText(error)
-      },
+      () => this.completeMissingTarget(request),
+      (error: unknown) => this.failMissingTarget(request, error),
     )
   }
 
-  private requestRefresh(): void {
+  private isCurrentRequest(request: MissingTargetRequest): boolean {
+    if (this.destroyed || request.generation !== this.projectionGeneration) {
+      return false
+    }
+    const host = this.options.store.get(this.options.locator)
+    return host?.id === request.hostId && host.revision === request.hostRevision
+  }
+
+  private completeMissingTarget(request: MissingTargetRequest): void {
+    if (this.missingRequests.get(request.key) !== request) return
+    if (!this.isCurrentRequest(request)) {
+      this.missingRequests.delete(request.key)
+      return
+    }
+    request.status = 'awaiting-retry'
+    request.error = undefined
+    // The refresh may mount a target loaded by the callback. If it is still
+    // absent, the awaiting state deliberately waits for a later target/source
+    // event instead of recursively invoking a resolved loader forever.
+    this.requestRefresh()
+  }
+
+  private failMissingTarget(request: MissingTargetRequest, error: unknown): void {
+    if (this.missingRequests.get(request.key) !== request) return
+    if (!this.isCurrentRequest(request)) {
+      this.missingRequests.delete(request.key)
+      return
+    }
+    request.status = 'failed'
+    request.error = errorText(error)
+    this.updateTargetErrorDataset()
+    // Promise rejection is already asynchronous; queueing synchronous loader
+    // failures keeps CM6 widget construction from dispatching re-entrantly.
+    queueMicrotask(() => {
+      if (this.isCurrentRequest(request)) this.requestRefresh()
+    })
+  }
+
+  private clearMissingTargetRequest(key: string): void {
+    const request = this.missingRequests.get(key)
+    if (request?.generation === this.projectionGeneration) {
+      this.missingRequests.delete(key)
+    }
+  }
+
+  private updateTargetErrorDataset(): void {
+    const errors = [...this.missingRequests.values()]
+      .filter((request) =>
+        request.generation === this.projectionGeneration &&
+        request.status === 'failed' &&
+        request.error !== undefined,
+      )
+      .map((request) => request.error as string)
+    if (errors.length > 0) {
+      this.view.dom.dataset.embedTargetError = [...new Set(errors)].join(' | ')
+    } else {
+      delete this.view.dom.dataset.embedTargetError
+    }
+  }
+
+  private requestRefresh(retryMissing = false): void {
     if (this.destroyed) return
     this.refreshSequence += 1
-    this.view.dispatch({ effects: refreshEmbedProjectionEffect.of(this.refreshSequence) })
+    this.view.dispatch({
+      effects: refreshEmbedProjectionEffect.of({
+        sequence: this.refreshSequence,
+        retryMissing,
+      }),
+    })
   }
 }
 
