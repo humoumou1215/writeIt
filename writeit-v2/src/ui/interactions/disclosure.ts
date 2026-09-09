@@ -99,10 +99,22 @@ export const vContextFocus: ObjectDirective<HTMLElement, () => void> = {
     const previous = document.activeElement as HTMLElement | null
     const key = (event: KeyboardEvent) => {
       if (event.isComposing || event.defaultPrevented) return
-      if (event.key === 'Escape' || event.key === 'Tab') {
+      if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
         binding.value()
+        return
+      }
+      if (event.key === 'Tab') {
+        const items = [...root.querySelectorAll<HTMLElement>(focusable)].filter(
+          (element) => element.getClientRects().length > 0,
+        )
+        if (items.length === 0) return
+        const current = items.indexOf(document.activeElement as HTMLElement)
+        const next = items[(current + (event.shiftKey ? -1 : 1) + items.length) % items.length]
+        event.preventDefault()
+        event.stopPropagation()
+        next?.focus()
       }
     }
     const outside = (event: Event) => {

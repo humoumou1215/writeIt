@@ -17,11 +17,21 @@ describe('shortcut settings', () => {
       'editor.table.add-row-after',
     )
     expect(entries.find((entry) => entry.commandId === 'editor.table.add-row-after')).toMatchObject({
-      label: 'Add table row',
-      group: 'Table',
+      label: '在后方添加表格行',
+      group: '表格',
       defaultKeybinding: 'Shift+Enter',
       keybinding: 'Shift+Enter',
       customized: false,
+    })
+    expect(entries.find((entry) => entry.commandId === 'workspace.next-tab')).toMatchObject({
+      label: '下一个标签页',
+      group: '工作区',
+      defaultKeybinding: 'Mod+Alt+ArrowRight',
+    })
+    expect(entries.find((entry) => entry.commandId === 'workspace.previous-tab')).toMatchObject({
+      label: '上一个标签页',
+      group: '工作区',
+      defaultKeybinding: 'Mod+Alt+ArrowLeft',
     })
     expect(entries.length).toBe(DEFAULT_SHORTCUT_COMMANDS.length)
   })

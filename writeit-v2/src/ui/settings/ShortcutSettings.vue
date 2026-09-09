@@ -96,8 +96,8 @@ function resetBinding(commandId: string): void {
   <section class="shortcut-settings" data-testid="shortcut-settings" aria-labelledby="shortcut-settings-title">
     <div class="shortcut-settings__header">
       <div>
-        <p class="workspace-eyebrow">Keyboard</p>
-        <h3 id="shortcut-settings-title">Shortcuts</h3>
+        <p class="workspace-eyebrow">快捷键</p>
+        <h3 id="shortcut-settings-title">快捷键设置</h3>
       </div>
       <button
         type="button"
@@ -105,22 +105,22 @@ function resetBinding(commandId: string): void {
         data-testid="shortcut-reset-all"
         @click="emit('reset-all')"
       >
-        Restore defaults
+        恢复默认
       </button>
     </div>
 
     <p class="shortcut-settings__description">
-      Customize commands without changing the Markdown document. Conflicting shortcuts are rejected atomically.
+      自定义命令不会修改 Markdown 文档；发生快捷键冲突时，整次修改会被拒绝。
     </p>
 
     <label class="shortcut-settings__search" for="shortcut-search">
-      <span>Filter commands</span>
+      <span>筛选命令</span>
       <input
         id="shortcut-search"
         v-model="search"
         type="search"
         data-testid="shortcut-search"
-        placeholder="Search commands"
+        placeholder="搜索命令"
       />
     </label>
 
@@ -134,7 +134,7 @@ function resetBinding(commandId: string): void {
     </ul>
 
     <p v-if="groups.length === 0" class="shortcut-settings__empty" data-testid="shortcut-empty">
-      No matching commands.
+      没有匹配的命令。
     </p>
     <div v-else class="shortcut-settings__groups">
       <section
@@ -160,38 +160,38 @@ function resetBinding(commandId: string): void {
               class="shortcut-row__binding"
               :class="{ 'shortcut-row__binding--empty': !entry.keybinding }"
               data-testid="shortcut-current"
-            >{{ entry.keybinding ?? 'Unassigned' }}</kbd>
+            >{{ entry.keybinding ?? '未分配' }}</kbd>
             <button
               type="button"
               class="shortcut-row__record"
               :class="{ 'shortcut-row__record--recording': recordingCommandId === entry.commandId }"
               :aria-pressed="recordingCommandId === entry.commandId"
-              :aria-label="recordingCommandId === entry.commandId ? `Recording shortcut for ${entry.label}` : `Record shortcut for ${entry.label}`"
+              :aria-label="recordingCommandId === entry.commandId ? `正在录制${entry.label}的快捷键` : `录制${entry.label}的快捷键`"
               data-testid="shortcut-record"
               @click="recordingCommandId === entry.commandId ? stopRecording() : beginRecording(entry.commandId)"
               @keydown="recordKeydown(entry.commandId, $event)"
             >
-              {{ recordingCommandId === entry.commandId ? 'Press keys…' : 'Record' }}
+              {{ recordingCommandId === entry.commandId ? '请按下按键…' : '录制' }}
             </button>
             <button
               type="button"
               class="shortcut-row__action"
-              :aria-label="`Clear shortcut for ${entry.label}`"
+              :aria-label="`清除${entry.label}的快捷键`"
               data-testid="shortcut-clear"
               :disabled="!entry.keybinding"
               @click="clearBinding(entry.commandId)"
             >
-              Clear
+              清除
             </button>
             <button
               type="button"
               class="shortcut-row__action"
-              :aria-label="`Restore default for ${entry.label}`"
+              :aria-label="`恢复${entry.label}的默认快捷键`"
               data-testid="shortcut-reset"
               :disabled="!entry.customized"
               @click="resetBinding(entry.commandId)"
             >
-              Reset
+              重置
             </button>
           </div>
         </div>

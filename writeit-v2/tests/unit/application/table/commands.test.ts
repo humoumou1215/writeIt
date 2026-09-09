@@ -9,7 +9,7 @@ describe('table application commands', () => {
     const commands = createTableCommands()
     expect(commands.map((command) => command.id)).toEqual(Object.values(TABLE_COMMAND_IDS))
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length)
-    expect(commands.every((command) => command.group === 'Table')).toBe(true)
+    expect(commands.every((command) => command.group === '表格')).toBe(true)
   })
 
   it('runs menu/shortcut invocations through the same pure command mapping', async () => {

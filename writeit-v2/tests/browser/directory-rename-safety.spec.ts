@@ -16,8 +16,9 @@ test('blocks renaming a directory that contains a dirty nested Document', async 
   page,
 }) => {
   await openNestedDocument(page)
-  await page.locator('.document-menu > summary').click()
-  await page.getByLabel('Auto-save delay').selectOption('manual')
+  await page.getByTestId('workspace-settings-toggle').click()
+  await page.getByTestId('settings-auto-save').selectOption('manual')
+  await page.getByTestId('workspace-settings-close').click()
 
   const editor = page.locator('.cm-content')
   await editor.click()
@@ -46,8 +47,8 @@ test('blocks moving a directory with a nested Document and keeps the tree usable
 }) => {
   await openNestedDocument(page)
 
-  await page.locator('ul.workspace-tree > li > .workspace-tree__row').click()
-  await page.locator('.workspace-create > summary').click()
+  await page.locator('[data-workspace-path="welcome.md"] .workspace-tree__row').click({ button: 'right' })
+  await page.locator('[data-testid="workspace-create"] > summary').click()
   await page.getByTestId('workspace-entry-name').fill('archive')
   await page.getByTestId('workspace-create-directory').click()
   await expect(page.locator('[data-workspace-path="archive"]')).toBeVisible()

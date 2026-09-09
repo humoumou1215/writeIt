@@ -27,23 +27,23 @@ import type {
 export const IMAGE_PASTE_MODE_OPTIONS = Object.freeze([
   Object.freeze({
     id: 'root-images' as const,
-    label: 'Workspace images/',
-    description: 'Store pasted images in images/ at the workspace root; Markdown uses a document-relative path.',
+    label: '工作区 images/',
+    description: '将粘贴的图片保存到工作区根目录的 images/，Markdown 使用相对当前文档的路径。',
   }),
   Object.freeze({
     id: 'same-dir' as const,
-    label: 'Same directory',
-    description: 'Store pasted images next to the Markdown document and reference them relatively.',
+    label: '当前文档目录',
+    description: '将粘贴的图片保存到当前 Markdown 文档旁边，并使用相对路径引用。',
   }),
   Object.freeze({
     id: 'file-images' as const,
-    label: 'Document images/',
-    description: 'Store pasted images in an images/ child of the document directory.',
+    label: '文档 images/',
+    description: '将粘贴的图片保存到当前文档目录下的 images/ 子目录。',
   }),
   Object.freeze({
     id: 'inline' as const,
-    label: 'Inline base64',
-    description: 'Keep the image as an explicit data URI in Markdown.',
+    label: '内嵌 Base64',
+    description: '将图片保留为 Markdown 中明确的 data URI。',
   }),
 ])
 

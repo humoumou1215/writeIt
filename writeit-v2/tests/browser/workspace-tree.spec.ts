@@ -9,7 +9,8 @@ test('workspace tree can refresh, create, drag-move, rename and delete entries',
   await expect(tree).toContainText('welcome.md')
   await expect(tree).toContainText('notes')
 
-  await page.locator('.workspace-create > summary').click()
+  await page.locator('[data-workspace-path="welcome.md"] .workspace-tree__row').click({ button: 'right' })
+  await page.locator('[data-testid="workspace-create"] > summary').click()
   await page.getByTestId('workspace-entry-name').fill('drafts')
   await page.getByTestId('workspace-create-directory').click()
   await expect(tree).toContainText('drafts')

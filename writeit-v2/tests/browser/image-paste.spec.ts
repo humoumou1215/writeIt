@@ -78,9 +78,6 @@ test('pastes an image to a workspace destination with a document-relative source
   page,
 }) => {
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
 
@@ -100,9 +97,6 @@ test('claims one event without duplicating a bridge projection and keeps explici
   page,
 }) => {
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
 
@@ -120,9 +114,6 @@ test('claims one event without duplicating a bridge projection and keeps explici
   await expect(page.locator('[data-workspace-path^="images/"]')).toHaveCount(1)
 
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
   expect(
@@ -140,24 +131,22 @@ test('stores nested-document paste sources relative to the document directory', 
   page,
 }) => {
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.getByRole('button', { name: 'Expand notes' }).click()
   await page.locator('[data-workspace-path="notes/architecture.md"] .workspace-tree__row').click()
   await expect(page.locator('.cm-content')).toContainText('# Architecture notes')
 
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
+  await page.keyboard.press('Control+E')
   expect(await dispatchImagePaste(page)).toBe(true)
 
   await expect(page.locator('.cm-content')).toContainText(/\.\.\/images\/\d{8}-\d{9}-/u)
-  const image = page.locator('.preview-host .live-preview-image__content')
+  const image = page.locator('.cm-writeit-live-preview-image__content')
   await expect(image).toHaveAttribute('data-image-path', /^images\/\d{8}-\d{9}-/u)
   const path = await image.getAttribute('data-image-path')
   if (!path) throw new Error('nested image path was not projected')
 
-  await page.locator('.preview-host [data-image-action="reveal"]').click()
+  await page.locator('.cm-writeit-live-preview-image [data-image-action="reveal"]').click()
   await expect(
     page.locator(`[data-workspace-path="${path}"]`),
   ).toHaveAttribute('aria-selected', 'true')
@@ -167,14 +156,11 @@ test('resolves, previews, and locates a workspace image without changing Markdow
   page,
 }) => {
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
   // Mount both source-backed image projections before the paste. Their shared
   // resolver must not race by revoking the URL used by the other projection.
-  await page.getByTestId('presentation-toggle').click()
+  await page.keyboard.press('Control+E')
 
   // A valid 1x1 PNG lets Chromium exercise the read/URL/decode path rather
   // than only the source-preserving broken-image fallback.
@@ -186,7 +172,7 @@ test('resolves, previews, and locates a workspace image without changing Markdow
   ]
   expect(await dispatchImagePaste(page, validPng)).toBe(true)
 
-  const image = page.locator('.preview-host .live-preview-image__content')
+  const image = page.locator('.cm-writeit-live-preview-image__content')
   await expect(image).toHaveAttribute('data-image-status', 'ready')
   await expect(image).toHaveAttribute('data-image-path', /^images\/\d{8}-\d{9}-/u)
   const path = await image.getAttribute('data-image-path')
@@ -199,7 +185,7 @@ test('resolves, previews, and locates a workspace image without changing Markdow
   await expect.poll(() =>
     page.evaluate(() =>
       [...document.querySelectorAll<HTMLImageElement>(
-        '.preview-host img, .cm-writeit-live-preview-image__content',
+        '.cm-writeit-live-preview-image__content',
       )].every((candidate) => candidate.complete && candidate.naturalWidth > 0),
     ),
   ).toBe(true)
@@ -216,29 +202,34 @@ test('resolves, previews, and locates a workspace image without changing Markdow
 
   // Return to raw source before asserting source fidelity and exercising the
   // copy/preview/reopen projection actions.
-  await page.getByTestId('presentation-toggle').click()
+  await page.keyboard.press('Control+E')
   const sourceBeforeCopy = await page.locator('.cm-content').textContent()
-  await page.locator('.preview-host [data-image-action="copy"]').click()
+  await page.keyboard.press('Control+E')
+  await page.locator('.cm-writeit-live-preview-image').hover()
+  await page.locator('.cm-writeit-live-preview-image [data-image-action="copy"]').click()
   await expect(page.getByTestId('image-action-status')).toContainText(
     /clipboard/i,
   )
+  await page.keyboard.press('Control+E')
   expect(await page.locator('.cm-content').textContent()).toBe(sourceBeforeCopy)
 
+  await page.keyboard.press('Control+E')
   await page
-    .locator('.preview-host [data-image-action="preview"]')
+    .locator('.cm-writeit-live-preview-image [data-image-action="preview"]')
     .click()
   await expect(page.getByTestId('image-preview-modal')).toBeVisible()
   await page.getByTestId('image-preview-close').click()
 
   await page
-    .locator('.preview-host [data-image-action="reveal"]')
+    .locator('.cm-writeit-live-preview-image [data-image-action="reveal"]')
     .click()
   await expect(
     page.locator(`[data-workspace-path="${path}"]`),
   ).toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('.cm-content')).toContainText(path)
 
-  await page.getByTestId('workspace-save').click()
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('Control+S')
   await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
   await page.getByRole('button', { name: 'Close welcome.md' }).click()
   await expect(page.getByTestId('workspace-empty')).toBeVisible()
@@ -246,14 +237,16 @@ test('resolves, previews, and locates a workspace image without changing Markdow
     .locator('[data-workspace-path="welcome.md"] .workspace-tree__row')
     .click()
   await expect(page.locator('.cm-content')).toContainText(path)
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('Control+E')
   const reopenedImage = page.locator(
-    '.preview-host .live-preview-image__content',
+    '.cm-writeit-live-preview-image__content',
   )
   await expect(reopenedImage).toHaveAttribute('data-image-status', 'ready')
   await expect.poll(() =>
     page.evaluate(() => {
       const candidate = document.querySelector<HTMLImageElement>(
-        '.preview-host .live-preview-image__content',
+        '.cm-writeit-live-preview-image__content',
       )
       return Boolean(candidate?.complete && candidate.naturalWidth > 0)
     }),
@@ -262,9 +255,6 @@ test('resolves, previews, and locates a workspace image without changing Markdow
 
 test('supports the explicit inline base64 image strategy', async ({ page }) => {
   await page.goto('/')
-  await page.locator('.document-menu > summary').click()
-  await page.getByRole('button', { name: '对照预览' }).click()
-  await page.locator('.document-menu > summary').click()
   await page.getByTestId('workspace-settings-toggle').click()
   await page.getByTestId('settings-image-paste-mode').selectOption('inline')
   await page.getByTestId('workspace-settings-close').click()

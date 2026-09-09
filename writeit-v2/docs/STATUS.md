@@ -29,6 +29,21 @@
 - 新浏览器回归覆盖正文尺寸、默认隐藏对照预览、大纲与批注并行、Search 切换保留编辑器实例、900px 窗口无横向溢出和可见状态栏。
 - 限制：未运行完整浏览器套件；旧演示界面的 metadata/常驻操作定位需随对应用户旅程迁移。下一建议 Task：UX-03，菜单键盘/焦点与既有浏览器旅程统一验收。
 
+## User-confirmed post-RC UX decisions（2026-09-09）
+
+- “定位当前”保留能力，入口迁移到文件树/工作区对象的右键菜单，不再作为工作区标题栏常驻按钮。
+- Save 不作为可见常驻按钮展示；保存命令、快捷键、自动保存和状态反馈仍保留。
+- 文档 `···` 菜单不再作为可见 UI 展示；其低频能力不能静默删除，后续任务必须明确替代入口或分类。
+- 设置面板使用简体中文，并在左侧提供当前可用设置分组的大纲导航；右侧内容独立滚动，焦点规则沿用 UX-03。
+- 默认浏览器演示工作区需要补充代表性复杂 Markdown corpus：常规 Markdown、多层/重复/循环 Embed、断链/只读场景、多文件夹、多标签和引用关系，不能继续只依赖少量占位文件。
+- 以上决定已在本次 UX-03 收尾实现中落地：定位当前迁移到文件树对象右键菜单；常驻 Save、文档 `···` 与 Header reveal 不再渲染，但保存命令/快捷键/自动保存/状态反馈和低频命令契约保留；设置改为简体中文及左侧分组大纲；默认浏览器 seed 已扩展为复杂 Markdown/Embed/Reference corpus。相关 unit/browser 合同和选择器已同步更新。
+
+## UX-03 implementation closeout (2026-09-09)
+
+- 验证：`npm run test` 89 files / 477 tests PASS；`npm run typecheck` PASS；`npm run build` PASS。
+- 相关 browser spec 已按新入口和中文文案更新；限定回归尝试因本机缺少 Playwright Chromium executable（`chrome-headless-shell.exe`）未进入断言阶段，未下载或改变浏览器环境。
+- 仍保留构建产物的大 chunk warning；本次未创建 Git commit，也未改变 Accepted ADR 或核心架构不变量。
+
 ## Completed baseline
 
 - [x] P0 repository reset, v2/legacy boundary, feature map, initial ADRs and scaffold

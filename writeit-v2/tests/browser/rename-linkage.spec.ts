@@ -9,7 +9,8 @@ test('renaming a file rewrites incoming references without losing the source doc
   await editor.click()
   await page.keyboard.press('End')
   await page.keyboard.insertText('\n[[notes/workspace.md]]')
-  await page.getByTestId('workspace-save').click()
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('Control+s')
   await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
 
   await page.locator('[data-workspace-path="notes"] .workspace-tree__twisty').click()

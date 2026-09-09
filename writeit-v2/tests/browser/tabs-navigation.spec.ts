@@ -29,7 +29,6 @@ test('opens documents in tabs, preserves dirty state, navigates, and reveals the
   await expect(
     page.locator('[data-workspace-tab-path="notes/architecture.md"].workspace-tab--dirty'),
   ).toBeVisible()
-  await expect(page.getByTestId('presentation-mode')).toBeVisible()
 
   await page
     .locator('[data-workspace-tab-path="welcome.md"]')
@@ -57,7 +56,10 @@ test('opens documents in tabs, preserves dirty state, navigates, and reveals the
   await expect(
     page.locator('[data-workspace-path="notes/architecture.md"]'),
   ).toHaveCount(0)
-  await page.getByTestId('workspace-reveal-current').click()
+  await page
+    .locator('[data-workspace-path="welcome.md"] .workspace-tree__row')
+    .click({ button: 'right' })
+  await page.getByTestId('workspace-context-reveal').click()
   await expect(
     page.locator('[data-workspace-path="notes/architecture.md"]'),
   ).toBeVisible()

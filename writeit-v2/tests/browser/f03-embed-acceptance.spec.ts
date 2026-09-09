@@ -16,7 +16,7 @@ async function appendReferenceToWelcome(
   await editor.click()
   await page.keyboard.press('Control+End')
   await page.keyboard.insertText(`\n\n${reference}`)
-  await page.getByTestId('presentation-toggle').click()
+  await page.keyboard.press('Control+E')
 }
 
 async function pasteValidImageIntoActiveDocument(page: Page): Promise<void> {
@@ -303,7 +303,8 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
     .toContainText('Workspace tree dirty through Embed')
   await expect(page.getByTestId('workspace-error')).toHaveCount(0)
 
-  await page.getByTestId('workspace-save').click()
+  await page.locator('.cm-content').click()
+  await page.keyboard.press('Control+s')
   await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
   await expect(page.locator('[data-workspace-tab-path="notes/workspace.md"]'))
     .not.toHaveClass(/workspace-tab--dirty/u)
@@ -311,7 +312,7 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
   // Switching back to source makes the host token/revision check explicit;
   // opening B did not mutate or reload A.
   await page.locator('[data-workspace-tab-path="welcome.md"]').click()
-  await page.getByTestId('presentation-toggle').click()
+  await page.keyboard.press('Control+E')
   await expect(page.locator('.editor-host > .cm-editor .cm-content'))
     .toContainText('![[notes/workspace.md]]')
   expect(await documentRevision(page)).toBe(hostRevisionBeforeChildEdit)
@@ -329,7 +330,8 @@ test('missing Embed target can appear, become dirty, and then be explicitly open
 
   await page.getByRole('button', { name: 'Expand notes' }).click()
   await page.locator('[data-workspace-path="notes"] > .workspace-tree__row').click()
-  await page.locator('.workspace-create > summary').click()
+  await page.locator('[data-workspace-path="notes"] .workspace-tree__row').click({ button: 'right' })
+  await page.getByTestId('workspace-create').click()
   await page.getByTestId('workspace-entry-name').fill('appears.md')
   await page.getByTestId('workspace-create-file').click()
   await expect(page.locator('[data-workspace-path="notes/appears.md"]'))
@@ -388,7 +390,7 @@ test('real App exposes a failed Embed load, retries explicitly, and recovers wit
   await expect(embed.locator('.cm-content')).toContainText('Workspace tree')
   expect(await documentRevision(page)).toBe(revisionBefore + 1)
 
-  await page.getByTestId('presentation-toggle').click()
+  await page.keyboard.press('Control+E')
   await expect(page.locator('.editor-host > .cm-editor .cm-content'))
     .toContainText('![[notes/workspace.md]]')
 })

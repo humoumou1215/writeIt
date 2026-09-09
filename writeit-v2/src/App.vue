@@ -55,7 +55,7 @@ import {
   ReferenceGraph,
   ReferenceHealthService,
 } from './core/reference'
-import { composedContentStats, flattenOutline, parseOutline } from './core'
+import { composedContentStats, flattenOutline } from './core'
 import {
   ReferenceClipboardService,
   ReferenceRenameService,
@@ -113,25 +113,21 @@ import {
 import { ShortcutSettings as ShortcutSettingsPanel } from './ui/settings'
 import { ImagePreviewModal } from './ui/media'
 import { AnnotationDrawer, GitWorkbenchPanel } from './ui/review'
+import {
+  DEFAULT_DEMO_BINARY_FILES,
+  DEFAULT_DEMO_DOCUMENT_PATH,
+  DEFAULT_DEMO_FILES,
+  DEFAULT_DEMO_REFERENCE_DOCUMENTS,
+} from './demo/default-workspace'
 
 const documentId = createDocumentId('welcome')
-const documentPath = createDocumentPath('welcome.md')
-const initialMarkdown = `# WriteIt v2
-
-This is the **DocumentStore** source. Edit it and watch the [live preview](https://writeit.example).
-
-The editor is a CM6 projection, not a second document authority.
-
-:::unknown-syntax
-Unknown Markdown remains source text.
-:::
-`
+const documentPath = createDocumentPath(DEFAULT_DEMO_DOCUMENT_PATH)
+const initialMarkdown = DEFAULT_DEMO_FILES[DEFAULT_DEMO_DOCUMENT_PATH]
 
 const store = new DocumentStore()
 const workspaceFileSystem = new MemoryFileSystem({
-  'welcome.md': initialMarkdown,
-  'notes/architecture.md': '# Architecture notes\n',
-  'notes/workspace.md': '# Workspace tree\n',
+  files: DEFAULT_DEMO_FILES,
+  binaryFiles: DEFAULT_DEMO_BINARY_FILES,
 })
 const settingsStorage = new BrowserSettingsStorage()
 const workspaceSettingsStore = new WorkspaceSettingsStore(settingsStorage)
@@ -210,8 +206,11 @@ const initialDocument = store.load({
   markdown: initialMarkdown,
 })
 const referenceGraph = new ReferenceGraph({
-  documents: [initialDocument],
+  // These are derived reference facts for the demo corpus only. Once opened,
+  // the DocumentStore snapshot remains the runtime Markdown authority.
+  documents: DEFAULT_DEMO_REFERENCE_DOCUMENTS,
 })
+referenceGraph.indexDocument(initialDocument)
 const referenceHealth = new ReferenceHealthService({
   graph: referenceGraph,
   // Loaded documents remain Store-authoritative; unopened targets are read
@@ -284,6 +283,8 @@ const autoSaveDelay = ref(initialSettings.autoSaveDelayMs)
 const imagePasteMode = ref<ImagePasteMode>(initialSettings.imagePasteMode)
 const restoreLastWorkspace = ref(initialSettings.restoreLastWorkspace)
 const settingsPanelOpen = ref(false)
+type SettingsSection = 'workspace' | 'shortcuts'
+const activeSettingsSection = ref<SettingsSection>('workspace')
 const settingsError = ref<string | null>(null)
 const shortcutRevisionSignal = ref(0)
 const shortcutError = ref<string | null>(null)
@@ -303,7 +304,9 @@ const splitProjection = ref<SingleDocumentView | null>(null)
 const splitDocumentId = ref<DocumentId | null>(null)
 const mountedDocumentId = ref<DocumentId | null>(null)
 const presentationMode = ref<PresentationMode>('source')
+const presentationNotice = ref<string | null>(null)
 const presentationModes = new Map<DocumentId, PresentationMode>()
+let presentationNoticeTimer: number | null = null
 const workspaceTreeSnapshot = ref(workspaceTreeService.getSnapshot())
 const referenceHealthSnapshot = ref(referenceHealth.getSnapshot())
 const referenceHealthRevisionSignal = ref(0)
@@ -531,10 +534,6 @@ const activeReferenceHealth = computed(() => {
 const activeBrokenReferenceCount = computed(
   () => activeReferenceHealth.value.filter((fact) => fact.broken).length,
 )
-const activeOutline = computed(() => {
-  documentRevisionSignal.value
-  return activeDocument.value ? parseOutline(activeDocument.value.markdown) : []
-})
 const activeBacklinks = computed(() => {
   documentRevisionSignal.value
   const path = workspacePathForDocument(activeDocument.value)
@@ -550,6 +549,10 @@ const activeComposedStats = computed(() => {
       return loaded?.markdown ?? workspaceFileSystem.snapshot().get(createDocumentPath(path))
     },
   })
+})
+const activeOutline = computed(() => {
+  documentRevisionSignal.value
+  return activeComposedStats.value.outline
 })
 
 const canAddAnnotation = computed(() => {
@@ -926,7 +929,14 @@ watch(
 
 function toggleEditorPresentation(): void {
   const next = projection.value?.togglePresentationMode()
-  if (next) presentationMode.value = next
+  if (!next) return
+  presentationMode.value = next
+  presentationNotice.value = next === 'live-preview' ? '实时预览' : '源码模式'
+  if (presentationNoticeTimer !== null) window.clearTimeout(presentationNoticeTimer)
+  presentationNoticeTimer = window.setTimeout(() => {
+    presentationNotice.value = null
+    presentationNoticeTimer = null
+  }, 1600)
 }
 
 function workspaceErrorMessage(error: unknown): string {
@@ -1040,6 +1050,11 @@ function copyWorkspaceContextEntry(): void {
   if (path !== undefined) void copyWorkspaceEntry(path)
 }
 
+function revealWorkspaceContextEntry(): void {
+  closeWorkspaceContextMenu()
+  revealActiveFile()
+}
+
 function handleImagePasteApplied(result: ImagePasteResult): void {
   const saved = result.savedPaths.length
   const inlined = result.inlinedCount
@@ -1142,9 +1157,9 @@ function updateWorkspaceSettings(
 
 function shortcutErrorMessage(error: unknown): string {
   if (error instanceof KeybindingConflictError) {
-    return `${error.keybinding} is already assigned to ${error.conflictingCommandIds.join(', ')}.`
+    return `快捷键 ${error.keybinding} 已被占用：${error.conflictingCommandIds.join('、')}。`
   }
-  return error instanceof Error ? error.message : String(error)
+  return error instanceof Error ? `快捷键设置失败：${error.message}` : `快捷键设置失败：${String(error)}`
 }
 
 function setShortcutBinding(commandId: string, keybinding: string | null): void {
@@ -1178,6 +1193,33 @@ function toggleSettingsPanel(): void {
   settingsPanelOpen.value = !settingsPanelOpen.value
   settingsError.value = null
   shortcutError.value = null
+}
+
+function selectSettingsSection(section: SettingsSection): void {
+  activeSettingsSection.value = section
+  void nextTick(() => {
+    document.getElementById(`settings-section-${section}`)?.focus({ preventScroll: true })
+  })
+}
+
+function handleSettingsOutlineKeydown(event: KeyboardEvent): void {
+  const sections: readonly SettingsSection[] = ['workspace', 'shortcuts']
+  const currentIndex = sections.indexOf(activeSettingsSection.value)
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = Math.min(sections.length - 1, currentIndex + 1)
+  else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = Math.max(0, currentIndex - 1)
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = sections.length - 1
+  else return
+
+  event.preventDefault()
+  const next = sections[nextIndex]
+  selectSettingsSection(next)
+  void nextTick(() => {
+    document.querySelector<HTMLButtonElement>(
+      `[data-settings-section="${next}"]`,
+    )?.focus()
+  })
 }
 
 function closeSettingsPanel(): void {
@@ -2218,38 +2260,101 @@ async function restoreWorkspaceSession(): Promise<void> {
   }
 }
 
+function defaultShortcutDefinition(commandId: string) {
+  const definition = DEFAULT_SHORTCUT_COMMANDS.find(
+    (candidate) => candidate.commandId === commandId,
+  )
+  if (!definition) {
+    throw new Error(`Missing shortcut metadata for ${commandId}`)
+  }
+  return definition
+}
+
 function registerApplicationCommands(): void {
+  const nextTabMetadata = defaultShortcutDefinition('workspace.next-tab')
+  const previousTabMetadata = defaultShortcutDefinition('workspace.previous-tab')
+
   applicationCommandRegistry.register({
     id: 'document.save',
-    label: 'Save document',
-    group: 'File',
-    keywords: ['save', 'write', 'persist'],
+    label: '保存文档',
+    group: '文件',
+    keywords: ['保存', 'save', 'write', 'persist'],
     availability: () => activeDocument.value !== undefined && !persistenceBusy.value,
     execute: () => {
       void saveActiveDocument()
     },
   })
   applicationCommandRegistry.register({
+    id: 'document.export',
+    label: '导出文档',
+    group: '文件',
+    keywords: ['导出', 'export'],
+    availability: () => activeDocument.value !== undefined,
+    execute: () => {
+      void exportActiveDocument()
+    },
+  })
+  applicationCommandRegistry.register({
+    id: 'document.check-external',
+    label: '检查外部文件变化',
+    group: '文件',
+    keywords: ['外部变化', 'external', 'check'],
+    availability: () => activeDocument.value !== undefined && !persistenceBusy.value,
+    execute: () => {
+      void checkActiveExternalFile()
+    },
+  })
+  applicationCommandRegistry.register({
+    id: 'document.reload-external',
+    label: '从磁盘重新加载',
+    group: '文件',
+    keywords: ['重新加载', 'reload', 'external'],
+    availability: () => {
+      const status = activePersistenceState.value?.status
+      return activeDocument.value !== undefined && !persistenceBusy.value &&
+        (status === 'external-change' || status === 'conflict')
+    },
+    execute: () => {
+      void reloadActiveFromDisk()
+    },
+  })
+  applicationCommandRegistry.register({
     id: 'editor.toggle-preview',
-    label: 'Toggle live preview',
-    group: 'Editor',
-    keywords: ['source', 'preview', 'presentation'],
+    label: '切换实时预览',
+    group: '编辑器',
+    keywords: ['源码', '预览', 'source', 'preview', 'presentation'],
     availability: () => projection.value !== null,
     execute: () => toggleEditorPresentation(),
   })
   applicationCommandRegistry.register({
+    id: 'editor.toggle-comparison-preview',
+    label: '切换对照预览',
+    group: '编辑器',
+    keywords: ['对照', '预览', 'comparison', 'preview'],
+    availability: () => activeDocument.value !== undefined,
+    execute: () => { comparisonPreviewOpen.value = !comparisonPreviewOpen.value },
+  })
+  applicationCommandRegistry.register({
+    id: 'annotation.add',
+    label: '添加批注',
+    group: '批注',
+    keywords: ['批注', 'annotation', 'comment'],
+    availability: () => canAddAnnotation.value,
+    execute: () => { void addAnnotationFromSelection() },
+  })
+  applicationCommandRegistry.register({
     id: 'workspace.next-tab',
-    label: 'Next tab',
-    group: 'Workspace',
-    keywords: ['tab', 'document', 'forward'],
+    label: nextTabMetadata.label,
+    group: nextTabMetadata.group,
+    keywords: nextTabMetadata.keywords,
     availability: () => tabSnapshot.value.tabs.length > 1,
     execute: () => navigateTabs(1),
   })
   applicationCommandRegistry.register({
     id: 'workspace.previous-tab',
-    label: 'Previous tab',
-    group: 'Workspace',
-    keywords: ['tab', 'document', 'back'],
+    label: previousTabMetadata.label,
+    group: previousTabMetadata.group,
+    keywords: previousTabMetadata.keywords,
     availability: () => tabSnapshot.value.tabs.length > 1,
     execute: () => navigateTabs(-1),
   })
@@ -2339,6 +2444,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (presentationNoticeTimer !== null) window.clearTimeout(presentationNoticeTimer)
+  presentationNoticeTimer = null
   if (import.meta.env.DEV) {
     delete (window as unknown as { __writeItV2AppTest?: unknown })
       .__writeItV2AppTest
@@ -2376,6 +2483,55 @@ onBeforeUnmount(() => {
   <main class="app-shell" @click="closeWorkspaceContextMenu">
     <header class="app-header">
       <div class="app-brand"><span class="app-brand__mark">W</span><h1>WriteIt</h1><span class="app-workspace-name">工作区</span></div>
+      <WorkspaceTabsPanel
+        class="app-header__tabs"
+        :tabs="documentTabViews"
+        :active-document-id="tabSnapshot.activeDocumentId"
+        @select="activateWorkspaceTab"
+        @close="closeWorkspaceTab"
+      />
+      <details v-disclosure.actions class="workspace-navigation app-header__navigation" aria-label="标签与文件导航">
+        <summary title="标签与文件导航" aria-label="标签与文件导航">···</summary>
+        <div class="navigation-menu">
+          <button
+            type="button"
+            data-testid="workspace-prev-tab"
+            aria-label="上一个标签页"
+            :disabled="workspaceBusy || documentTabViews.length < 2"
+            @click="navigateTabs(-1)"
+          >
+            ‹ 标签页
+          </button>
+          <button
+            type="button"
+            data-testid="workspace-next-tab"
+            aria-label="下一个标签页"
+            :disabled="workspaceBusy || documentTabViews.length < 2"
+            @click="navigateTabs(1)"
+          >
+            标签页 ›
+          </button>
+          <span class="workspace-navigation__separator" aria-hidden="true"></span>
+          <button
+            type="button"
+            data-testid="workspace-prev-file"
+            aria-label="上一个文件"
+            :disabled="workspaceBusy || workspaceFiles.length < 2"
+            @click="navigateFiles(-1)"
+          >
+            ↑ 文件
+          </button>
+          <button
+            type="button"
+            data-testid="workspace-next-file"
+            aria-label="下一个文件"
+            :disabled="workspaceBusy || workspaceFiles.length < 2"
+            @click="navigateFiles(1)"
+          >
+            ↓ 文件
+          </button>
+        </div>
+      </details>
       <div class="app-global-actions">
         <button type="button" :aria-pressed="outlineOpen" @click="outlineOpen = !outlineOpen">大纲</button>
         <button type="button" :aria-pressed="backlinksOpen" @click="backlinksOpen = !backlinksOpen">反向引用</button>
@@ -2391,25 +2547,61 @@ onBeforeUnmount(() => {
       id="workspace-settings-panel"
       class="workspace-settings"
       role="dialog"
-      aria-label="Workspace settings"
+      aria-label="工作区设置"
       data-testid="workspace-settings-panel"
     >
       <div class="workspace-settings__header">
         <div>
-          <p class="workspace-eyebrow">Workspace shell</p>
-          <h2>Settings</h2>
+          <p class="workspace-eyebrow">工作区外壳</p>
+          <h2>设置</h2>
         </div>
         <button
           type="button"
           class="workspace-settings__close"
           data-testid="workspace-settings-close"
-          aria-label="Close settings"
+          aria-label="关闭设置"
           @click="closeSettingsPanel"
         >
           ×
         </button>
       </div>
       <div class="workspace-settings__body">
+        <nav
+          class="workspace-settings__outline"
+          aria-label="设置分组"
+          role="tablist"
+          aria-orientation="vertical"
+          @keydown="handleSettingsOutlineKeydown"
+        >
+          <button
+            v-for="section in [
+              { id: 'workspace' as const, label: '工作区' },
+              { id: 'shortcuts' as const, label: '快捷键' },
+            ]"
+            :key="section.id"
+            type="button"
+            role="tab"
+            class="workspace-settings__outline-item"
+            :id="`settings-section-${section.id}-tab`"
+            :class="{ 'workspace-settings__outline-item--active': activeSettingsSection === section.id }"
+            :aria-selected="activeSettingsSection === section.id"
+            :aria-controls="`settings-section-${section.id}`"
+            :tabindex="activeSettingsSection === section.id ? 0 : -1"
+            :data-settings-section="section.id"
+            @click="selectSettingsSection(section.id)"
+          >
+            {{ section.label }}
+          </button>
+        </nav>
+        <div class="workspace-settings__content">
+        <section
+          id="settings-section-workspace"
+          class="workspace-settings__section"
+          role="tabpanel"
+          aria-labelledby="settings-section-workspace-tab"
+          tabindex="-1"
+          v-show="activeSettingsSection === 'workspace'"
+        >
         <label class="workspace-settings__check">
           <input
             type="checkbox"
@@ -2417,7 +2609,7 @@ onBeforeUnmount(() => {
             :checked="sidebarCollapsed"
             @change="changeSidebarCollapsed"
           />
-          <span>Collapse sidebar</span>
+          <span>收起侧栏</span>
         </label>
         <label class="workspace-settings__check">
           <input
@@ -2426,11 +2618,11 @@ onBeforeUnmount(() => {
             :checked="sidebarPinned"
             @change="changeSidebarPinned"
           />
-          <span>Pin sidebar open</span>
+          <span>保持侧栏展开</span>
         </label>
         <label class="workspace-settings__field" for="settings-sidebar-width">
           <span>
-            Sidebar width
+            侧栏宽度
             <output data-testid="settings-sidebar-width-value">{{ sidebarWidth }}px</output>
           </span>
           <input
@@ -2445,7 +2637,7 @@ onBeforeUnmount(() => {
           />
         </label>
         <label class="workspace-settings__field" for="settings-auto-save">
-          <span>Auto-save</span>
+          <span>自动保存</span>
           <select
             id="settings-auto-save"
             data-testid="settings-auto-save"
@@ -2453,14 +2645,14 @@ onBeforeUnmount(() => {
             :disabled="persistenceBusy"
             @change="changeAutoSaveDelay"
           >
-            <option value="manual">Manual</option>
+            <option value="manual">手动保存</option>
             <option value="500">0.5s</option>
             <option value="1000">1s</option>
             <option value="2000">2s</option>
           </select>
         </label>
         <label class="workspace-settings__field" for="settings-image-paste-mode">
-          <span>Image paste</span>
+          <span>图片粘贴</span>
           <select
             id="settings-image-paste-mode"
             data-testid="settings-image-paste-mode"
@@ -2485,10 +2677,10 @@ onBeforeUnmount(() => {
             :checked="restoreLastWorkspace"
             @change="changeRestoreLastWorkspace"
           />
-          <span>Restore last workspace session</span>
+          <span>恢复上次工作区会话</span>
         </label>
         <p class="workspace-settings__hint" data-testid="workspace-recovery-status">
-          {{ lastWorkspaceRestoreStatus === 'pending' ? 'Restoring workspace…' : lastWorkspaceRestoreStatus === 'restored' ? 'Last workspace session restored.' : 'Started the default workspace.' }}
+          {{ lastWorkspaceRestoreStatus === 'pending' ? '正在恢复工作区…' : lastWorkspaceRestoreStatus === 'restored' ? '已恢复上次工作区会话。' : '已启动默认工作区。' }}
         </p>
         <p v-if="settingsError || recoveryError" class="workspace-settings__error" data-testid="settings-error">
           {{ settingsError ?? recoveryError }}
@@ -2500,10 +2692,18 @@ onBeforeUnmount(() => {
             data-testid="settings-reset"
             @click="resetWorkspaceSettings"
           >
-            Reset defaults
+           恢复默认设置
           </button>
         </div>
-
+        </section>
+        <section
+          id="settings-section-shortcuts"
+          class="workspace-settings__section"
+          role="tabpanel"
+          aria-labelledby="settings-section-shortcuts-tab"
+          tabindex="-1"
+          v-show="activeSettingsSection === 'shortcuts'"
+        >
         <ShortcutSettingsPanel
           :entries="shortcutEntries"
           :error="shortcutError"
@@ -2511,6 +2711,8 @@ onBeforeUnmount(() => {
           @reset="resetShortcutBinding"
           @reset-all="resetAllShortcutBindings"
         />
+        </section>
+        </div>
       </div>
     </section>
 
@@ -2535,39 +2737,39 @@ onBeforeUnmount(() => {
               class="workspace-shell-action"
               data-testid="workspace-sidebar-toggle"
               :aria-expanded="!sidebarCollapsed"
-              :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+              :aria-label="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+              :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
               @click="toggleSidebar"
             >
-              {{ sidebarCollapsed ? '展开' : '收起' }}
+              <svg class="workspace-icon workspace-icon--collapse" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7 4 3 10l4 6M13 4l4 6-4 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              </svg>
             </button>
             <button
               type="button"
               class="workspace-shell-action"
               data-testid="workspace-sidebar-pin"
               :aria-pressed="sidebarPinned"
-              :title="sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar'"
+              :aria-label="sidebarPinned ? '关闭自动收纳' : '开启自动收纳'"
+              :title="sidebarPinned ? '自动收纳：关' : '自动收纳：开'"
               @click="toggleSidebarPinned"
             >
-              {{ sidebarPinned ? '自动收纳：关' : '自动收纳：开' }}
-            </button>
-            <button
-              type="button"
-              class="workspace-reveal"
-              data-testid="workspace-reveal-current"
-              aria-label="Reveal current file"
-              :disabled="workspaceBusy || !activeDocument"
-              @click="revealActiveFile"
-            >
-              定位当前
+              <svg class="workspace-icon workspace-icon--pin" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="m6 3 8 8M8 5 4 9l3 1 3 3 1 3 4-4-3-1-3-3Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" />
+              </svg>
             </button>
             <button
               type="button"
               class="workspace-refresh"
               data-testid="workspace-refresh"
+              aria-label="刷新工作区"
+              title="刷新工作区"
               :disabled="workspaceBusy"
               @click="refreshWorkspace"
             >
-              刷新
+              <svg class="workspace-icon workspace-icon--refresh" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M16 6V3m0 0h-3m3 0-2.2 2.2A6 6 0 1 0 16 10" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" />
+              </svg>
             </button>
           </div>
         </div>
@@ -2587,38 +2789,6 @@ onBeforeUnmount(() => {
           </button>
         </nav>
         <div v-if="activeWorkspaceTool === 'files'" data-testid="workspace-files-tool">
-        <details v-disclosure.persistent class="workspace-create"><summary>＋ 新建文件或文件夹</summary>
-          <label for="workspace-entry-name">New entry</label>
-          <input
-            id="workspace-entry-name"
-            v-model="workspaceNameInput"
-            data-testid="workspace-entry-name"
-            placeholder="name.md or folder"
-            :disabled="workspaceBusy"
-            @keydown.enter="createWorkspaceEntry('file')"
-          />
-          <p class="workspace-create-location">
-            In <code>{{ workspaceCreationParentLabel }}</code>
-          </p>
-          <div class="workspace-create-actions">
-            <button
-              type="button"
-              data-testid="workspace-create-file"
-              :disabled="workspaceBusy"
-              @click="createWorkspaceEntry('file')"
-            >
-              New file
-            </button>
-            <button
-              type="button"
-              data-testid="workspace-create-directory"
-              :disabled="workspaceBusy"
-              @click="createWorkspaceEntry('directory')"
-            >
-              New folder
-            </button>
-          </div>
-        </details>
         <p v-if="workspaceError" class="workspace-error" data-testid="workspace-error">
           {{ workspaceError }}
         </p>
@@ -2648,11 +2818,53 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="workspace-context-menu__item"
+            data-testid="workspace-context-reveal"
+            :disabled="workspaceBusy || !activeDocument"
+            @click="revealWorkspaceContextEntry"
+          >
+            定位当前文件
+          </button>
+          <button
+            type="button"
+            class="workspace-context-menu__item"
             data-testid="workspace-context-copy"
             @click="copyWorkspaceContextEntry"
           >
-            Copy {{ workspaceName(workspaceContextMenu.path) }}
+            复制 {{ workspaceName(workspaceContextMenu.path) }}
           </button>
+          <details v-disclosure.actions class="workspace-create workspace-create--context" data-testid="workspace-create">
+            <summary>新建文件或文件夹</summary>
+            <label for="workspace-entry-name">名称</label>
+            <input
+              id="workspace-entry-name"
+              v-model="workspaceNameInput"
+              data-testid="workspace-entry-name"
+              placeholder="文件名.md 或文件夹名"
+              :disabled="workspaceBusy"
+              @keydown.enter="createWorkspaceEntry('file')"
+            />
+            <p class="workspace-create-location">
+              位置：<code>{{ workspaceCreationParentLabel }}</code>
+            </p>
+            <div class="workspace-create-actions">
+              <button
+                type="button"
+                data-testid="workspace-create-file"
+                :disabled="workspaceBusy"
+                @click="createWorkspaceEntry('file')"
+              >
+                新建文件
+              </button>
+              <button
+                type="button"
+                data-testid="workspace-create-directory"
+                :disabled="workspaceBusy"
+                @click="createWorkspaceEntry('directory')"
+              >
+                新建文件夹
+              </button>
+            </div>
+          </details>
         </div>
         </div>
         <section
@@ -2749,54 +2961,6 @@ onBeforeUnmount(() => {
           </section>
       </aside>
       <section class="workspace-main" aria-label="Open documents" @focusin="handleMainFocusIn">
-        <div class="workspace-tab-toolbar">
-          <WorkspaceTabsPanel
-            :tabs="documentTabViews"
-            :active-document-id="tabSnapshot.activeDocumentId"
-            @select="activateWorkspaceTab"
-            @close="closeWorkspaceTab"
-          />
-          <details v-disclosure.actions class="workspace-navigation" aria-label="Document navigation"><summary title="标签与文件导航" aria-label="标签与文件导航">···</summary><div class="navigation-menu">
-            <button
-              type="button"
-              data-testid="workspace-prev-tab"
-              aria-label="Previous tab"
-              :disabled="workspaceBusy || documentTabViews.length < 2"
-              @click="navigateTabs(-1)"
-            >
-              ‹ Tab
-            </button>
-            <button
-              type="button"
-              data-testid="workspace-next-tab"
-              aria-label="Next tab"
-              :disabled="workspaceBusy || documentTabViews.length < 2"
-              @click="navigateTabs(1)"
-            >
-              Tab ›
-            </button>
-            <span class="workspace-navigation__separator" aria-hidden="true"></span>
-            <button
-              type="button"
-              data-testid="workspace-prev-file"
-              aria-label="Previous file"
-              :disabled="workspaceBusy || workspaceFiles.length < 2"
-              @click="navigateFiles(-1)"
-            >
-              ↑ File
-            </button>
-            <button
-              type="button"
-              data-testid="workspace-next-file"
-              aria-label="Next file"
-              :disabled="workspaceBusy || workspaceFiles.length < 2"
-              @click="navigateFiles(1)"
-            >
-              ↓ File
-            </button>
-          </div></details>
-        </div>
-
         <section
           v-if="activeDocument"
           class="surface-grid"
@@ -2804,86 +2968,14 @@ onBeforeUnmount(() => {
           aria-label="Document surfaces"
         >
           <section class="editor-card" :data-document-revision="activeDocument.revision" aria-label="Markdown editor projection">
-            <div class="surface-heading">
-              <div>
-                <h2>{{ activeDocument.path }}</h2>
-                <span class="presentation-status" data-testid="presentation-mode">
-                  {{ presentationMode === 'live-preview' ? 'Live Preview' : 'Raw Source' }}
-                </span>
-              </div>
-              <div class="surface-actions">
-
-                <button
-                  type="button"
-                  class="persistence-action"
-                  data-testid="workspace-save"
-                  :disabled="persistenceBusy"
-                  @click="saveActiveDocument"
-                >
-                  {{ persistenceBusy ? 'Saving…' : 'Save' }}
-                </button>
-                <button
-                  type="button"
-                  class="presentation-toggle"
-                  data-testid="presentation-toggle"
-                  :aria-pressed="presentationMode === 'live-preview'"
-                  @click="toggleEditorPresentation"
-                >
-                  {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
-                  <kbd>Ctrl/Cmd+E</kbd>
-                </button>
-                <details v-disclosure class="document-menu"><summary title="文档操作" aria-label="文档操作">···</summary><div class="document-menu__body">
-                <label class="autosave-control"><span>Export</span><select v-model="exportFormat" data-testid="export-format"><option value="markdown">Markdown</option><option value="pdf">PDF</option><option value="docx">DOCX</option></select></label>
-                <button type="button" class="persistence-action" data-testid="workspace-export" @click="exportActiveDocument">Export</button>
-                <label class="autosave-control">
-                  <span>Auto-save</span>
-                  <select
-                    aria-label="Auto-save delay"
-                    :value="autoSaveDelay === null ? 'manual' : String(autoSaveDelay)"
-                    :disabled="persistenceBusy"
-                    @change="changeAutoSaveDelay"
-                  >
-                    <option value="manual">Manual</option>
-                    <option value="500">0.5s</option>
-                    <option value="1000">1s</option>
-                    <option value="2000">2s</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  class="persistence-action"
-                  data-testid="check-external-file"
-                  :disabled="persistenceBusy"
-                  @click="checkActiveExternalFile"
-                >
-                  Check file
-                </button>
-                <button
-                  v-if="activePersistenceState?.status === 'external-change' || activePersistenceState?.status === 'conflict'"
-                  type="button"
-                  class="persistence-action persistence-action--warning"
-                  data-testid="reload-external-file"
-                  :disabled="persistenceBusy"
-                  @click="reloadActiveFromDisk"
-                >
-                  Reload external
-                </button>
-                <button
-                  type="button"
-                  class="persistence-action"
-                  data-testid="annotation-add"
-                  :disabled="!canAddAnnotation"
-                  @click="addAnnotationFromSelection"
-                >
-                  Add annotation
-                </button>
-                <label class="autosave-control">
-                  <input type="checkbox" data-testid="validation-strict" v-model="strictValidation" />
-                  Strict validation
-                </label>
-                  <button type="button" :aria-pressed="comparisonPreviewOpen" @click="comparisonPreviewOpen = !comparisonPreviewOpen">对照预览</button>
-                </div></details>
-              </div>
+            <div
+              v-if="presentationNotice"
+              class="presentation-mode-notice"
+              data-testid="presentation-mode"
+              role="status"
+              aria-live="polite"
+            >
+              {{ presentationNotice }}
             </div>
             <div ref="editorHost" class="editor-host"></div>
             <p v-if="persistenceError" class="persistence-error" data-testid="persistence-error">

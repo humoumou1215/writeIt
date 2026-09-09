@@ -177,9 +177,9 @@ import { something } from '../../editor-app/src/...'
 | Git semantic Mermaid/Table/Embed diff + change explanation annotation | diff/render + annotations | P7/P6 | enhancement 可降级，不可吞 raw change |
 | 全局搜索、Git、文件树之间的状态标记与入口 | `App.vue`, `FileTree.vue` | P3/P7/P8 UI | 不要求像素复制，但用户工作流必须可达 |
 | PDF / DOCX / Markdown / template export，多文件独立格式 | `ExportModal.vue`, export | P9 | batch export 是明确能力 |
-| Settings：主题、图标、auto-save、sidebar、outline、annotation、image paste、shortcuts | `state/settings.ts`, `SettingsModal.vue` | P3/P10/P11 UI settings | 每项可 redesign，但不能无记录消失 |
+| Settings：主题、图标、auto-save、sidebar、outline、annotation、image paste、shortcuts | `state/settings.ts`, `SettingsModal.vue` | P3/P10/P11 UI settings | 每项可 redesign，但不能无记录消失；设置界面遵循 UX_SPEC 的简体中文与左侧分组大纲合同 |
 | 可配置快捷键 + 冲突检测 + 恢复默认 | settings + App key handling | P2A foundation + P3 settings | command id 与 keybinding 分离 |
-| sidebar collapse/pin/resize、reveal current file、prev/next file | `App.vue`, FileTree | P3 | shell/navigation parity |
+| sidebar collapse/pin/resize、reveal current file、prev/next file | `App.vue`, FileTree | P3 | shell/navigation parity；reveal 入口为文件树/工作区对象右键菜单且键盘可达 |
 | file CRUD + drag move + reveal in system explorer | FileTree/tree ops/context menu | P3/P11 | platform-only capability 通过 adapter |
 | last workspace restore | App/settings | P3/P11 | desktop recovery policy |
 | Diagnostics report、error badge、timeline、DOM/doc/screenshot/path privacy selections | `diagnostics/`, settings | P10 | 正式 observability 能力 |
@@ -426,13 +426,14 @@ P2A-AR1 Re-run Phase 2A acceptance gate
 建议拆为：
 
 - **P3-01 Workspace tree**：recursive tree、create file/dir、rename、delete、drag move、tree refresh。
-- **P3-02 Tabs & navigation**：多标签、active tab、dirty indicator、关闭未保存确认、next/prev tab、按树序 next/prev file、reveal current file。
-- **P3-03 Persistence policy**：manual save、configurable auto-save delay、dirty、save conflict、external file change、close/reopen。
-- **P3-04 Workspace recovery/settings shell**：last workspace、sidebar collapse/pin/resize、基础 settings persistence；desktop restore 通过 platform adapter 完成。
-- **P3-05 Shortcut Settings UI**：展示 command/keybinding、录制、自定义、冲突检测、恢复默认；包括 editor-specific command（如 table add-row）。
+- **P3-02 Tabs & navigation**：多标签、active tab、dirty indicator、关闭未保存确认、next/prev tab、按树序 next/prev file、reveal current file。reveal 的常驻入口按 `UX_SPEC.md` 放在文件树/工作区对象右键菜单中，并保持键盘可达，不恢复为 Header 常驻按钮。
+- **P3-03 Persistence policy**：manual save、configurable auto-save delay、dirty、save conflict、external file change、close/reopen。手动保存命令、快捷键和状态反馈必须保留；实现不能以可见的常驻 `Save` 按钮为前提。
+- **P3-04 Workspace recovery/settings shell**：last workspace、sidebar collapse/pin/resize、基础 settings persistence；设置面板的用户可见文本使用简体中文，并提供左侧设置分组大纲、右侧独立滚动内容和键盘/焦点导航；desktop restore 通过 platform adapter 完成。
+- **P3-05 Shortcut Settings UI**：展示 command/keybinding、录制、自定义、冲突检测、恢复默认；包括 editor-specific command（如 table add-row）。命令 ID、keybinding 等内部标识可以保持英文，但所有面向用户的分组、命令名称、说明、状态和操作文本使用简体中文。
 - **P3-06 Attachment/Image Pipeline**：扩展明确的 binary FS port；图片 paste 支持 `root-images` / `same-dir` / `file-images` / `inline`（若 v2 决定删减必须显式记录），写盘失败可安全 fallback；Markdown 只保存相对 path 或明确 inline data。
 - **P3-07 Image Projection UX**：相对路径解析显示、preview、复制图片、在 workspace tree 定位；系统文件管理器 reveal 留给 P11 adapter。Renderer/read failure 不得改写 Markdown path。
 - **P3-08 Create from Template hook**：先建立“基于模板新建”的 application seam，真正 Template catalog/provider 在 P8 接入；不得把 template 逻辑硬编码进 tree component。
+- **P3-09 Demo corpus / debug fixtures**：默认浏览器演示工作区必须提供可重复加载的代表性 Markdown 数据集，不能只用一篇短文和两个空壳文件。数据集至少覆盖常规 Markdown（多级标题、段落、强调、链接、引用、列表、任务列表、代码块、表格、图片/附件占位和未知语法保留）、多层 Embed/Reference、重复引用、循环/断链/只读 Embed、长正文与多文件夹层级；数据应能支持 Outline、引用/被引用、Occurrence 角标、Search、Raw/Live、Tab、dirty/save 和右键菜单的手工调试。演示 seed 只是浏览器调试入口，不得成为新的 Markdown authority，也不能替代 core/integration 的独立 fixtures。
 
 external file change、dirty、save conflict、rename 和 delete 属于 application/platform，不进入 CM6 extension。
 
@@ -475,7 +476,8 @@ Reference 不能只验收 parser/graph；必须覆盖 legacy 的输入、导航�
 
 - 左侧栏可折叠、可 resize；自动收纳默认关闭并有明显开关。
 - Search/Git 切换不销毁或重新创建当前 editor projection。
-- 当前文档在 File Tree 和 Git changed-files 中持续轻量突出；reveal current file 有明显入口。
+- 当前文档在 File Tree 和 Git changed-files 中持续轻量突出；reveal current file 的明显入口位于文件树/工作区对象右键菜单，并保持键盘可达，不新增 Header 常驻按钮。
+- 默认演示工作区使用代表性复杂 Markdown corpus，覆盖多层/重复/循环 Embed、正常 Markdown 结构和多文件引用关系；不得以单一短 welcome 文档作为全部手工验收数据。
 - tab 支持关闭和双击关闭，dirty 保护规则一致。
 - 内部文档导航支持普通 tab 打开与 split（分屏）打开；同一文档在两个 pane 中仍共享 DocumentStore。
 - popup 只由真实输入 trigger 触发，光标移动到旧 `@` / `[[...]]` 不触发。

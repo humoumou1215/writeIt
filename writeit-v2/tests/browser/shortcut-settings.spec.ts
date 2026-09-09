@@ -5,12 +5,13 @@ test('shortcut settings display, record, reject conflicts, persist, and reset bi
 }) => {
   await page.goto('/')
   await page.getByTestId('workspace-settings-toggle').click()
+  await page.getByRole('tab', { name: '快捷键' }).click()
 
   const settings = page.getByTestId('shortcut-settings')
   await expect(settings).toBeVisible()
   await expect(
     settings.locator('[data-shortcut-command="editor.table.add-row-after"]'),
-  ).toContainText('Add table row')
+  ).toContainText('在后方添加表格行')
   await expect(
     settings.locator('[data-shortcut-command="editor.table.add-row-after"] [data-testid="shortcut-current"]'),
   ).toHaveText('Shift+Enter')
@@ -23,7 +24,7 @@ test('shortcut settings display, record, reject conflicts, persist, and reset bi
   await saveRow.locator('[data-testid="shortcut-record"]').click()
   await page.keyboard.press('Control+E')
   await expect(page.getByTestId('shortcut-error')).toContainText(
-    'already assigned',
+    '已被占用',
   )
   await expect(saveRow.locator('[data-testid="shortcut-current"]')).toHaveText(
     'Mod+S',
@@ -37,6 +38,7 @@ test('shortcut settings display, record, reject conflicts, persist, and reset bi
 
   await page.reload()
   await page.getByTestId('workspace-settings-toggle').click()
+  await page.getByRole('tab', { name: '快捷键' }).click()
   const reloadedSaveRow = page
     .getByTestId('shortcut-settings')
     .locator('[data-shortcut-command="document.save"]')
