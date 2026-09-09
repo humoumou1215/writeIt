@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { vDisclosure, vModalFocus, vContextFocus } from './ui/interactions/disclosure'
 import { EditorView } from '@codemirror/view'
 import {
   CompletionProviderRegistry,
@@ -291,6 +292,9 @@ const lastWorkspaceRestoreStatus = ref<'pending' | 'restored' | 'default'>('pend
 let restoringWorkspace = false
 
 const editorHost = ref<HTMLDivElement | null>(null)
+const outlineOpen = ref(false)
+const backlinksOpen = ref(false)
+const comparisonPreviewOpen = ref(false)
 const previewHost = ref<HTMLDivElement | null>(null)
 const splitEditorHost = ref<HTMLDivElement | null>(null)
 const projection = ref<SingleDocumentView | null>(null)
@@ -2011,6 +2015,7 @@ async function renameWorkspaceEntry(
 
 async function deleteWorkspaceEntry(path: WorkspacePath): Promise<void> {
   if (workspaceBusy.value) return
+  const focusOrigin = document.activeElement as HTMLElement | null
   workspaceBusy.value = true
   workspaceError.value = null
   try {
@@ -2026,6 +2031,9 @@ async function deleteWorkspaceEntry(path: WorkspacePath): Promise<void> {
     workspaceError.value = workspaceErrorMessage(error)
   } finally {
     workspaceBusy.value = false
+    // Busy disables the triggering button. Restore only after Vue enables it.
+    await nextTick()
+    if (focusOrigin?.isConnected) focusOrigin.focus()
   }
 }
 
@@ -2146,7 +2154,7 @@ function configureWorkspaceDeletion(): void {
 configureWorkspaceDeletion()
 
 function handleWorkspaceKeydown(event: KeyboardEvent): void {
-  if (event.isComposing) return
+  if (event.isComposing || event.defaultPrevented || settingsPanelOpen.value || pendingWorkspaceDeletion.value) return
   const modifier = event.ctrlKey || event.metaKey
   if (modifier && event.key === 'Tab') {
     event.preventDefault()
@@ -2259,7 +2267,7 @@ function registerApplicationCommands(): void {
 }
 
 function handleShortcutKeydown(event: KeyboardEvent): void {
-  if (event.defaultPrevented || event.isComposing) return
+  if (event.defaultPrevented || event.isComposing || settingsPanelOpen.value || pendingWorkspaceDeletion.value) return
 
   const commandId = keybindingRegistry.resolveInput(event)
   if (commandId === undefined) return
@@ -2367,45 +2375,19 @@ onBeforeUnmount(() => {
 <template>
   <main class="app-shell" @click="closeWorkspaceContextMenu">
     <header class="app-header">
-      <div>
-        <p class="eyebrow">WriteIt v2 · P4-09</p>
-        <h1>Markdown-first editor surface</h1>
-        <p class="subtitle">
-          一个 DocumentStore；源码与 Live Preview 共用同一个 CM6 编辑器状态。
-        </p>
-        <button
-          type="button"
-          class="settings-toggle"
-          data-testid="workspace-settings-toggle"
-          :aria-expanded="settingsPanelOpen"
-          aria-controls="workspace-settings-panel"
-          @click="toggleSettingsPanel"
-        >
-          Settings
-        </button>
+      <div class="app-brand"><span class="app-brand__mark">W</span><h1>WriteIt</h1><span class="app-workspace-name">工作区</span></div>
+      <div class="app-global-actions">
+        <button type="button" :aria-pressed="outlineOpen" @click="outlineOpen = !outlineOpen">大纲</button>
+        <button type="button" :aria-pressed="backlinksOpen" @click="backlinksOpen = !backlinksOpen">反向引用</button>
+        <button type="button" :aria-pressed="annotationDrawerOpen" @click="annotationDrawerOpen = !annotationDrawerOpen">批注</button>
+        <button type="button" class="settings-toggle" data-testid="workspace-settings-toggle" :aria-expanded="settingsPanelOpen" aria-controls="workspace-settings-panel" @click="toggleSettingsPanel">设置</button>
       </div>
-      <dl class="document-meta" aria-label="Document status">
-        <div>
-          <dt>Document</dt>
-          <dd>{{ activeDocument?.path ?? '—' }}</dd>
-        </div>
-        <div>
-          <dt>Revision</dt>
-          <dd>{{ activeDocument?.revision ?? '—' }}</dd>
-        </div>
-        <div>
-          <dt>State</dt>
-          <dd>{{ activeDocument ? (activeDocument.dirty ? 'dirty' : 'clean') : '—' }}</dd>
-        </div>
-        <div>
-          <dt>Persistence</dt>
-          <dd data-testid="persistence-status">{{ activePersistenceState?.status ?? '—' }}</dd>
-        </div>
-      </dl>
     </header>
 
     <section
       v-if="settingsPanelOpen"
+      v-modal-focus="closeSettingsPanel"
+      aria-modal="true"
       id="workspace-settings-panel"
       class="workspace-settings"
       role="dialog"
@@ -2534,7 +2516,7 @@ onBeforeUnmount(() => {
 
     <div
       class="workspace-layout"
-      :class="{ 'workspace-layout--sidebar-collapsed': sidebarCollapsed }"
+      :class="{ 'workspace-layout--sidebar-collapsed': sidebarCollapsed, 'workspace-layout--outline': outlineOpen && !!activeDocument }"
       :style="{ '--workspace-sidebar-width': `${sidebarWidth}px` }"
     >
       <aside
@@ -2544,8 +2526,8 @@ onBeforeUnmount(() => {
       >
         <div class="workspace-heading">
           <div>
-            <p class="workspace-eyebrow">Workspace</p>
-            <h2>Files</h2>
+
+            <h2>工作区</h2>
           </div>
           <div class="workspace-heading-actions">
             <button
@@ -2556,7 +2538,7 @@ onBeforeUnmount(() => {
               :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
               @click="toggleSidebar"
             >
-              {{ sidebarCollapsed ? 'Expand' : 'Collapse' }}
+              {{ sidebarCollapsed ? '展开' : '收起' }}
             </button>
             <button
               type="button"
@@ -2566,7 +2548,7 @@ onBeforeUnmount(() => {
               :title="sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar'"
               @click="toggleSidebarPinned"
             >
-              {{ sidebarPinned ? 'Pinned' : 'Pin' }}
+              {{ sidebarPinned ? '自动收纳：关' : '自动收纳：开' }}
             </button>
             <button
               type="button"
@@ -2576,7 +2558,7 @@ onBeforeUnmount(() => {
               :disabled="workspaceBusy || !activeDocument"
               @click="revealActiveFile"
             >
-              Reveal current
+              定位当前
             </button>
             <button
               type="button"
@@ -2585,7 +2567,7 @@ onBeforeUnmount(() => {
               :disabled="workspaceBusy"
               @click="refreshWorkspace"
             >
-              Refresh
+              刷新
             </button>
           </div>
         </div>
@@ -2601,31 +2583,11 @@ onBeforeUnmount(() => {
             :aria-pressed="activeWorkspaceTool === tool"
             @click="selectWorkspaceTool(tool)"
           >
-            {{ tool === 'files' ? 'Files' : tool === 'search' ? 'Search' : 'Git' }}
+            {{ tool === 'files' ? '文件' : tool === 'search' ? '搜索' : 'Git' }}
           </button>
         </nav>
-        <aside v-if="activeDocument" class="workspace-derived" aria-label="Derived document views">
-          <section class="workspace-derived__section" data-testid="workspace-outline">
-            <h3>Outline</h3>
-            <ul>
-              <li v-for="heading in flattenOutline(activeOutline)" :key="heading.id">
-                <button type="button" :style="{ marginLeft: `${(heading.level - 1) * 8}px` }" @click="selectOutlineHeading(heading.from)">{{ heading.text }}</button>
-              </li>
-              <li v-if="activeOutline.length === 0" class="workspace-derived__empty">No headings</li>
-            </ul>
-          </section>
-          <section class="workspace-derived__section" data-testid="workspace-backlinks">
-            <h3>Backlinks</h3>
-            <ul>
-              <li v-for="(edge, index) in activeBacklinks" :key="edge.id">
-                <button type="button" @click="selectBacklink(edge)">{{ edge.sourcePath }} · {{ index + 1 }} ({{ edge.status }})</button>
-              </li>
-              <li v-if="activeBacklinks.length === 0" class="workspace-derived__empty">No backlinks</li>
-            </ul>
-          </section>
-        </aside>
         <div v-if="activeWorkspaceTool === 'files'" data-testid="workspace-files-tool">
-        <div class="workspace-create">
+        <details v-disclosure.persistent class="workspace-create"><summary>＋ 新建文件或文件夹</summary>
           <label for="workspace-entry-name">New entry</label>
           <input
             id="workspace-entry-name"
@@ -2656,7 +2618,7 @@ onBeforeUnmount(() => {
               New folder
             </button>
           </div>
-        </div>
+        </details>
         <p v-if="workspaceError" class="workspace-error" data-testid="workspace-error">
           {{ workspaceError }}
         </p>
@@ -2676,6 +2638,7 @@ onBeforeUnmount(() => {
         />
         <div
           v-if="workspaceContextMenu"
+          v-context-focus="closeWorkspaceContextMenu"
           class="workspace-context-menu"
           data-testid="workspace-context-menu"
           :style="{ left: `${workspaceContextMenu.x}px`, top: `${workspaceContextMenu.y}px` }"
@@ -2691,9 +2654,6 @@ onBeforeUnmount(() => {
             Copy {{ workspaceName(workspaceContextMenu.path) }}
           </button>
         </div>
-        <p class="workspace-note">
-          拖动文件或文件夹到另一个文件夹即可移动；树状态来自 filesystem refresh。
-        </p>
         </div>
         <section
           v-else-if="activeWorkspaceTool === 'git'"
@@ -2777,6 +2737,17 @@ onBeforeUnmount(() => {
         ></div>
       </aside>
 
+      <aside v-if="activeDocument" v-show="outlineOpen" class="outline-panel" aria-label="文档大纲">
+          <section class="workspace-derived__section" data-testid="workspace-outline">
+            <h3>Outline</h3>
+            <ul>
+              <li v-for="heading in flattenOutline(activeOutline)" :key="heading.id">
+                <button type="button" :style="{ marginLeft: `${(heading.level - 1) * 8}px` }" @click="selectOutlineHeading(heading.from)">{{ heading.text }}</button>
+              </li>
+              <li v-if="activeOutline.length === 0" class="workspace-derived__empty">No headings</li>
+            </ul>
+          </section>
+      </aside>
       <section class="workspace-main" aria-label="Open documents" @focusin="handleMainFocusIn">
         <div class="workspace-tab-toolbar">
           <WorkspaceTabsPanel
@@ -2785,7 +2756,7 @@ onBeforeUnmount(() => {
             @select="activateWorkspaceTab"
             @close="closeWorkspaceTab"
           />
-          <div class="workspace-navigation" aria-label="Document navigation">
+          <details v-disclosure.actions class="workspace-navigation" aria-label="Document navigation"><summary title="标签与文件导航" aria-label="标签与文件导航">···</summary><div class="navigation-menu">
             <button
               type="button"
               data-testid="workspace-prev-tab"
@@ -2823,25 +2794,25 @@ onBeforeUnmount(() => {
             >
               ↓ File
             </button>
-          </div>
+          </div></details>
         </div>
 
         <section
           v-if="activeDocument"
           class="surface-grid"
-          :class="{ 'surface-grid--annotations': annotationDrawerOpen }"
+          :class="{ 'surface-grid--annotations': annotationDrawerOpen, 'surface-grid--split': !!splitDocument, 'surface-grid--preview': comparisonPreviewOpen, 'surface-grid--backlinks': backlinksOpen }"
           aria-label="Document surfaces"
         >
-          <section class="editor-card" aria-label="Markdown editor projection">
+          <section class="editor-card" :data-document-revision="activeDocument.revision" aria-label="Markdown editor projection">
             <div class="surface-heading">
               <div>
-                <h2>Markdown editor</h2>
+                <h2>{{ activeDocument.path }}</h2>
                 <span class="presentation-status" data-testid="presentation-mode">
                   {{ presentationMode === 'live-preview' ? 'Live Preview' : 'Raw Source' }}
                 </span>
               </div>
               <div class="surface-actions">
-                <span>{{ projection?.projectionId ?? 'mounting' }}</span>
+
                 <button
                   type="button"
                   class="persistence-action"
@@ -2851,6 +2822,17 @@ onBeforeUnmount(() => {
                 >
                   {{ persistenceBusy ? 'Saving…' : 'Save' }}
                 </button>
+                <button
+                  type="button"
+                  class="presentation-toggle"
+                  data-testid="presentation-toggle"
+                  :aria-pressed="presentationMode === 'live-preview'"
+                  @click="toggleEditorPresentation"
+                >
+                  {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
+                  <kbd>Ctrl/Cmd+E</kbd>
+                </button>
+                <details v-disclosure class="document-menu"><summary title="文档操作" aria-label="文档操作">···</summary><div class="document-menu__body">
                 <label class="autosave-control"><span>Export</span><select v-model="exportFormat" data-testid="export-format"><option value="markdown">Markdown</option><option value="pdf">PDF</option><option value="docx">DOCX</option></select></label>
                 <button type="button" class="persistence-action" data-testid="workspace-export" @click="exportActiveDocument">Export</button>
                 <label class="autosave-control">
@@ -2888,16 +2870,6 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                   type="button"
-                  class="presentation-toggle"
-                  data-testid="presentation-toggle"
-                  :aria-pressed="presentationMode === 'live-preview'"
-                  @click="toggleEditorPresentation"
-                >
-                  {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
-                  <kbd>Ctrl/Cmd+E</kbd>
-                </button>
-                <button
-                  type="button"
                   class="persistence-action"
                   data-testid="annotation-add"
                   :disabled="!canAddAnnotation"
@@ -2909,6 +2881,8 @@ onBeforeUnmount(() => {
                   <input type="checkbox" data-testid="validation-strict" v-model="strictValidation" />
                   Strict validation
                 </label>
+                  <button type="button" :aria-pressed="comparisonPreviewOpen" @click="comparisonPreviewOpen = !comparisonPreviewOpen">对照预览</button>
+                </div></details>
               </div>
             </div>
             <div ref="editorHost" class="editor-host"></div>
@@ -2946,13 +2920,7 @@ onBeforeUnmount(() => {
             >
               {{ referenceHealthError ?? `${activeBrokenReferenceCount} broken reference${activeBrokenReferenceCount === 1 ? '' : 's'}; click a reference to reselect.` }}
             </p>
-            <p class="projection-note">
-              同一 CM6 document 在 Raw Source 与 Live Preview decorations/widgets 间切换；不创建第二个 textarea authority。试试 <code>Ctrl/Cmd+E</code>、<code>@</code>、<code>[[</code> 或 <code>![[</code>。
-            </p>
-            <footer class="document-stats" data-testid="document-stats" aria-label="Document statistics">
-              {{ activeComposedStats.wordCount }} words · {{ activeComposedStats.referenceCount }} references · {{ activeComposedStats.embedCount }} embeds
-              <span v-if="activeComposedStats.circularEmbeds.length > 0"> · {{ activeComposedStats.circularEmbeds.length }} circular embed{{ activeComposedStats.circularEmbeds.length === 1 ? '' : 's' }}</span>
-            </footer>
+
           </section>
 
           <section
@@ -2978,22 +2946,26 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div ref="splitEditorHost" class="editor-host split-editor-host"></div>
-            <p class="projection-note">
-              分屏与其他编辑区共享同一 DocumentStore 内容和 revision。
-            </p>
           </section>
 
-          <section class="preview-card" aria-label="Live Markdown preview">
+          <section v-show="comparisonPreviewOpen" class="preview-card" aria-label="Live Markdown preview">
             <div class="surface-heading">
               <h2>Live Preview projection</h2>
               <span>{{ preview?.projectionId ?? 'mounting' }}</span>
             </div>
             <div ref="previewHost" class="preview-host"></div>
-            <p class="projection-note">
-              Preview 只读消费 Markdown；未知语法保留为普通文本。
-            </p>
           </section>
 
+          <aside v-if="backlinksOpen" class="backlinks-panel" aria-label="反向引用">          <section class="workspace-derived__section" data-testid="workspace-backlinks">
+            <h3>Backlinks</h3>
+            <ul>
+              <li v-for="(edge, index) in activeBacklinks" :key="edge.id">
+                <button type="button" @click="selectBacklink(edge)">{{ edge.sourcePath }} · {{ index + 1 }} ({{ edge.status }})</button>
+              </li>
+              <li v-if="activeBacklinks.length === 0" class="workspace-derived__empty">No backlinks</li>
+            </ul>
+          </section>
+</aside>
           <AnnotationDrawer
             :annotations="annotationItems"
             :active-id="activeAnnotationId"
@@ -3013,9 +2985,17 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </div>
+    <footer class="app-statusbar">
+      <span data-testid="persistence-status">{{ !activeDocument ? '就绪' : persistenceBusy ? '保存中…' : persistenceError ? '保存失败' : activePersistenceState?.status === 'conflict' ? '文件冲突' : activePersistenceState?.status === 'external-change' ? '外部文件已修改' : activeDocument.dirty ? '未保存' : '已保存' }}</span>
+      <span class="status-path" data-testid="active-document-path">{{ activeDocument?.path ?? '未打开文档' }}</span>
+            <div class="document-stats" data-testid="document-stats" aria-label="Document statistics">
+              {{ activeComposedStats.wordCount }} 字词 · {{ activeComposedStats.referenceCount }} 引用 · {{ activeComposedStats.embedCount }} 嵌入
+              <span v-if="activeComposedStats.circularEmbeds.length > 0"> · {{ activeComposedStats.circularEmbeds.length }} circular embed{{ activeComposedStats.circularEmbeds.length === 1 ? '' : 's' }}</span>
+            </div>    </footer>
   </main>
   <div
     v-if="pendingWorkspaceDeletion"
+    v-modal-focus="() => chooseWorkspaceDeletionDecision('cancel')"
     class="workspace-delete-dialog"
     role="dialog"
     aria-modal="true"

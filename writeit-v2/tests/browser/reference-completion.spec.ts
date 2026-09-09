@@ -20,6 +20,8 @@ async function mountHarness(page: Page): Promise<void> {
 
     document.querySelector('[data-browser-reference-completion-harness]')?.remove()
     const root = document.createElement('section')
+    root.style.cssText = 'position:fixed;inset:0;z-index:100;background:white;overflow:auto'
+    root.style.padding = '24px'
     root.dataset.browserReferenceCompletionHarness = 'true'
     const editorHost = document.createElement('div')
     editorHost.className = 'editor-host'

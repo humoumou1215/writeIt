@@ -139,23 +139,20 @@ export class TableInteractionRuntime {
   }
 
   requestActiveFocus(): void {
-    this.view.requestMeasure({
-      read: () => null,
-      write: () => {
-        const active = this.active
-        if (!active) return
-        const selector = `.cm-writeit-table[data-table-from="${active.tableFrom}"] [data-table-row="${active.row}"][data-table-column="${active.column}"]`
-        const cell = this.view.dom.querySelector<HTMLElement>(selector)
-        const target = active.mode === 'editing'
-          ? cell?.querySelector<HTMLTextAreaElement>('.cm-writeit-table__editor')
-          : cell?.querySelector<HTMLButtonElement>('.cm-writeit-table__cell-button')
-        target?.focus()
-        if (target instanceof HTMLTextAreaElement && active.caret !== undefined) {
-          const caret = Math.min(active.caret, target.value.length)
-          target.setSelectionRange(caret, caret)
-        }
-      },
-    })
+    // Callers have completed dispatch/renderCellContent. Focus is not a layout
+    // measurement: restore it now so the next input cannot hit the source view.
+    const active = this.active
+    if (!active) return
+    const selector = `.cm-writeit-table[data-table-from="${active.tableFrom}"] [data-table-row="${active.row}"][data-table-column="${active.column}"]`
+    const cell = this.view.dom.querySelector<HTMLElement>(selector)
+    const target = active.mode === 'editing'
+      ? cell?.querySelector<HTMLTextAreaElement>('.cm-writeit-table__editor')
+      : cell?.querySelector<HTMLButtonElement>('.cm-writeit-table__cell-button')
+    target?.focus()
+    if (target instanceof HTMLTextAreaElement && active.caret !== undefined) {
+      const caret = Math.min(active.caret, target.value.length)
+      target.setSelectionRange(caret, caret)
+    }
   }
 }
 

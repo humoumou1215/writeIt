@@ -20,7 +20,7 @@ test('opens documents in tabs, preserves dirty state, navigates, and reveals the
 
   await expect(tabs.locator('[role="tab"]')).toHaveCount(2)
   await expect(page.locator('[data-workspace-tab-path="notes/architecture.md"]')).toBeVisible()
-  await expect(page.locator('dd').nth(0)).toHaveText('notes/architecture.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('notes/architecture.md')
   await expect(page.locator('.cm-content')).toContainText('Architecture notes')
 
   await page.locator('.cm-content').click()
@@ -34,20 +34,23 @@ test('opens documents in tabs, preserves dirty state, navigates, and reveals the
   await page
     .locator('[data-workspace-tab-path="welcome.md"]')
     .click()
-  await expect(page.locator('dd').nth(0)).toHaveText('welcome.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('welcome.md')
   await expect(page.locator('.cm-content')).toContainText('WriteIt v2')
   await expect(
     page.locator('[data-workspace-tab-path="notes/architecture.md"].workspace-tab--dirty'),
   ).toBeVisible()
 
+  await page.locator('.workspace-navigation > summary').click()
   await page.getByTestId('workspace-next-tab').click()
-  await expect(page.locator('dd').nth(0)).toHaveText('notes/architecture.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('notes/architecture.md')
+  await page.locator('.workspace-navigation > summary').click()
   await page.getByTestId('workspace-prev-tab').click()
-  await expect(page.locator('dd').nth(0)).toHaveText('welcome.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('welcome.md')
 
   // Tree order is notes/architecture.md, notes/workspace.md, welcome.md.
+  await page.locator('.workspace-navigation > summary').click()
   await page.getByTestId('workspace-next-file').click()
-  await expect(page.locator('dd').nth(0)).toHaveText('notes/architecture.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('notes/architecture.md')
   await expect(tabs.locator('[role="tab"]')).toHaveCount(2)
 
   await page.getByRole('button', { name: 'Collapse notes' }).click()

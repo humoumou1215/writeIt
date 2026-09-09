@@ -11,7 +11,7 @@ test('restores the last document session and persists workspace shell settings',
   await page
     .locator('[data-workspace-path="notes/architecture.md"] .workspace-tree__row')
     .click()
-  await expect(page.locator('dd').nth(0)).toHaveText('notes/architecture.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('notes/architecture.md')
 
   await page.getByTestId('workspace-settings-toggle').click()
   const settings = page.getByTestId('workspace-settings-panel')
@@ -27,7 +27,7 @@ test('restores the last document session and persists workspace shell settings',
 
   await page.reload()
 
-  await expect(page.locator('dd').nth(0)).toHaveText('notes/architecture.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('notes/architecture.md')
   await expect(
     page.locator('[data-workspace-tab-path="welcome.md"]'),
   ).toBeVisible()

@@ -1,12 +1,32 @@
 # WriteIt v2 Status
 
 - **Current phase:** G8 — Phase 12 Parity + RC Audit
-- **Current task:** Full RC review and built-in browser validation complete
+- **Current task:** UX-03 — keyboard, disclosure and modal focus baseline
 - **Branch:** `codex/goal-writeit-v2`
 - **Verified baseline:** Full RC review (`RC_REVIEW_REPORT.md`); Node 22/23 verification and 80 Chromium tests PASS
 - **Goal contract:** [GOAL.md](./GOAL.md)
 - **Decision ledger:** [DECISIONS.md](./DECISIONS.md)
 - **Milestone history:** [MILESTONES.md](./MILESTONES.md)
+
+## UX-03 — 菜单键盘与焦点基线（2026-09-09）
+
+- 在 UX-01 未提交改动之上继续单 Task 实现，不提交、不继续 Goal。
+- 原生 disclosure 统一 Enter/Space、ArrowDown、Escape、外部点击和 focus exit；导航动作后关闭。新建为持久内联表单，避免拖动文件时收起造成布局移动。
+- 设置/删除确认建立焦点边界，背景 inert、Tab 循环、Escape 关闭或取消；快捷键录制优先消费事件，背景工作区命令不执行。删除按钮重新启用后再恢复焦点。
+- 文件树右键面板聚焦当前操作，关闭返回来源行；不存在的来源不会强行聚焦。
+- 修复表格 Enter 后延迟恢复焦点导致紧接着输入落到表格外：DOM 更新后同步恢复活动 cell 焦点，不依赖绘制帧或固定等待；Markdown/Core/ADR 合同不变。
+- 迁移旧 browser tests 的 metadata、隐藏预览、新建/导航菜单入口；独立 editor harness 提供明确可见容器，shell CSS 限定到应用中的编辑区。Revision 使用非视觉 DOM 属性检查，不恢复调试面板。
+- 验证：`npm run test` 477 tests PASS；`npm run typecheck` PASS；`npm run build` PASS；稳定代码下 `npm run test:browser -- --workers=2` 全量 84 tests PASS（32s），`git diff --check` PASS。仍有既有大 chunk 构建警告；本次未验证原生 Tauri/WebView。
+- 下一建议 Task：UX-02，按正文、Embed、表格、Mermaid 的显示基线进行专门视觉验收；本次未宣称完整 UX_SPEC 所有行为已实现。
+
+## UX-01 — 编辑器布局修正（2026-09-09）
+
+- 用户直接要求修正 Vite 调试界面的编辑器布局；本次为普通单 Task，不继续 Goal、不自动提交。
+- 将居中演示卡片改为全窗口 shell：正文独立滚动、紧凑标签/文档栏、底部状态；对照预览/大纲/反向引用/批注按需打开，低频操作进入菜单，设置浮层显示。
+- 检查地址 `http://10.144.144.1:5174/`；内置浏览器最初超时，之后连接成功并完成 Raw/Live 视觉核对，保留页面供用户查看。
+- 验证：`npm run test` 477 tests PASS；`npm run typecheck` PASS；`npm run build` PASS（已有大 chunk warning）；`npx playwright test workspace-shell-layout live-preview-toggle --workers=2` 2 tests PASS。
+- 新浏览器回归覆盖正文尺寸、默认隐藏对照预览、大纲与批注并行、Search 切换保留编辑器实例、900px 窗口无横向溢出和可见状态栏。
+- 限制：未运行完整浏览器套件；旧演示界面的 metadata/常驻操作定位需随对应用户旅程迁移。下一建议 Task：UX-03，菜单键盘/焦点与既有浏览器旅程统一验收。
 
 ## Completed baseline
 

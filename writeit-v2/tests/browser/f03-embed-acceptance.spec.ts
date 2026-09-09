@@ -31,8 +31,7 @@ async function pasteValidImageIntoActiveDocument(page: Page): Promise<void> {
 
 async function documentRevision(page: Page): Promise<number> {
   return page.evaluate(() => {
-    const values = [...document.querySelectorAll('.document-meta dd')]
-    return Number(values[1]?.textContent ?? '-1')
+    return Number(document.querySelector('[data-document-revision]')?.getAttribute('data-document-revision') ?? '-1')
   })
 }
 
@@ -165,7 +164,7 @@ test('real App editable Embed child exposes the shared slash popup', async ({
     .toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('[data-workspace-tab-path="notes/workspace.md"]'))
     .toHaveClass(/workspace-tab--dirty/u)
-  await expect(page.getByTestId('persistence-status')).toHaveText('dirty')
+  await expect(page.getByTestId('persistence-status')).toHaveText('未保存')
   await expect(page.locator('.editor-host > .cm-editor .cm-content'))
     .toContainText('## ')
   expect(await documentRevision(page)).toBeGreaterThan(0)
@@ -304,7 +303,7 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
   await expect(page.getByTestId('workspace-error')).toHaveCount(0)
 
   await page.getByTestId('workspace-save').click()
-  await expect(page.getByTestId('persistence-status')).toHaveText('clean')
+  await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
   await expect(page.locator('[data-workspace-tab-path="notes/workspace.md"]'))
     .not.toHaveClass(/workspace-tab--dirty/u)
 
@@ -329,6 +328,7 @@ test('missing Embed target can appear, become dirty, and then be explicitly open
 
   await page.getByRole('button', { name: 'Expand notes' }).click()
   await page.locator('[data-workspace-path="notes"] > .workspace-tree__row').click()
+  await page.locator('.workspace-create > summary').click()
   await page.getByTestId('workspace-entry-name').fill('appears.md')
   await page.getByTestId('workspace-create-file').click()
   await expect(page.locator('[data-workspace-path="notes/appears.md"]'))
@@ -402,7 +402,7 @@ test('unloaded clean files keep the normal filesystem Open path', async ({
     .toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('.editor-host > .cm-editor .cm-content'))
     .toContainText('Architecture notes')
-  await expect(page.getByTestId('persistence-status')).toHaveText('clean')
+  await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
 })
 
 test('editable embed child paste mutates the target source without repeating the host mutation', async ({

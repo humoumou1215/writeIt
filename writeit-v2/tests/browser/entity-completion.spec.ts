@@ -32,6 +32,8 @@ async function mountHarness(page: Page): Promise<void> {
     const cm6 = await loadModule('/src/editor/cm6/index.ts')
 
     const root = document.createElement('section')
+    root.style.cssText = 'position:fixed;inset:0;z-index:100;background:white;overflow:auto'
+    root.style.padding = '24px'
     root.dataset.entityCompletionHarness = 'true'
     const editorHost = document.createElement('div')
     editorHost.className = 'editor-host'
