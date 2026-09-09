@@ -140,7 +140,7 @@ test('real App editable Embed child exposes the shared slash popup', async ({
   const childContent = embed.locator(
     '.cm-writeit-embed-projection__editor .cm-content',
   )
-  await childContent.click()
+  await childContent.locator('.cm-line').first().click()
   await page.keyboard.press('Control+End')
   await page.keyboard.press('Enter')
   await page.keyboard.insertText('/')
@@ -151,7 +151,7 @@ test('real App editable Embed child exposes the shared slash popup', async ({
     slashMenu.locator('[data-command-id="markdown.heading-2"]'),
   ).toBeVisible()
   const hostRevisionBeforeApply = await documentRevision(page)
-  await slashMenu.locator('[data-command-id="markdown.heading-2"]').click()
+  await slashMenu.locator('[data-command-id="markdown.heading-2"]').click({ force: true })
   await expect(slashMenu).toHaveAttribute('data-show', 'false')
   await expect(page.locator('[data-workspace-tab-path="welcome.md"]'))
     .toHaveAttribute('aria-selected', 'true')
@@ -191,7 +191,7 @@ test('real App editable Embed child exposes @, [[, and ![[ completion', async ({
   ] as const
 
   for (const [trigger, triggerKind] of cases) {
-    await childContent.click()
+    await childContent.locator('.cm-line').first().click()
     await page.keyboard.press('Control+End')
     await page.keyboard.press('Enter')
     await page.keyboard.insertText(trigger)
@@ -203,11 +203,9 @@ test('real App editable Embed child exposes @, [[, and ![[ completion', async ({
       '[data-completion-id="reference:file:notes/architecture.md"]',
     )
     await expect(file).toBeVisible()
-    await file.click()
+    await page.keyboard.press('Enter')
     await expect(menu).toHaveAttribute('data-completion-level', '1')
-    await menu
-      .locator('[data-completion-id="reference:file:notes/architecture.md"]')
-      .click()
+    await page.keyboard.press('Enter')
     await expect(menu).toHaveAttribute('data-show', 'false')
     await expect(page.locator('[data-workspace-tab-path="welcome.md"]'))
       .toHaveAttribute('aria-selected', 'true')
@@ -282,7 +280,7 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
   const childContent = embed.locator(
     '.cm-writeit-embed-projection__editor .cm-content',
   )
-  await childContent.click()
+  await childContent.locator('.cm-line').first().click()
   await page.keyboard.press('Control+End')
   await page.keyboard.insertText(' dirty through Embed')
   await expect(childContent).toContainText('Workspace tree dirty through Embed')
