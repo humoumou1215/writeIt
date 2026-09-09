@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
 
+test.describe.configure({ mode: 'serial' })
+
 test('opens documents in tabs, preserves dirty state, navigates, and reveals the active file', async ({
   page,
 }) => {
@@ -136,18 +138,28 @@ test('switches File, Search, and Git tools without replacing the active editor p
 test('double-click close uses the same dirty protection as the close button', async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'writeit-v2.workspace-settings',
+      JSON.stringify({ version: 1, settings: { autoSaveDelayMs: null } }),
+    )
+  })
+  await page.addInitScript(() => {
+    const decisions = [false, true]
+    window.confirm = () => decisions.shift() ?? false
+  })
   await page.goto('/')
   const tab = page.locator('[data-workspace-tab-path="welcome.md"]')
   await page.locator('.cm-content').click()
   await page.keyboard.press('End')
   await page.keyboard.insertText(' dirty')
+  await expect(tab).toHaveClass(/workspace-tab--dirty/)
 
-  page.once('dialog', (dialog) => dialog.dismiss())
-  await tab.dblclick()
+  await tab.dispatchEvent('dblclick')
   await expect(tab).toBeVisible()
 
-  page.once('dialog', (dialog) => dialog.accept())
-  await tab.dblclick()
+  await page.locator('.cm-content').click()
+  await tab.dispatchEvent('dblclick')
   await expect(tab).toHaveCount(0)
 })
 

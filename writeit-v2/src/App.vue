@@ -248,6 +248,7 @@ const tabs = new WorkspaceTabManager()
 const tabSnapshot = ref(tabs.getSnapshot())
 const documentRevisionSignal = ref(0)
 const documentSubscriptions = new Map<DocumentId, () => void>()
+const closingWorkspaceTabs = new Set<DocumentId>()
 /**
  * Tab metadata is a projection of the authoritative Store snapshot. Keep its
  * Vue invalidation independent from tab lifetime: a loaded Document can lose
@@ -1881,39 +1882,52 @@ function revealActiveFile(): void {
 async function closeWorkspaceTab(
   documentIdToClose: DocumentId,
 ): Promise<void> {
-  if (workspaceBusy.value || persistenceBusy.value) return
-  const documentToClose = store.get(documentById(documentIdToClose))
   if (
-    documentToClose?.dirty &&
-    !window.confirm(
-      `${documentToClose.path} has unsaved changes. Close without saving? Local changes will be discarded.`,
-    )
-  ) {
-    return
-  }
+    workspaceBusy.value ||
+    persistenceBusy.value ||
+    closingWorkspaceTabs.has(documentIdToClose)
+  ) return
 
-  if (documentToClose?.dirty) {
-    persistenceBusy.value = true
-    persistenceError.value = null
-    try {
-      await persistence.discardLocalChanges(documentById(documentIdToClose))
-    } catch (error) {
-      persistenceError.value = persistenceErrorMessage(error)
-      return
-    } finally {
-      persistenceBusy.value = false
+  closingWorkspaceTabs.add(documentIdToClose)
+  try {
+    const documentToClose = store.get(documentById(documentIdToClose))
+    if (documentToClose?.dirty) {
+      const shouldClose = window.confirm(
+        `${documentToClose.path} has unsaved changes. Close without saving? Local changes will be discarded.`,
+      )
+      if (!shouldClose) {
+        // Cancel has no asynchronous cleanup. Release the guard before the
+        // native dialog handoff can race a subsequent user gesture.
+        closingWorkspaceTabs.delete(documentIdToClose)
+        return
+      }
     }
-  }
 
-  const wasActive = tabSnapshot.value.activeDocumentId === documentIdToClose
-  if (wasActive) destroyActiveProjections()
-  tabs.close(documentIdToClose)
-  documentSubscriptions.get(documentIdToClose)?.()
-  documentSubscriptions.delete(documentIdToClose)
-  presentationModes.delete(documentIdToClose)
+    if (documentToClose?.dirty) {
+      persistenceBusy.value = true
+      persistenceError.value = null
+      try {
+        await persistence.discardLocalChanges(documentById(documentIdToClose))
+      } catch (error) {
+        persistenceError.value = persistenceErrorMessage(error)
+        return
+      } finally {
+        persistenceBusy.value = false
+      }
+    }
 
-  if (wasActive) {
-    syncActiveWorkspaceSelection()
+    const wasActive = tabSnapshot.value.activeDocumentId === documentIdToClose
+    if (wasActive) destroyActiveProjections()
+    tabs.close(documentIdToClose)
+    documentSubscriptions.get(documentIdToClose)?.()
+    documentSubscriptions.delete(documentIdToClose)
+    presentationModes.delete(documentIdToClose)
+
+    if (wasActive) {
+      syncActiveWorkspaceSelection()
+    }
+  } finally {
+    closingWorkspaceTabs.delete(documentIdToClose)
   }
 }
 

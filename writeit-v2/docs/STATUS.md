@@ -1,9 +1,9 @@
 # WriteIt v2 Status
 
 - **Current phase:** G8 — Phase 12 Parity + RC Audit
-- **Current task:** RC audit complete
+- **Current task:** Full RC review and built-in browser validation complete
 - **Branch:** `codex/goal-writeit-v2`
-- **Verified baseline:** G0 checkpoint (`feat(v2): close G0 P4 UX reconciliation`)
+- **Verified baseline:** Full RC review (`RC_REVIEW_REPORT.md`); Node 22/23 verification and 80 Chromium tests PASS
 - **Goal contract:** [GOAL.md](./GOAL.md)
 - **Decision ledger:** [DECISIONS.md](./DECISIONS.md)
 - **Milestone history:** [MILESTONES.md](./MILESTONES.md)
@@ -21,6 +21,7 @@
 - [x] Goal preparation — contracts, decisions, ADR-0007/0008, task-ID normalization and unified verification commands; 396 Vitest + 63 Chromium + typecheck/build PASS
 - [x] P6 Annotation + Mermaid — gate PASS ([review](./P6_ARCHITECTURE_REVIEW.md)); sidecar anchors/threads/drawer and source-backed Mermaid preview/commands/reference fallback complete
 - [x] P7 Git + Diff + Provenance — gate PASS ([review](./P7_ARCHITECTURE_REVIEW.md)); structured Git ports/workbench, raw diff guarantee, semantic fallback, discard guard and blame projection complete
+- [x] Full RC review — PASS WITH FOLLOW-UP ([report](./RC_REVIEW_REPORT.md)); static boundary review, full verification and built-in browser journeys complete
 
 ## Goal progress
 
@@ -50,6 +51,7 @@
 - P9: **PASS** in [P9 Architecture Review](./P9_ARCHITECTURE_REVIEW.md); snapshot-based Markdown/PDF/DOCX/custom export and itemized batch failures are complete.
 - P11: **PASS** in [P11 Architecture Review](./P11_ARCHITECTURE_REVIEW.md); desktop adapters, debug policy, package smoke and Windows CI artifact workflow are complete.
 - P12: **PASS** in [P12 RC Audit](./P12_RC_AUDIT.md); feature-map parity classifications and approved deferrals are explicit.
+- Full RC review: **PASS WITH FOLLOW-UP** in [RC review report](./RC_REVIEW_REPORT.md); no new P0/P1 blocker or `MUST ASK` decision was found.
 
 ## Active decisions
 
@@ -67,8 +69,8 @@
 - Browser/mock filesystem coverage is strong, but native CAS/binary/exclusive-create semantics still need P11 adapter evidence.
 - Office clipboard evidence does not cover every target application; the bounded deferral policy is in `GOAL.md`.
 - P5 follow-up is bounded to approved `PD-004` Office matrix expansion and larger-table performance samples; neither blocks P6.
-- Production build passes but the main JS chunk is about `899.86 kB` (`283.16 kB` gzip), above Vite's warning threshold; address from measured startup/runtime evidence rather than hiding the warning.
+- Production build passes but the main JS chunk is about `990.43 kB` (`310.70 kB` gzip), above Vite's warning threshold; address from measured startup/runtime evidence rather than hiding the warning.
 
 ## Next
 
-Execute P8-00, then continue G4 in SPEC order through P8-AR1.
+No further Goal checkpoint is pending. If continuing post-RC hardening, measure startup/runtime performance before deciding whether to split the main chunk; native Tauri launch and Windows artifact execution still require the corresponding target toolchains/hosts.

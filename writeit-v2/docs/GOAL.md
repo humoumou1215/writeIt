@@ -1,6 +1,6 @@
 # WriteIt v2 Codex Goal Contract
 
-- **Status:** ACTIVE — execution started at G0
+- **Status:** COMPLETE — RC review and validation complete; follow-up prerequisites are recorded in the RC report
 - **Prepared on:** 2026-09-08
 - **Baseline commit:** `03975a7` (`fix(v2): complete F-03 follow-up integration`)
 - **Goal branch:** `codex/goal-writeit-v2`
@@ -120,6 +120,7 @@ The Goal is complete only when all of the following are true:
 | G6 | PASS | `b5ba4a3` | [P10 Architecture Review](./P10_ARCHITECTURE_REVIEW.md); bounded diagnostics, privacy report and permissioned debug API implemented |
 | G7 | PASS | `f710870` | [P11 Architecture Review](./P11_ARCHITECTURE_REVIEW.md); desktop adapters, debug policy and package workflow implemented |
 | G8 | PASS | `f710870` | [P12 RC Audit](./P12_RC_AUDIT.md); feature-map parity classifications and approved deferrals are explicit |
+| RC review | PASS WITH FOLLOW-UP | local checkpoint | [RC review report](./RC_REVIEW_REPORT.md); 477 Vitest + 80 Chromium, Node 22/23 verification, desktop webview smoke and built-in browser journeys PASS |
 
 ## Activation
 

@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'writeit-v2.workspace-settings',
+      JSON.stringify({ version: 1, settings: { autoSaveDelayMs: null } }),
+    )
+  })
+})
+
 async function openNotesFiles(page: Page): Promise<void> {
   await page.locator('[data-workspace-path="notes"]').getByRole('button', {
     name: 'Expand notes',
