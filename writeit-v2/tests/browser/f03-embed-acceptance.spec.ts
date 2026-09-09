@@ -135,6 +135,7 @@ test('real App editable Embed child exposes the shared slash popup', async ({
     '.editor-host > .cm-editor [data-writeit-embed][data-embed-mode="editable"]',
   )
   await expect(embed).toHaveAttribute('data-embed-status', 'mounted')
+  await expect(embed).toHaveAttribute('data-embed-ready', 'true')
   await expect(page.locator('[data-workspace-tab-path="notes/workspace.md"]'))
     .toHaveCount(0)
   const childContent = embed.locator(
@@ -180,6 +181,7 @@ test('real App editable Embed child exposes @, [[, and ![[ completion', async ({
     '.editor-host > .cm-editor [data-writeit-embed][data-embed-mode="editable"]',
   )
   await expect(embed).toHaveAttribute('data-embed-status', 'mounted')
+  await expect(embed).toHaveAttribute('data-embed-ready', 'true')
   const childContent = embed.locator(
     '.cm-writeit-embed-projection__editor .cm-content',
   )
@@ -273,6 +275,7 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
     '.editor-host > .cm-editor [data-writeit-embed][data-embed-mode="editable"]',
   )
   await expect(embed).toHaveAttribute('data-embed-status', 'mounted')
+  await expect(embed).toHaveAttribute('data-embed-ready', 'true')
   const childDocumentId = await embed
     .locator('.cm-writeit-embed-projection__editor')
     .getAttribute('data-embed-document-id')

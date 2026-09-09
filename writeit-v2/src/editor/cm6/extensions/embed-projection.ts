@@ -701,6 +701,7 @@ class EmbedProjectionWidget extends WidgetType {
       })
       this.subscribeChildState(locator, childId, childMount)
       this.renderChildState()
+      wrapper.dataset.embedReady = 'true'
     } catch (error) {
       wrapper.dataset.embedStatus = 'error'
       childMount.replaceChildren()
