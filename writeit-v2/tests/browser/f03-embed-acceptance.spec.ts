@@ -141,8 +141,8 @@ test('real App editable Embed child exposes the shared slash popup', async ({
   const childContent = embed.locator(
     '.cm-writeit-embed-projection__editor .cm-content',
   )
-  await childContent.locator('.cm-line').first().click({ force: true })
-  await childContent.press('Control+End')
+  await childContent.click({ force: true })
+  await childContent.press('End')
   await page.keyboard.press('Enter')
   await page.keyboard.insertText('/')
 
@@ -193,8 +193,8 @@ test('real App editable Embed child exposes @, [[, and ![[ completion', async ({
   ] as const
 
   for (const [trigger, triggerKind] of cases) {
-    await childContent.locator('.cm-line').first().click({ force: true })
-    await childContent.press('Control+End')
+    await childContent.click({ force: true })
+    await childContent.press('End')
     await page.keyboard.press('Enter')
     await page.keyboard.insertText(trigger)
 
@@ -283,8 +283,8 @@ test('explicit Open activates a loaded dirty Embed target without a second tab',
   const childContent = embed.locator(
     '.cm-writeit-embed-projection__editor .cm-content',
   )
-  await childContent.locator('.cm-line').first().click({ force: true })
-  await childContent.press('Control+End')
+  await childContent.click({ force: true })
+  await childContent.press('End')
   await page.keyboard.insertText(' dirty through Embed')
   await expect(childContent).toContainText('Workspace tree dirty through Embed')
   await expect(page.locator('[data-workspace-tab-path="notes/workspace.md"]'))
