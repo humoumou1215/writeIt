@@ -46,6 +46,14 @@ import {
   type PresentationMode,
 } from '../extensions/live-preview'
 import type { ImageProjectionRenderOptions } from '../../preview/image-projection'
+import type { TableCommandId } from '../../../core/table'
+import type { Annotation as DocumentAnnotation } from '../../../core/annotation'
+import {
+  canExecuteActiveTableCommand,
+  executeActiveTableCommand,
+} from '../widgets/table'
+import { updateAnnotations as updateAnnotationDecorations } from '../extensions/annotation'
+import { updateBlame as updateBlameDecorations, type BlameLine } from '../extensions/blame'
 
 export const DEFAULT_SINGLE_DOCUMENT_PROJECTION_ID: ProjectionId =
   'cm6-main-editor'
@@ -125,8 +133,14 @@ export interface SingleDocumentViewSurface {
   navigateToFragment(fragment: string): boolean
   /** Dispatches a source edit intent without exposing CM6 annotations. */
   dispatch(spec: SingleDocumentUserTransaction): void
+  /** Selects a source-backed range and scrolls it into view. */
+  selectRange(from: number, to: number): void
   setPresentationMode(mode: PresentationMode): void
   togglePresentationMode(): PresentationMode
+  canExecuteTableCommand(commandId: TableCommandId): boolean
+  executeTableCommand(commandId: TableCommandId): boolean
+  updateAnnotations(annotations: readonly DocumentAnnotation[]): void
+  updateBlame(lines: readonly BlameLine[]): void
 }
 
 export interface SingleDocumentUserTransaction {
@@ -271,6 +285,13 @@ function createPublicEditorSurface(
       }
       editorView.dispatch({ changes: spec.changes })
     },
+    selectRange(from: number, to: number): void {
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to < from || to > editorView.state.doc.length) {
+        throw new RangeError('Editor selection range is invalid')
+      }
+      editorView.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true })
+      editorView.focus()
+    },
     setPresentationMode(mode: PresentationMode): void {
       if (!setViewPresentationMode(editorView, mode)) {
         throw new Error('Live preview presentation extension is not installed')
@@ -281,6 +302,18 @@ function createPublicEditorSurface(
         throw new Error('Live preview presentation extension is not installed')
       }
       return getPresentationMode(editorView.state)
+    },
+    canExecuteTableCommand(commandId: TableCommandId): boolean {
+      return canExecuteActiveTableCommand(editorView, commandId)
+    },
+    executeTableCommand(commandId: TableCommandId): boolean {
+      return executeActiveTableCommand(editorView, commandId)
+    },
+    updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
+      updateAnnotationDecorations(editorView, annotations)
+    },
+    updateBlame(lines: readonly BlameLine[]): void {
+      updateBlameDecorations(editorView, lines)
     },
   })
 }
@@ -351,6 +384,22 @@ export class SingleDocumentView {
       throw new Error('Live preview presentation extension is not installed')
     }
     return this.presentationMode
+  }
+
+  canExecuteTableCommand(commandId: TableCommandId): boolean {
+    return !this.destroyed && canExecuteActiveTableCommand(this.editorView, commandId)
+  }
+
+  executeTableCommand(commandId: TableCommandId): boolean {
+    return !this.destroyed && executeActiveTableCommand(this.editorView, commandId)
+  }
+
+  updateAnnotations(annotations: readonly DocumentAnnotation[]): void {
+    if (!this.destroyed) updateAnnotationDecorations(this.editorView, annotations)
+  }
+
+  updateBlame(lines: readonly BlameLine[]): void {
+    if (!this.destroyed) updateBlameDecorations(this.editorView, lines)
   }
 
   /** Current authoritative document state, never the CM6 document. */

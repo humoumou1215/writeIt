@@ -22,8 +22,9 @@
 
 1. `writeit-v2/docs/IMPLEMENTATION_SPEC.md`
 2. `writeit-v2/docs/STATUS.md`
-3. 当前任务涉及的 ADR 或 feature spec
-4. 根目录 `LEGACY_FEATURE_MAP.md` 中对应旧实现位置（如已建立且确有需要）
+3. 若当前任务属于 Codex Goal，读取 `writeit-v2/docs/GOAL.md` 与 `writeit-v2/docs/DECISIONS.md`
+4. 当前任务涉及的 ADR 或 feature spec
+5. 根目录 `LEGACY_FEATURE_MAP.md` 中对应旧实现位置（如已建立且确有需要）
 
 不要为了了解项目而无目的遍历整个 `editor-app/`。
 
@@ -57,14 +58,23 @@
 ## 工作方式
 
 - 与用户使用中文交流。
-- 一次只执行 SPEC 中一个明确 Task ID，除非用户明确要求批量执行。
+- 默认一次只执行 SPEC 中一个明确 Task ID。
+- 当当前 Codex Goal 明确引用 `writeit-v2/docs/GOAL.md` 时，按该文件的 checkpoint 顺序连续执行其中列出的多个 Task ID；完成一个 checkpoint 且 gate 为 PASS 后自动进入下一个 checkpoint。
 - 修改前检查相关实现、测试和当前 `git status`。
 - 不覆盖或回滚用户已有未提交修改。
 - 不因顺手而扩展任务范围。
 - 架构决策通过 ADR 记录，不藏在实现代码里。
 - 发现旧版行为与 SPEC 冲突时，以 v2 SPEC / ADR 为准，并记录差异。
 
-完成任务时报告：修改内容、原因、验证命令和结果、尚存风险、下一建议 Task ID。除非用户明确要求，不自动提交 Git commit。
+普通单 Task 完成时报告：修改内容、原因、验证命令和结果、尚存风险、下一建议 Task ID。除非用户明确要求，不自动提交 Git commit。
+
+Codex Goal 模式下：
+
+- 只在 `codex/goal-writeit-v2` 或 `codex/` 前缀的专用 Goal 分支工作。
+- 每个 checkpoint 在相关验证通过、STATUS/GOAL 记录同步后创建本地 checkpoint commit；不得自动 push、tag、发布、签名或创建 release。
+- Phase Gate 为 HOLD 时，建立范围最小的 remediation Task/证据并继续修复和复审，不因 HOLD 本身暂停 Goal。
+- 仅在以下情况暂停并向用户请求决策：需要改变 Accepted ADR 或核心不变量；触发 `DECISIONS.md` 的 `MUST ASK`；需要凭据、许可或外部系统授权；需要不可逆数据操作、发布、签名或付费资源；必须改变 Goal objective、允许范围或完成标准。
+- 小型实现选择、测试修复和 gate remediation 不属于暂停理由；在 `DECISIONS.md` 或对应 Task/Review 中记录后继续。
 
 ## 测试与验证
 
@@ -86,6 +96,15 @@ npm run typecheck
 npm run build
 ```
 
+Goal checkpoint 优先使用仓库统一命令：
+
+```bash
+cd writeit-v2
+npm run verify:fast
+# Phase gate、跨浏览器交互或 checkpoint 收尾时：
+npm run verify
+```
+
 不要因为修改 `writeit-v2/` 而默认运行旧 `editor-app/` 的完整 E2E；仅运行与当前任务相关的验证。
 
 ## 任务执行纪律
@@ -94,4 +113,4 @@ npm run build
 Read → Inspect → Implement → Test → Update STATUS → Report
 ```
 
-发现设计缺口时：小型实现选择可以自行选择并记录；会改变 ADR 的选择必须停止并提出决策；Legacy 行为不清晰时查 feature map 和旧测试。不要自动开始下一个 Task。
+发现设计缺口时：小型实现选择可以自行选择并记录；会改变 ADR 的选择必须停止并提出决策；Legacy 行为不清晰时查 feature map 和旧测试。普通任务不要自动开始下一个 Task；Codex Goal 按 `GOAL.md` 自动推进到下一个 checkpoint。

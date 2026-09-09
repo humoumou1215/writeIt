@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'writeit-v2.workspace-settings',
+      JSON.stringify({ version: 1, settings: { autoSaveDelayMs: null } }),
+    )
+  })
+})
+
 async function openNotesFiles(page: Page): Promise<void> {
   await page.locator('[data-workspace-path="notes"]').getByRole('button', {
     name: 'Expand notes',
@@ -24,7 +33,7 @@ test('directory deletion lists nested dirty documents and Cancel preserves runti
   await page.locator('.cm-content').click()
   await page.keyboard.press('End')
   await page.keyboard.insertText(' local')
-  await expect(page.getByTestId('persistence-status')).toHaveText('dirty')
+  await expect(page.getByTestId('persistence-status')).toHaveText('未保存')
 
   await page
     .locator('[data-workspace-path="notes"] .workspace-tree__row')
@@ -40,7 +49,7 @@ test('directory deletion lists nested dirty documents and Cancel preserves runti
   await expect(dialog).toHaveCount(0)
   await expect(page.locator('[data-workspace-path="notes"]')).toBeVisible()
   await expect(page.locator('[data-workspace-tab-path="notes/architecture.md"]')).toBeVisible()
-  await expect(page.getByTestId('persistence-status')).toHaveText('dirty')
+  await expect(page.getByTestId('persistence-status')).toHaveText('未保存')
   await expect(page.locator('.cm-content')).toContainText('local')
 })
 
@@ -76,7 +85,7 @@ test('file deletion can Save dirty Markdown before cleanup', async ({ page }) =>
   await page.locator('.cm-content').click()
   await page.keyboard.press('End')
   await page.keyboard.insertText(' save then delete')
-  await expect(page.getByTestId('persistence-status')).toHaveText('dirty')
+  await expect(page.getByTestId('persistence-status')).toHaveText('未保存')
 
   await page
     .locator('[data-workspace-path="notes/architecture.md"] .workspace-tree__row')

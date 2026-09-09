@@ -80,6 +80,9 @@ describe('basic live preview', () => {
     ).toBe('images/diagram.png')
 
     image?.click()
+    expect(image?.closest<HTMLElement>('.live-preview-image')?.dataset.imageFocused)
+      .toBe('true')
+    parent.querySelector<HTMLButtonElement>('[data-image-action="preview"]')?.click()
     parent.querySelector<HTMLButtonElement>('[data-image-action="reveal"]')?.click()
     expect(previews).toEqual(['images/diagram.png'])
     expect(reveals).toEqual(['images/diagram.png'])

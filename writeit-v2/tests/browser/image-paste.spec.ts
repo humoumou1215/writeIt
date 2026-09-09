@@ -70,8 +70,7 @@ async function imageTokenCount(page: Page): Promise<number> {
 
 async function documentRevision(page: Page): Promise<number> {
   return page.evaluate(() => {
-    const values = [...document.querySelectorAll('.document-meta dd')]
-    return Number(values[1]?.textContent ?? '-1')
+    return Number(document.querySelector('[data-document-revision]')?.getAttribute('data-document-revision') ?? '-1')
   })
 }
 
@@ -79,6 +78,9 @@ test('pastes an image to a workspace destination with a document-relative source
   page,
 }) => {
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
 
@@ -98,6 +100,9 @@ test('claims one event without duplicating a bridge projection and keeps explici
   page,
 }) => {
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
 
@@ -115,6 +120,9 @@ test('claims one event without duplicating a bridge projection and keeps explici
   await expect(page.locator('[data-workspace-path^="images/"]')).toHaveCount(1)
 
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
   expect(
@@ -132,6 +140,9 @@ test('stores nested-document paste sources relative to the document directory', 
   page,
 }) => {
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.getByRole('button', { name: 'Expand notes' }).click()
   await page.locator('[data-workspace-path="notes/architecture.md"] .workspace-tree__row').click()
   await expect(page.locator('.cm-content')).toContainText('# Architecture notes')
@@ -156,6 +167,9 @@ test('resolves, previews, and locates a workspace image without changing Markdow
   page,
 }) => {
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')
   // Mount both source-backed image projections before the paste. Their shared
@@ -190,6 +204,16 @@ test('resolves, previews, and locates a workspace image without changing Markdow
     ),
   ).toBe(true)
 
+  await editorImage.click()
+  await expect(page.getByTestId('image-preview-modal')).toHaveCount(0)
+  const editorImageShell = page.locator('.cm-writeit-live-preview-image')
+  await editorImageShell.hover()
+  const editorPreviewAction = editorImageShell.locator('[data-image-action="preview"]')
+  await expect(editorPreviewAction).toBeVisible()
+  await editorPreviewAction.click()
+  await expect(page.getByTestId('image-preview-modal')).toBeVisible()
+  await page.getByTestId('image-preview-close').click()
+
   // Return to raw source before asserting source fidelity and exercising the
   // copy/preview/reopen projection actions.
   await page.getByTestId('presentation-toggle').click()
@@ -215,7 +239,7 @@ test('resolves, previews, and locates a workspace image without changing Markdow
   await expect(page.locator('.cm-content')).toContainText(path)
 
   await page.getByTestId('workspace-save').click()
-  await expect(page.getByTestId('persistence-status')).toHaveText('clean')
+  await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
   await page.getByRole('button', { name: 'Close welcome.md' }).click()
   await expect(page.getByTestId('workspace-empty')).toBeVisible()
   await page
@@ -238,8 +262,12 @@ test('resolves, previews, and locates a workspace image without changing Markdow
 
 test('supports the explicit inline base64 image strategy', async ({ page }) => {
   await page.goto('/')
+  await page.locator('.document-menu > summary').click()
+  await page.getByRole('button', { name: '对照预览' }).click()
+  await page.locator('.document-menu > summary').click()
   await page.getByTestId('workspace-settings-toggle').click()
   await page.getByTestId('settings-image-paste-mode').selectOption('inline')
+  await page.getByTestId('workspace-settings-close').click()
 
   await page.locator('.cm-content').click()
   await page.keyboard.press('Control+End')

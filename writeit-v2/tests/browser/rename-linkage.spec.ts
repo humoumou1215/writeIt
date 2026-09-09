@@ -10,7 +10,7 @@ test('renaming a file rewrites incoming references without losing the source doc
   await page.keyboard.press('End')
   await page.keyboard.insertText('\n[[notes/workspace.md]]')
   await page.getByTestId('workspace-save').click()
-  await expect(page.getByTestId('persistence-status')).toHaveText('clean')
+  await expect(page.getByTestId('persistence-status')).toHaveText('已保存')
 
   await page.locator('[data-workspace-path="notes"] .workspace-tree__twisty').click()
   const target = page.locator('[data-workspace-path="notes/workspace.md"]')
@@ -22,5 +22,5 @@ test('renaming a file rewrites incoming references without losing the source doc
   await expect(page.locator('[data-workspace-path="notes/renamed.md"]')).toBeVisible()
   await expect(page.locator('[data-workspace-path="notes/workspace.md"]')).toHaveCount(0)
   await expect(editor).toContainText('[[notes/renamed.md]]')
-  await expect(page.locator('dd').nth(0)).toHaveText('welcome.md')
+  await expect(page.getByTestId('active-document-path')).toHaveText('welcome.md')
 })

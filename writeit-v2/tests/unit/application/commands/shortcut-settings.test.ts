@@ -14,9 +14,9 @@ describe('shortcut settings', () => {
     const entries = createShortcutSettingsEntries(registry)
 
     expect(entries.map((entry) => entry.commandId)).toContain(
-      'editor.table.add-row',
+      'editor.table.add-row-after',
     )
-    expect(entries.find((entry) => entry.commandId === 'editor.table.add-row')).toMatchObject({
+    expect(entries.find((entry) => entry.commandId === 'editor.table.add-row-after')).toMatchObject({
       label: 'Add table row',
       group: 'Table',
       defaultKeybinding: 'Shift+Enter',

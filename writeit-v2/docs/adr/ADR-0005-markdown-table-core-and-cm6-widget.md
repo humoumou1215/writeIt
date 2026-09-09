@@ -34,10 +34,9 @@ Table behavior is split between a platform-independent WriteIt Table Core and a 
 
 ## Deferred decisions
 
-- The exact Markdown table dialect and malformed-table recovery rules.
-- Formatting preservation and canonicalization inside an edited table region.
-- Row/column reorder, column resizing, and other advanced interactions.
-- Performance budgets and the supported office-application compatibility matrix.
+- The P5 dialect, malformed fallback, edited-region canonicalization, row/column reorder, runtime-only column resize, and baseline office clipboard matrix are resolved by [P5-00 Table UX & Behavior Contract](../P5_00_TABLE_UX_CONTRACT.md).
+- Cross-restart column-width persistence remains deferred and would require a separate decision; widths do not enter Markdown.
+- Office applications unavailable in the current environment and broader performance samples remain post-baseline compatibility evidence under `PD-004`.
 
 ## Alternatives considered
 

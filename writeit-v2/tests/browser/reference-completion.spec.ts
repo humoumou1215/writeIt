@@ -5,7 +5,7 @@ type ReferenceCompletionHarness = {
     get(locator: unknown): { markdown: string; revision: number } | undefined
   }
   locator: unknown
-  projection: { destroy(): void }
+  projection: { destroy(): void; setPresentationMode(mode: 'source' | 'live-preview'): void }
 }
 
 async function mountHarness(page: Page): Promise<void> {
@@ -20,6 +20,8 @@ async function mountHarness(page: Page): Promise<void> {
 
     document.querySelector('[data-browser-reference-completion-harness]')?.remove()
     const root = document.createElement('section')
+    root.style.cssText = 'position:fixed;inset:0;z-index:100;background:white;overflow:auto'
+    root.style.padding = '24px'
     root.dataset.browserReferenceCompletionHarness = 'true'
     const editorHost = document.createElement('div')
     editorHost.className = 'editor-host'
@@ -119,5 +121,71 @@ test('enumerates workspace references, hides dot-directories, and continues dire
     .poll(async () => (await readSource(page)).markdown)
     .toBe('[[notes/beta.md]]')
 
+  await destroyHarness(page)
+})
+
+test('uses Right to enter a folder and Left to restore the actual parent history', async ({
+  page,
+}) => {
+  await mountHarness(page)
+  const editor = page.locator('[data-testid="reference-completion-editor"] .cm-content')
+  const menu = page.locator('[data-testid="reference-completion-editor"] [data-completion-menu]')
+  await editor.click()
+  await page.keyboard.insertText('[[no')
+  await expect(menu.locator('[data-completion-id="reference:directory:notes"]')).toBeVisible()
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(async () => (await readSource(page)).markdown).toBe('[[notes/')
+  await expect(menu).toHaveAttribute('data-completion-level', '1')
+  await page.keyboard.press('ArrowLeft')
+  await expect.poll(async () => (await readSource(page)).markdown).toBe('[[no')
+  await expect(menu).toHaveAttribute('data-completion-level', '0')
+  await expect(menu.locator('[data-completion-id="reference:directory:notes"]'))
+    .toHaveAttribute('aria-selected', 'true')
+  await destroyHarness(page)
+})
+
+test('does not reopen completion when the caret moves through an old trigger', async ({
+  page,
+}) => {
+  await mountHarness(page)
+  const editor = page.locator('[data-testid="reference-completion-editor"] .cm-content')
+  const menu = page.locator('[data-testid="reference-completion-editor"] [data-completion-menu]')
+  await editor.click()
+  await page.keyboard.insertText('@alpha')
+  await expect(menu).toHaveAttribute('data-show', 'true')
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveAttribute('data-show', 'false')
+  await page.keyboard.press('Home')
+  await page.keyboard.press('End')
+  await page.keyboard.press('ArrowLeft')
+  await expect(menu).toHaveAttribute('data-show', 'false')
+  expect((await readSource(page)).markdown).toBe('@alpha')
+  await destroyHarness(page)
+})
+
+test('opens from real input in both Raw Source and Live Preview modes', async ({
+  page,
+}) => {
+  await mountHarness(page)
+  const editor = page.locator('[data-testid="reference-completion-editor"] .cm-content')
+  const menu = page.locator('[data-testid="reference-completion-editor"] [data-completion-menu]')
+  await editor.click()
+  await page.keyboard.insertText('@a')
+  await expect(menu).toHaveAttribute('data-show', 'true')
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Control+End')
+  await page.keyboard.press('Enter')
+  await page.evaluate(() => {
+    const harness = (window as unknown as {
+      __writeItV2ReferenceCompletionHarness?: ReferenceCompletionHarness
+    }).__writeItV2ReferenceCompletionHarness
+    harness?.projection.setPresentationMode('live-preview')
+  })
+  await expect(page.locator('[data-testid="reference-completion-editor"] .cm-editor'))
+    .toHaveAttribute('data-presentation-mode', 'live-preview')
+  await page.keyboard.insertText('[[be')
+  await expect(menu).toHaveAttribute('data-show', 'true')
+  await expect(menu.locator('[data-completion-id="reference:file:notes/beta.md"]'))
+    .toBeVisible()
   await destroyHarness(page)
 })

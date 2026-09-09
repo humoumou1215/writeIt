@@ -78,6 +78,17 @@ WriteIt 的主界面不强制只有“三栏”。为了允许同时看文件、
 
 不是每个区域都要同时打开。重点是：**Outline（大纲）不能因为 Annotation（批注）也在右侧就被迫二选一。**
 
+### 3.1A UX-01 编辑器布局落地（2026-09-09）
+
+根据用户对调试页面布局的反馈，本次将演示工作台调整为编辑器 APP：
+
+- 主窗口铺满可用区域；顶部为紧凑应用栏，标签页与文档栏位于正文上方，底部固定保存状态与组合内容统计。
+- 默认单一编辑区，Raw Source / Live Preview 在原编辑器内切换；独立只读对照预览通过文档「···」按需打开。
+- 文件、搜索、Git 位于左侧；新建表单收纳在局部展开入口。大纲为独立可开关、可调宽左侧面板；反向引用和批注按需在右侧显示。
+- 保存与显示模式切换常驻；导出、自动保存、外部文件检查、添加批注和严格校验收进文档菜单；前后标签/文件操作收进标签栏菜单，原快捷键保留。
+- 移除页面标题中的阶段号、projection/revision 展示与架构说明。设置采用浮层，避免推挤正文。
+- 本次仅落实布局；大纲 active tracking、面板组合的更窄窗口策略仍需独立交互验收，不宣称完整 UX_SPEC 已全部实现。
+
 ### 3.2 左侧栏
 
 左侧主栏主要承担“找到东西”和“工作区操作”的职责：
@@ -93,7 +104,7 @@ WriteIt 的主界面不强制只有“三栏”。为了允许同时看文件、
 - 可拖动调整宽度；
 - 支持“自动收纳”，但**默认关闭自动收纳**；
 - 自动收纳必须有一个容易理解、状态明显的图标开关，不能藏在深层 Settings；
-- 自动收纳开启后，具体何时收起、如何快速重新展开，要在对应 UX Task 中用真实交互确认，不能让 Pi 随意决定；
+- 自动收纳开启后，只在用户打开文件或把焦点移入中央编辑区后收起；切换 File/Search/Git、拖动宽度、右键菜单和弹窗交互本身不触发收起；收起后保留明显的展开按钮；
 - “定位当前文件”入口容易找到；
 - 当前正在查看的文件，在 File Tree 中默认就有持续、但不过分刺眼的突出显示；
 - 当前正在查看的文件，如果也出现在 Git changed-files 列表中，Git 列表也默认突出显示；
@@ -133,7 +144,7 @@ File Tree 的创建、重命名、删除等低频操作优先放右键菜单和�
 - 内部 Reference / Embed 跳转支持两种打开方式：
   1. **普通打开**：在当前编辑区域新建或激活一个标签页；
   2. **分屏打开**：保留当前文档，同时在旁边增加一个编辑区域显示目标文档。
-- 用户可以设置默认的内部跳转方式；右键菜单或修饰键必须能临时选择另一种方式。
+- 默认内部跳转方式是普通标签打开；用户可以在 Settings 改为分屏，右键菜单或修饰键必须能临时选择另一种方式。
 - 分屏不是复制 Document；同一文档在两个区域打开时仍然共享同一份正文数据。
 
 ### 3.5 Outline、右侧面板与并行查看
@@ -245,6 +256,16 @@ A.md 正文
 - Image：preview、copy、reveal。
 
 右键菜单不要混入与当前对象无关的全局功能。
+
+### 4.3A UX-03 键盘与焦点基线（2026-09-09）
+
+- 文档/标签「···」入口可通过 Tab 聚焦，Enter/Space 展开；ArrowDown 展开并聚焦第一个可用控件。菜单含输入框和选择框，因此使用原生 Tab 顺序，不把表单伪装成纯命令菜单。
+- Escape 关闭当前菜单并返回入口；点击外部或将焦点移出菜单后关闭，不抢走外部目标的焦点。标签导航执行后关闭菜单。
+- 新建文件区域是内联表单：点击文件树不自动收起，避免拖拽途中布局移动；可通过原入口或 Escape 收起。
+- 文件树右键操作出现后聚焦操作按钮；Escape/Tab 退出并返回来源文件行；点击外部关闭。
+- 设置与删除确认是模态弹窗：打开时焦点进入弹窗，Tab/Shift+Tab 在弹窗内循环，背景不可操作；关闭后恢复原入口（入口仍存在时）。Escape 关闭设置；删除确认中的 Escape 等价 Cancel，不能删除数据。
+- 弹窗内不执行后台工作区快捷键。快捷键录制自身消费的按键优先；中文输入法组合输入期间不处理上述关闭动作。
+- 引用/斜线联想沿用编辑器自身的键盘与输入法协议，本次不替换其内容状态或命令系统。
 
 ### 4.4 危险操作
 
@@ -777,7 +798,7 @@ Table cell 有两种明确状态。
 
 - 普通文字键：正常编辑；
 - `Enter`：在当前 cell 中插入一个“显示换行”；
-- `Tab` 的最终行为要优先保证可输入性与表格导航一致，可以由 P5-00 固定，但不能破坏 IME。
+- `Tab`：提交当前 cell 编辑并移动到下一个 cell；`Shift+Tab` 提交并移动到上一个 cell；即使 cell 含显示换行也不改变该行为；IME composition 期间不得提交或移动。
 
 ### 表格 cell 内换行如何保存
 
@@ -790,7 +811,7 @@ Table cell 有两种明确状态。
 
 但标准 Markdown table 不能直接把一个 cell 拆成物理上的两行，否则会破坏表格结构。
 
-因此 P5-00 的默认建议是把“cell 内换行”保存成：
+P5-00 采用 `<br>` 作为“cell 内显示换行”的持久化表示：
 
 ```md
 请求参数说明第一行<br>第二行补充说明
@@ -802,9 +823,9 @@ Table cell 有两种明确状态。
 - Markdown 文件仍然是一行 table row；
 - `<br>` 表示 cell 内换行；
 - Raw Source 中用户能明确看到这个表示方式；
-- Pi 不得自行发明隐藏二进制格式或把换行状态存在 DOM 中。
+- Agent 不得自行发明隐藏二进制格式或把换行状态存在 DOM 中。
 
-P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` 的兼容性；如果更换表示方式，必须在 SPEC 中写明后再实现。
+P5-00 必须用实际 Markdown renderer 与 legacy fixture 验证 `<br>` 的兼容性。如果证据证明不可兼容，可在不改变 Markdown-first 原则的前提下选择另一种可见 Markdown/HTML 表示，并在 Task Contract 与 `DECISIONS.md` 记录理由，不需要暂停整个 Goal。
 
 ### 10.5 多 cell 选择
 
@@ -827,7 +848,7 @@ P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` �
 - `/` 或命令系统；
 - 可配置快捷键。
 
-具体最终采用哪些，由 P5-00 + 可选 Figma 确认。
+P5-00 已确认并实现：表格 hover/focus 时显示轻量 contextual controls；活动 cell 的命令菜单提供 insert-before/after、delete 与 move；工具栏仅在表格上下文出现，命令系统提供相同 command id。row/column grip 也可直接进入整行/整列选择。
 
 ### 10.7 Resize / Reorder
 
@@ -841,9 +862,11 @@ P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` �
 
 - row/column reorder 会改变 Markdown 内容，必须通过 Table Core → DocumentStore 正常修改，并支持 undo/redo；
 - column resize 首先是显示层宽度，不得为了视觉宽度无意义改写 Markdown；
-- 首版列宽可以只在当前视图/工作区 UI 状态保存；如果以后要长期保存列宽，必须单独设计，不得偷偷塞进 Markdown；
+- 首版列宽只保存在当前运行时的视图/工作区 UI 状态，不跨应用重启持久化，也不得写入 Markdown；长期保存列宽如未来需要，必须单独设计；
 - 拖拽过程中要有清楚的插入位置提示；
 - 表格内容很多时仍应能横向查看/调整，不能因为强行平均列宽导致文字完全不可读。
+
+具体键盘、矩形选择、clipboard MIME、IME 与 malformed fallback 合同见 [P5-00 Table UX & Behavior Contract](./P5_00_TABLE_UX_CONTRACT.md)。
 
 ### 10.8 错误表格
 
@@ -876,6 +899,7 @@ P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` �
 
 - 正文通过颜色标记批注范围；
 - 批注详情统一显示在右侧可收纳面板；
+- 右侧批注面板默认宽度为 `360px`，可拖动调整；窄窗口下应受可用空间约束，不能覆盖到正文无法编辑；
 - 当前 active annotation 卡片突出；
 - 每个可定位批注卡片与正文 anchor 之间显示正确连线；
 - 页面滚动、panel resize、窗口 resize 后连线重新计算；
@@ -884,6 +908,8 @@ P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` �
 - 回复框 Enter 发送，Shift+Enter 换行（除非用户后续修改）；
 - resolve 后默认弱化/隐藏，但可重新查看；
 - anchor 失效时显示“无法可靠定位”，不能把线或卡片指向看似接近但错误的文字。
+
+P6-00 已冻结入口与交互细节：选区通过 context action 创建，右侧 drawer 默认 `360px` 且可收纳/resize；回复 `Enter` 发送、`Shift+Enter` 换行；Resolve/Unresolve 只改变 sidecar review data；正文 mark 与卡片由当前 anchor 几何重新连线，无法唯一重定位时显示“无法可靠定位”。详见 [P6-00 contract](./P6_00_ANNOTATION_MERMAID_UX_CONTRACT.md)。
 
 ## 12. Mermaid UX Baseline
 
@@ -897,6 +923,8 @@ P5-00 实现前要用实际 Markdown renderer/legacy fixture 再确认 `<br>` �
 - hover 图时显示轻量按钮；
 - 单击非链接区域只做 focus/光斑反馈；
 - `/` 可以插入常用 Mermaid 模板；
+
+P6-00 已确认 Mermaid fenced source 的 renderer lifecycle：图默认显示、source 默认折叠；loading/error 均保留可见 source；关闭或新 revision 到达后旧 render 结果不得覆盖；内部 Reference 继续按普通 tab/split 策略导航。详见 [P6-00 contract](./P6_00_ANNOTATION_MERMAID_UX_CONTRACT.md)。
 - fenced block 内 `@` 引用继续使用统一 Reference popup。
 
 ### 12.2 Mermaid 中的 Reference
@@ -952,6 +980,8 @@ D = added   / 绿
 - commit detail；
 - compare target。
 
+P7-00 已冻结 Git 入口和端口边界：左侧 Git tool 展示 repo/branch/worktree changed files/history，比较目标明确显示为 Worktree↔HEAD、commit 或双 commit range；UI 只消费 machine-readable GitRepositoryPort/GitBlamePort，不解析 CLI 文本。详见 [P7-00 contract](./P7_00_GIT_DIFF_UX_CONTRACT.md)。
+
 ### 13.2 Diff
 
 首版应同时支持：
@@ -961,7 +991,11 @@ D = added   / 绿
 - next/previous hunk；
 - raw source fallback。
 
+默认显示 unified；工具栏提供 split/unified 切换，并记住当前工作区会话内的选择。
+
 富 Table/Mermaid diff 是增强，不是唯一显示方式。
+
+Raw Source Diff 永远是保证层；semantic/rich renderer 失败时保留完整 raw change 并显示 degraded 状态。Discard file/hunk 必须先确认并在 dirty/open Document 场景明确处理冲突。
 
 ### 13.3 Blame
 
@@ -973,11 +1007,14 @@ Show Git Blame / Annotate
 
 打开以后：
 
-- 行旁显示作者 + 日期；
+- 行旁紧凑显示作者短名 + 相对日期；
 - hover/click 看 commit 信息；
+- hover/click 中显示完整作者、精确日期时间、commit id 和 subject；
 - 本地未提交行显示 Local/Uncommitted；
 - 不确定时显示 Unknown，而不是猜一个旧作者；
 - 关闭 Blame 不修改 Markdown。
+
+P7-00 已冻结以上 Git/Diff/Blame 入口、Raw Diff 保证层、discard 确认与 machine-readable port contract，详见 [P7-00 contract](./P7_00_GIT_DIFF_UX_CONTRACT.md)。
 
 ---
 
@@ -1015,7 +1052,7 @@ Advanced / Diagnostics（高级/诊断）
 Workspace（工作区）至少应包含：
 
 - 左侧栏自动收纳开关，默认关闭；
-- 默认内部文档打开方式：普通标签 / 分屏；
+- 默认内部文档打开方式：普通标签（可改为分屏）；
 - Outline 的显示开关或默认状态；
 - sidebar / Outline / Annotation 面板宽度等纯 UI 状态。
 
@@ -1242,16 +1279,17 @@ Playwright 截图/交互测试验收
 - [x] Table Enter：选中状态移动下一行；编辑状态插入 cell 内换行。
 - [x] Table Resize / Reorder 是最终必须能力，不再作为可永久延后的项目。
 
-## 22. 仍需要在对应 Task 前确认的小问题
+## 22. Goal 前置 UX 决策（2026-09-08）
 
-这些不是架构大问题，可以在对应 Task 开始前通过文字或简单原型确认：
+以下细节已作为 Codex Goal 的默认产品合同，不再要求在对应 Phase 前停下来询问：
 
-- [ ] 左侧“自动收纳”开启后，具体触发收起的时机。
-- [ ] 普通内部 Reference 单击时，默认是普通打开还是分屏打开（两种能力都必须有）。
-- [ ] Table 编辑状态中 Tab 在含多行 cell 时的最终细节。
-- [ ] Table column resize 是否需要跨重启长期记住宽度；默认先不写进 Markdown。
-- [ ] Annotation drawer 的默认宽度。
-- [ ] Git Diff 默认 split 还是 unified。
-- [ ] Git blame 作者/日期在 gutter 中的紧凑显示形式。
+- [x] 自动收纳只在打开文件或焦点进入中央编辑区后触发，并保留明显展开入口。
+- [x] 普通内部 Reference 默认用普通标签打开；Settings、右键或修饰键可选择分屏。
+- [x] Table 编辑状态下 Tab / Shift+Tab 提交当前 cell 并前后移动，IME composition 期间不触发。
+- [x] Table cell 内换行默认保存为 `<br>`，实现前以 renderer/legacy fixture 验证。
+- [x] Table column resize 首版不跨重启持久化，且永不写入 Markdown。
+- [x] Annotation drawer 默认 `360px`，可 resize。
+- [x] Git Diff 默认 unified，可切换 split。
+- [x] Git blame gutter 显示作者短名 + 相对日期，完整信息放 hover/click 详情。
 
-这些问题可以在对应 Phase 前决定，不需要阻塞当前 P4 remediation。
+如果实现证据要求调整非架构细节，按 `DECISIONS.md` 的适配规则记录后继续；涉及核心操作方式或 Accepted ADR 才暂停 Goal。

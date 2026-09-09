@@ -75,6 +75,7 @@ function activateNode(): void {
 
 function openContextMenu(event: MouseEvent): void {
   if (props.isRoot) return
+  ;(event.currentTarget as HTMLElement).focus()
   selectNode()
   emit('contextmenu', props.node.path, event.clientX, event.clientY)
 }
@@ -138,6 +139,7 @@ function forwardContextMenu(
   >
     <div
       class="workspace-tree__row"
+      tabindex="-1"
       :class="{
         'workspace-tree__row--selected': selectedPath === node.path,
         'workspace-tree__row--directory': isDirectory(node),

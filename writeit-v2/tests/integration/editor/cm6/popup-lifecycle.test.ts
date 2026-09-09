@@ -275,7 +275,7 @@ describe('popup IME and lifecycle safety', () => {
       projection,
       kind === 'slash' ? '[data-slash-menu]' : '[data-completion-menu]',
     )
-    expect(menu.dataset.show).toBe('true')
+    expect(menu.dataset.show).toBe(kind === 'slash' ? 'true' : 'false')
     press(projection, { key: 'Enter' })
 
     expect(store.get(locator)?.markdown).toBe(kind === 'slash' ? '/' : '@')

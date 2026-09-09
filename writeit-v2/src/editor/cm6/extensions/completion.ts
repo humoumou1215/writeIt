@@ -132,6 +132,12 @@ export interface CompletionSurfaceOptions {
   readonly mutation?: ProjectionMutationCapability
 }
 
+interface DirectoryNavigationHistory {
+  readonly source: string
+  readonly trigger: CompletionTrigger
+  readonly item: CompletionSurfaceItem
+}
+
 const MENU_CLASS = 'writeit-completion-menu'
 const MENU_OPTION_SELECTOR = '[data-completion-index]'
 const MENU_MODE_SELECTOR = '[data-completion-mode-id]'
@@ -372,6 +378,16 @@ class CompletionController {
       return
     }
 
+    if (
+      event.key === 'ArrowRight' &&
+      this.items[this.selectedIndex]?.kind === 'directory'
+    ) {
+      event.preventDefault()
+      event.stopPropagation()
+      void this.executeSelected()
+      return
+    }
+
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       event.stopPropagation()
@@ -441,7 +457,7 @@ class CompletionController {
   private readonly onCompositionEnd = (): void => {
     this.composing = false
     this.compositionEndPending = true
-    this.syncFromEditor()
+    this.syncFromEditor(true)
     this.reconcileCompositionEnd()
     // CM6 can settle the composition transaction after the DOM event. Use an
     // event-order microtask, never a fixed timeout, to re-evaluate the trigger.
@@ -465,6 +481,8 @@ class CompletionController {
   private currentTrigger: CompletionTrigger | undefined
   private activeKey: string | undefined
   private dismissedKey: string | undefined
+  private directoryHistory: DirectoryNavigationHistory | undefined
+  private pendingRootSelectionId: string | undefined
   private refreshGeneration = 0
   private compositionEndPending = false
   private mutationGeneration = 0
@@ -501,7 +519,7 @@ class CompletionController {
       this.menu,
       () => this.currentTrigger?.to,
     )
-    this.syncFromEditor()
+    this.syncFromEditor(false)
   }
 
   get element(): HTMLElement {
@@ -522,7 +540,7 @@ class CompletionController {
       this.invalidatePendingMutation()
     }
     if (update.docChanged || update.selectionSet || update.focusChanged) {
-      this.syncFromEditor()
+      this.syncFromEditor(update.docChanged)
     } else if (this.open && update.geometryChanged) {
       this.popup.reposition()
     }
@@ -552,10 +570,10 @@ class CompletionController {
       return
     }
     this.compositionEndPending = false
-    this.syncFromEditor()
+    this.syncFromEditor(true)
   }
 
-  private syncFromEditor(): void {
+  private syncFromEditor(allowNewTrigger: boolean): void {
     if (this.composing || this.view.composing) {
       this.hide()
       return
@@ -565,7 +583,7 @@ class CompletionController {
     if (!trigger) {
       this.currentTrigger = undefined
       this.activeKey = undefined
-      this.dismissedKey = undefined
+      if (allowNewTrigger) this.dismissedKey = undefined
       this.rootItems = []
       this.items = []
       this.level = 0
@@ -583,6 +601,14 @@ class CompletionController {
     this.currentTrigger = trigger
     this.menu.dataset.triggerKind = trigger.kind
     if (this.dismissedKey === key) {
+      this.hide()
+      return
+    }
+
+    // Selection/focus changes may move through old Markdown that happens to
+    // look like a trigger. Only a document input transaction (or composition
+    // commit) may start a fresh completion session.
+    if (!allowNewTrigger && this.activeKey !== key) {
       this.hide()
       return
     }
@@ -606,8 +632,8 @@ class CompletionController {
     this.childGeneration += 1
     this.items = []
     this.rootItems = []
-    this.level = 0
-    this.parentItem = undefined
+    this.level = this.directoryHistory ? 1 : 0
+    this.parentItem = this.directoryHistory?.item
     this.childLoading = false
     this.errors = []
     this.modes = []
@@ -635,8 +661,8 @@ class CompletionController {
         if (!this.composing && !this.view.composing) this.open = true
         this.rootItems = result.items
         this.items = result.items
-        this.level = 0
-        this.parentItem = undefined
+        this.level = this.directoryHistory ? 1 : 0
+        this.parentItem = this.directoryHistory?.item
         this.childLoading = false
         this.errors = [...(result.errors ?? [])]
         this.modes = normalizeSurfaceModes(result.modes)
@@ -645,10 +671,13 @@ class CompletionController {
           ? requestedMode
           : this.modes[0]?.id
         this.loading = false
-        this.selectedIndex = Math.min(
-          this.selectedIndex,
-          Math.max(0, this.items.length - 1),
-        )
+        const restoredIndex = this.pendingRootSelectionId === undefined
+          ? -1
+          : this.items.findIndex((item) => item.id === this.pendingRootSelectionId)
+        this.pendingRootSelectionId = undefined
+        this.selectedIndex = restoredIndex >= 0
+          ? restoredIndex
+          : Math.min(this.selectedIndex, Math.max(0, this.items.length - 1))
         this.renderMenu()
       })
       .catch((error: unknown) => {
@@ -727,6 +756,7 @@ class CompletionController {
     this.parentItem = undefined
     this.childLoading = false
     this.items = this.rootItems
+    this.menu.scrollTop = 0
     this.selectedIndex = Math.min(
       this.selectedIndex,
       Math.max(0, this.items.length - 1),
@@ -735,6 +765,22 @@ class CompletionController {
 
   private goBack(): void {
     if (this.level === 0) return
+    const history = this.directoryHistory
+    if (history) {
+      const document = this.requireMutation().snapshot()
+      this.directoryHistory = undefined
+      this.pendingRootSelectionId = history.item.id
+      this.activeKey = undefined
+      this.dismissedKey = undefined
+      this.requireMutation().applyChange({
+        markdown: history.source,
+        origin: createDocumentOrigin('completion', 'directory-back'),
+        expectedRevision: document.revision,
+      })
+      this.view.dispatch({ selection: { anchor: history.trigger.to } })
+      this.syncFromEditor(true)
+      return
+    }
     this.resetToRoot()
     this.renderMenu()
   }
@@ -813,6 +859,15 @@ class CompletionController {
       await this.openChildren(item)
       return
     }
+    if (item.kind === 'directory') {
+      this.directoryHistory = {
+        source: this.view.state.doc.toString(),
+        trigger,
+        item,
+      }
+    } else {
+      this.directoryHistory = undefined
+    }
     await this.executeLeaf(item, trigger)
   }
 
@@ -828,6 +883,10 @@ class CompletionController {
     this.items = []
     this.selectedIndex = 0
     this.childLoading = true
+    // A browser click can scroll the root menu to reveal a file candidate.
+    // Child content has a different height, so carry-over scrollTop could put
+    // the sticky mode bar over the only child option and make it unclickable.
+    this.menu.scrollTop = 0
     this.renderMenu()
 
     try {
@@ -926,7 +985,14 @@ class CompletionController {
     this.consumeMutationToken(mutationToken)
     const cursorOffset = edit.cursorOffset ?? edit.insert.length
     const cursor = Math.min(edit.from + cursorOffset, this.view.state.doc.length)
-    if (!this.destroyed) this.view.dispatch({ selection: { anchor: cursor } })
+    if (!this.destroyed) {
+      this.view.dispatch({ selection: { anchor: cursor } })
+      // Store replay can temporarily map the selection away from the new
+      // trigger. Reconcile once after the explicit completion edit has placed
+      // its intended caret; this is part of the input action, not cursor-only
+      // discovery of old Markdown.
+      this.syncFromEditor(true)
+    }
   }
 
   private modeFromEvent(event: MouseEvent): string | undefined {

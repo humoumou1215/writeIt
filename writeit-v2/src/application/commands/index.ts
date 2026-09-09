@@ -1,4 +1,5 @@
 export * from './registry'
 export * from './quick-insert'
+export * from './mermaid'
 export * from './keybindings'
 export * from './shortcut-settings'

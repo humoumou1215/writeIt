@@ -1,5 +1,7 @@
 # WriteIt v2 Task Prompt
 
+> **Legacy Pi entrypoint.** 保留用于复现历史单 Task 工作流；Codex Goal 不读取或执行本 prompt。当前 Codex 入口以根 `AGENTS.md`、`writeit-v2/docs/GOAL.md` 与 `writeit-v2/docs/DECISIONS.md` 为准。
+
 用法：
 
 ```text

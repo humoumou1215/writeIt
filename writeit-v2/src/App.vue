@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { vDisclosure, vModalFocus, vContextFocus } from './ui/interactions/disclosure'
 import { EditorView } from '@codemirror/view'
 import {
   CompletionProviderRegistry,
@@ -24,8 +25,19 @@ import {
   DEFAULT_SHORTCUT_COMMANDS,
   KeybindingConflictError,
   KeybindingSettingsStore,
+  registerMermaidQuickInsertCommands,
   type ShortcutSettingsEntry,
 } from './application/commands'
+import { createTableCommands } from './application/table'
+import type { TableCommandId } from './core/table'
+import { AnnotationService, MemoryAnnotationRepository } from './application/annotation'
+import { GitWorkbenchService } from './application/git'
+import { SearchService, type SearchQuery } from './application/search'
+import { ValidationService } from './application/validation'
+import { TemplateCatalog, TemplateService } from './application/template'
+import { ExportService, type ExportFormat } from './application/export'
+import { CreateFromTemplateService } from './application/workspace'
+import { MemoryGitAdapter, type GitDiffResult, type GitFileStatus, type GitRepositoryInfo } from './platform/git'
 import {
   createDocumentId,
   createDocumentPath,
@@ -43,6 +55,7 @@ import {
   ReferenceGraph,
   ReferenceHealthService,
 } from './core/reference'
+import { composedContentStats, flattenOutline, parseOutline } from './core'
 import {
   ReferenceClipboardService,
   ReferenceRenameService,
@@ -56,8 +69,10 @@ import type {
 } from './core/workspace'
 import {
   createCompletionExtension,
+  createAnnotationExtension,
   createEmbedProjectionExtension,
   createImagePasteExtension,
+  createLivePreviewExtension,
   createReferenceClipboardExtension,
   createReferenceNavigationExtension,
   createSlashQuickInsertExtension,
@@ -67,12 +82,14 @@ import {
   WorkspaceImageProjectionResolver,
   type BasicLivePreview,
   type EmbedProjectionMissingTargetContext,
+  type ImagePasteExtensionOptions,
   type ImageProjectionResource,
   type PresentationMode,
   type SingleDocumentView,
 } from './editor'
 import {
   adjacentWorkspaceFilePath,
+  decideWorkspaceOpen,
   DocumentPersistenceService,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
@@ -89,11 +106,13 @@ import { MemoryFileSystem } from './platform/filesystem'
 import { createBrowserReferenceClipboard } from './platform/clipboard'
 import { BrowserSettingsStorage } from './platform/settings'
 import {
+  SearchPanel,
   WorkspaceTabs as WorkspaceTabsPanel,
   WorkspaceTree as WorkspaceTreePanel,
 } from './ui/workspace'
 import { ShortcutSettings as ShortcutSettingsPanel } from './ui/settings'
 import { ImagePreviewModal } from './ui/media'
+import { AnnotationDrawer, GitWorkbenchPanel } from './ui/review'
 
 const documentId = createDocumentId('welcome')
 const documentPath = createDocumentPath('welcome.md')
@@ -137,6 +156,22 @@ const workspaceTreeService = new WorkspaceTreeService(workspaceFileSystem, {
     })),
   getRecoveryPaths: () => workspaceRecoveryStore.getSnapshot().openDocumentPaths,
 })
+const templateCatalog = new TemplateCatalog({
+  list: async (scope) => {
+    if (scope === 'global') return [{ path: 'meeting.md', content: '# Meeting\n\nDate: {{date}}\n\n## Notes\n' }]
+    return [...workspaceFileSystem.snapshot().entries()]
+      .filter(([path]) => path.startsWith('.template/'))
+      .map(([path, content]) => ({ path, content }))
+  },
+})
+const templateService = new TemplateService(templateCatalog)
+const templateCreationService = new CreateFromTemplateService(workspaceTreeService, {
+  provider: { resolve: ({ templateId }) => {
+    const template = templateService.get(templateId)
+    return template ? { markdown: template.markdown } : undefined
+  } },
+})
+const exportService = new ExportService()
 const imageAttachmentService = new ImageAttachmentService({
   fileSystem: workspaceFileSystem,
 })
@@ -148,6 +183,7 @@ const persistence = new DocumentPersistenceService(store, workspaceFileSystem, {
   autoSaveDelayMs: initialSettings.autoSaveDelayMs,
 })
 const quickInsertRegistry = createBasicMarkdownCommandRegistry()
+registerMermaidQuickInsertCommands(quickInsertRegistry)
 const completionRegistry = new CompletionProviderRegistry()
 completionRegistry.register(
   createReferenceCompletionProvider({
@@ -166,6 +202,8 @@ interface ApplicationCommandContext {
   readonly source: 'shortcut' | 'settings'
 }
 const applicationCommandRegistry = new CommandRegistry<ApplicationCommandContext>()
+const annotationService = new AnnotationService(new MemoryAnnotationRepository())
+const gitService = new GitWorkbenchService(new MemoryGitAdapter({ info: { isGitRepository: false, branches: [] } }))
 const initialDocument = store.load({
   id: documentId,
   path: documentPath,
@@ -205,11 +243,27 @@ const documentIdsByPath = new Map<WorkspacePath, DocumentId>([
   [initialWorkspacePath, documentId],
 ])
 const embeddedDocumentLoads = new Map<WorkspacePath, Promise<void>>()
+const embeddedDocumentLoadFailures = new Map<WorkspacePath, number>()
 let workspaceDeletionGeneration = 0
 const tabs = new WorkspaceTabManager()
 const tabSnapshot = ref(tabs.getSnapshot())
 const documentRevisionSignal = ref(0)
 const documentSubscriptions = new Map<DocumentId, () => void>()
+const closingWorkspaceTabs = new Set<DocumentId>()
+/**
+ * Tab metadata is a projection of the authoritative Store snapshot. Keep its
+ * Vue invalidation independent from tab lifetime: a loaded Document can lose
+ * its tab while an Embed projection continues editing it.
+ */
+const stopDocumentTimelineSubscription = store.subscribeTimeline((event) => {
+  if (
+    event.type === 'DocumentChanged' ||
+    event.type === 'DocumentPersisted' ||
+    event.type === 'DocumentRenamed'
+  ) {
+    documentRevisionSignal.value += 1
+  }
+})
 const persistenceRevisionSignal = ref(0)
 const persistenceSubscriptions = new Map<DocumentId, () => void>()
 const stopKeybindingSubscription = keybindingSettingsStore.subscribe(() => {
@@ -225,6 +279,7 @@ const shortcutEntries = computed<readonly ShortcutSettingsEntry[]>(() => {
 const sidebarCollapsed = ref(initialSettings.sidebarCollapsed)
 const sidebarPinned = ref(initialSettings.sidebarPinned)
 const sidebarWidth = ref(initialSettings.sidebarWidth)
+const activeWorkspaceTool = ref<'files' | 'search' | 'git'>('files')
 const autoSaveDelay = ref(initialSettings.autoSaveDelayMs)
 const imagePasteMode = ref<ImagePasteMode>(initialSettings.imagePasteMode)
 const restoreLastWorkspace = ref(initialSettings.restoreLastWorkspace)
@@ -237,9 +292,15 @@ const lastWorkspaceRestoreStatus = ref<'pending' | 'restored' | 'default'>('pend
 let restoringWorkspace = false
 
 const editorHost = ref<HTMLDivElement | null>(null)
+const outlineOpen = ref(false)
+const backlinksOpen = ref(false)
+const comparisonPreviewOpen = ref(false)
 const previewHost = ref<HTMLDivElement | null>(null)
+const splitEditorHost = ref<HTMLDivElement | null>(null)
 const projection = ref<SingleDocumentView | null>(null)
 const preview = ref<BasicLivePreview | null>(null)
+const splitProjection = ref<SingleDocumentView | null>(null)
+const splitDocumentId = ref<DocumentId | null>(null)
 const mountedDocumentId = ref<DocumentId | null>(null)
 const presentationMode = ref<PresentationMode>('source')
 const presentationModes = new Map<DocumentId, PresentationMode>()
@@ -273,6 +334,40 @@ const pendingWorkspaceDeletion = ref<{
 const imagePasteStatus = ref<string | null>(null)
 const imageActionStatus = ref<string | null>(null)
 const imagePreview = ref<ImageProjectionResource | null>(null)
+const annotationItems = ref<readonly import('./core/annotation').Annotation[]>([])
+const activeAnnotationId = ref<string | null>(null)
+const annotationDrawerOpen = ref(false)
+const annotationDrawerWidth = ref(360)
+const gitInfo = ref<GitRepositoryInfo | null>(null)
+const gitStatuses = ref<readonly GitFileStatus[]>([])
+const gitDiff = ref<GitDiffResult | null>(null)
+const gitHistory = ref<readonly import('./platform/git').GitCommit[]>([])
+const gitSelectedPath = ref<string | null>(null)
+const gitLayout = ref<'unified' | 'split'>('unified')
+const gitLoading = ref(false)
+const gitError = ref<string | null>(null)
+const searchResults = ref<readonly import('./core/search').SearchFileResult[]>([])
+const searchQuery = ref<SearchQuery | null>(null)
+const searchError = ref<string | null>(null)
+const searchReplacement = ref('')
+const searchService = new SearchService({
+  list: () => workspaceFiles.value.flatMap((path) => {
+    const loaded = store.get(documentByPath(createDocumentPath(path)))
+    const disk = workspaceFileSystem.snapshot().get(createDocumentPath(path))
+    const markdown = loaded?.markdown ?? disk
+    return markdown === undefined ? [] : [{ path, markdown }]
+  }),
+})
+const validationService = new ValidationService()
+const validationIssues = ref<readonly import('./core/validation').ValidationIssue[]>([])
+const strictValidation = ref(false)
+const templateRecords = ref<readonly import('./application/template').TemplateRecord[]>([])
+const selectedTemplateId = ref('meeting')
+const templateName = ref('new-note.md')
+const templateError = ref<string | null>(null)
+const exportFormat = ref<ExportFormat>('markdown')
+const exportStatus = ref<string | null>(null)
+let annotationSequence = 0
 let pendingFragmentNavigation: {
   readonly documentId: DocumentId
   readonly fragment: string
@@ -324,6 +419,12 @@ function refreshReferenceHealth(): void {
   })
 }
 
+function refreshValidation(document: DocumentState | undefined = activeDocument.value): void {
+  validationIssues.value = document
+    ? validationService.validate(document.markdown, document.revision).issues
+    : []
+}
+
 function cleanupLateEmbeddedDocument(
   path: WorkspacePath,
   documentIdToCleanup: DocumentId,
@@ -362,9 +463,22 @@ function observeDocument(documentIdToObserve: DocumentId): void {
   documentSubscriptions.set(
     documentIdToObserve,
     store.subscribe(documentById(documentIdToObserve), (event) => {
-      documentRevisionSignal.value += 1
       if (event.type === 'changed' || event.type === 'renamed') {
+        searchService.invalidate()
+        refreshValidation(event.document)
         indexReferenceDocument(event.document)
+        if (event.type === 'changed') {
+          void annotationService
+            .reanchor(event.document.path, event.document, event.change)
+            .then((annotations) => {
+              if (activeDocument.value?.id !== event.document.id) return
+              annotationItems.value = annotations
+              projection.value?.updateAnnotations(annotations)
+            })
+            .catch((error: unknown) => {
+              workspaceError.value = workspaceErrorMessage(error)
+            })
+        }
       }
     }),
   )
@@ -391,6 +505,13 @@ const activeDocument = computed<DocumentState | undefined>(() => {
     : store.get(documentById(activeDocumentId))
 })
 
+const splitDocument = computed<DocumentState | undefined>(() => {
+  documentRevisionSignal.value
+  return splitDocumentId.value === null
+    ? undefined
+    : store.get(documentById(splitDocumentId.value))
+})
+
 const activePersistenceState = computed(() => {
   persistenceRevisionSignal.value
   const activeDocumentId = tabSnapshot.value.activeDocumentId
@@ -410,6 +531,33 @@ const activeReferenceHealth = computed(() => {
 const activeBrokenReferenceCount = computed(
   () => activeReferenceHealth.value.filter((fact) => fact.broken).length,
 )
+const activeOutline = computed(() => {
+  documentRevisionSignal.value
+  return activeDocument.value ? parseOutline(activeDocument.value.markdown) : []
+})
+const activeBacklinks = computed(() => {
+  documentRevisionSignal.value
+  const path = workspacePathForDocument(activeDocument.value)
+  return path ? referenceGraph.getBacklinks(path) : []
+})
+const activeComposedStats = computed(() => {
+  documentRevisionSignal.value
+  const document = activeDocument.value
+  if (!document) return { wordCount: 0, referenceCount: 0, embedCount: 0, outline: [], circularEmbeds: [] }
+  return composedContentStats(document.path, document.markdown, {
+    read: (path) => {
+      const loaded = store.get(documentByPath(createDocumentPath(path)))
+      return loaded?.markdown ?? workspaceFileSystem.snapshot().get(createDocumentPath(path))
+    },
+  })
+})
+
+const canAddAnnotation = computed(() => {
+  const view = projection.value?.view
+  if (!view) return false
+  const { from, to } = view.state.selection.main
+  return to > from
+})
 
 function workspacePathForDocument(
   document: DocumentState | undefined,
@@ -422,14 +570,214 @@ function workspacePathForDocument(
   }
 }
 
+async function refreshGitWorkbench(): Promise<void> {
+  gitLoading.value = true
+  gitError.value = null
+  try {
+    gitInfo.value = await gitService.repositoryInfo(true)
+    gitStatuses.value = gitInfo.value.isGitRepository
+      ? await gitService.fileStatuses(true)
+      : []
+    gitDiff.value = null
+    gitHistory.value = []
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  } finally {
+    gitLoading.value = false
+  }
+}
+
+async function switchGitBranch(branch: string): Promise<void> {
+  try {
+    await gitService.switchBranch(branch)
+    await refreshGitWorkbench()
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectGitPath(path: string): Promise<void> {
+  gitSelectedPath.value = path
+  gitError.value = null
+  try {
+    gitDiff.value = await gitService.diff({
+      kind: 'worktree-vs-head',
+      path: createWorkspacePath(path),
+    })
+    gitHistory.value = await gitService.history(createWorkspacePath(path))
+  } catch (error) {
+    gitDiff.value = null
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+function toggleGitLayout(): void {
+  gitLayout.value = gitLayout.value === 'unified' ? 'split' : 'unified'
+}
+
+async function discardGitFile(path: string): Promise<void> {
+  if (!window.confirm(`Discard all Git changes in ${path}?`)) return
+  try {
+    await gitService.discardFile(createWorkspacePath(path))
+    await refreshGitWorkbench()
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function discardGitHunk(path: string, hunkId: string): Promise<void> {
+  if (!window.confirm(`Discard Git hunk ${hunkId} in ${path}?`)) return
+  try {
+    await gitService.discardHunk(createWorkspacePath(path), hunkId)
+    await selectGitPath(path)
+  } catch (error) {
+    gitError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function refreshActiveAnnotations(
+  document: DocumentState | undefined = activeDocument.value,
+): Promise<void> {
+  if (!document) {
+    annotationItems.value = []
+    activeAnnotationId.value = null
+    return
+  }
+  const annotations = await annotationService.list(document.path)
+  if (activeDocument.value?.id !== document.id) return
+  annotationItems.value = annotations
+  if (activeAnnotationId.value && !annotations.some((item) => item.id === activeAnnotationId.value)) {
+    activeAnnotationId.value = null
+  }
+  projection.value?.updateAnnotations(annotations)
+}
+
+function selectAnnotation(annotationId: string): void {
+  const annotation = annotationItems.value.find((item) => item.id === annotationId)
+  if (!annotation) return
+  activeAnnotationId.value = annotationId
+  annotationDrawerOpen.value = true
+  void nextTick(() => {
+    const mark = document.querySelector<HTMLElement>(
+      `[data-annotation-id="${CSS.escape(annotationId)}"]`,
+    )
+    mark?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
+
+function activateAnnotation(
+  annotation: import('./core/annotation').Annotation,
+  _view: EditorView,
+): void {
+  selectAnnotation(annotation.id)
+}
+
+async function addAnnotationFromSelection(): Promise<void> {
+  const document = activeDocument.value
+  const view = projection.value?.view
+  if (!document || !view) return
+  const { from, to } = view.state.selection.main
+  if (to <= from) {
+    workspaceError.value = 'Select a non-empty range before adding an annotation.'
+    return
+  }
+  const selectedText = view.state.doc.sliceString(from, to)
+  const first = document.markdown.indexOf(selectedText)
+  const last = document.markdown.lastIndexOf(selectedText)
+  const sourceFrom = first >= 0 && first === last
+    ? first
+    : document.markdown.slice(from, to) === selectedText
+      ? from
+      : -1
+  if (sourceFrom < 0 || sourceFrom + selectedText.length > document.markdown.length) {
+    workspaceError.value = 'The selected range is not source-backed.'
+    return
+  }
+  const now = new Date().toISOString()
+  const sequence = ++annotationSequence
+  try {
+    const annotation = await annotationService.create({
+      id: `annotation-${sequence}`,
+      document,
+      from: sourceFrom,
+      to: sourceFrom + selectedText.length,
+      comment: {
+        id: `comment-${sequence}`,
+        author: 'You',
+        body: 'Review this selection.',
+        createdAt: now,
+      },
+    })
+    annotationItems.value = [...annotationItems.value, annotation]
+    activeAnnotationId.value = annotation.id
+    annotationDrawerOpen.value = true
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function replyAnnotation(annotationId: string, body: string): Promise<void> {
+  const document = activeDocument.value
+  if (!document || !body.trim()) return
+  try {
+    const sequence = ++annotationSequence
+    const updated = await annotationService.reply(document.path, annotationId, {
+      id: `comment-${sequence}`,
+      author: 'You',
+      body: body.trim(),
+      createdAt: new Date().toISOString(),
+    })
+    annotationItems.value = annotationItems.value.map((item) =>
+      item.id === annotationId ? updated : item,
+    )
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function resolveAnnotation(annotationId: string, resolved: boolean): Promise<void> {
+  const document = activeDocument.value
+  if (!document) return
+  try {
+    const updated = await annotationService.setResolved(
+      document.path,
+      annotationId,
+      resolved ? 'resolved' : 'open',
+      new Date().toISOString(),
+    )
+    annotationItems.value = annotationItems.value.map((item) =>
+      item.id === annotationId ? updated : item,
+    )
+    projection.value?.updateAnnotations(annotationItems.value)
+    workspaceError.value = null
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+function resizeAnnotationDrawer(width: number): void {
+  annotationDrawerWidth.value = Math.max(280, Math.min(560, Math.round(width)))
+}
+
 const documentTabViews = computed(() => {
   documentRevisionSignal.value
   persistenceRevisionSignal.value
   return tabSnapshot.value.tabs.map((tab) => {
     const document = store.get(documentById(tab.documentId))
+    // A WorkspaceTab must always have an authoritative Store binding. Fail
+    // visibly on a broken lifecycle invariant; never turn it into a clean tab.
+    if (!document) {
+      throw new Error(
+        `Workspace tab ${tab.documentId} has no DocumentStore snapshot`,
+      )
+    }
     const persistenceState = persistence.getState(documentById(tab.documentId))
-    const path = document?.path ?? String(tab.documentId)
-    let name = path
+    const path = document.path
+    let name: string = path
     try {
       name = workspaceName(createWorkspacePath(path))
     } catch {
@@ -440,7 +788,7 @@ const documentTabViews = computed(() => {
       documentId: tab.documentId,
       path,
       name,
-      dirty: document?.dirty ?? false,
+      dirty: document.dirty,
       persistenceStatus: persistenceState.status,
     }
   })
@@ -448,6 +796,7 @@ const documentTabViews = computed(() => {
 
 const workspaceTreeUnsubscribe = workspaceTreeService.subscribe((snapshot) => {
   workspaceTreeSnapshot.value = snapshot
+  searchService.invalidate()
   referenceGraph.setWorkspacePaths(orderedWorkspaceFilePaths(snapshot.tree))
   refreshReferenceHealth()
 })
@@ -509,6 +858,12 @@ async function ensureEmbeddedDocument(
       documentIdsByPath.set(path, id)
     }
     if (!store.get(documentById(id))) {
+      const remainingFailures = embeddedDocumentLoadFailures.get(path) ?? 0
+      if (remainingFailures > 0) {
+        if (remainingFailures === 1) embeddedDocumentLoadFailures.delete(path)
+        else embeddedDocumentLoadFailures.set(path, remainingFailures - 1)
+        throw new Error(`Simulated transient Embed load failure: ${path}`)
+      }
       await persistence.loadFromFile({
         id,
         path: createDocumentPath(path),
@@ -556,6 +911,7 @@ refreshReferenceHealth()
 watch(
   () => tabSnapshot.value.activeDocumentId,
   (activeDocumentId) => {
+    refreshValidation(activeDocument.value)
     if (restoringWorkspace) return
     void nextTick(() => {
       if (
@@ -709,6 +1065,31 @@ function handleImagePasteDiagnostic(
     `Orphan attachment ${diagnostic.path}: ${diagnostic.reason}`
 }
 
+/**
+ * Shared application policy for both the main editor and editable Embed
+ * children. The Embed adapter supplies the target DocumentState.path and its
+ * own projection mutation capability; this object never captures the host
+ * document path.
+ */
+function createImagePasteBridgeOptions(): Omit<
+  ImagePasteExtensionOptions,
+  'getDocumentPath' | 'mutation'
+> {
+  return {
+    handle: (images, context) =>
+      imageAttachmentService.paste({
+        images,
+        mode: imagePasteMode.value,
+        hostPath: context.documentPath,
+      }),
+    cleanupAttachments: (attachments, context) =>
+      imageAttachmentService.cleanup(attachments, context),
+    onApplied: handleImagePasteApplied,
+    onDiagnostic: handleImagePasteDiagnostic,
+    onError: handleImagePasteError,
+  }
+}
+
 function openImagePreview(resource: ImageProjectionResource): void {
   imagePreview.value = resource
   imageActionStatus.value = null
@@ -811,6 +1192,147 @@ function toggleSidebar(): void {
 
 function toggleSidebarPinned(): void {
   updateWorkspaceSettings({ sidebarPinned: !sidebarPinned.value })
+}
+
+function selectWorkspaceTool(tool: 'files' | 'search' | 'git'): void {
+  activeWorkspaceTool.value = tool
+  if (tool === 'git' && gitInfo.value === null) void refreshGitWorkbench()
+}
+
+function runWorkspaceSearch(query: SearchQuery): void {
+  searchError.value = null
+  try {
+    searchQuery.value = query
+    searchResults.value = searchService.search(query)
+  } catch (error) {
+    searchResults.value = []
+    searchError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectSearchMatch(path: string, from: number, to: number): Promise<void> {
+  try {
+    await openWorkspaceFile(createWorkspacePath(path))
+    await nextTick()
+    const document = activeDocument.value
+    const view = projection.value?.view
+    if (!document || document.path !== createDocumentPath(path) || !view) {
+      throw new Error(`Search result could not be opened: ${path}`)
+    }
+    if (from < 0 || to < from || to > view.state.doc.length) {
+      throw new Error(`Search result is no longer source-backed: ${path}:${from}`)
+    }
+    view.selectRange(from, to)
+    searchError.value = null
+  } catch (error) {
+    searchError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function replaceSearchMatch(
+  path: string,
+  from: number,
+  to: number,
+  replacement: string,
+): Promise<void> {
+  try {
+    const normalizedPath = createWorkspacePath(path)
+    const id = await ensureWorkspaceDocumentLoaded(normalizedPath)
+    searchService.replaceInDocument(store, documentById(id), from, to, replacement)
+    searchService.invalidate()
+    if (searchQuery.value) searchResults.value = searchService.search(searchQuery.value)
+    searchError.value = `Replaced 1 occurrence in ${path}.`
+  } catch (error) {
+    searchError.value = `Replace failed for ${path}: ${workspaceErrorMessage(error)}`
+  }
+}
+
+async function replaceAllSearchMatches(replacement: string): Promise<void> {
+  const query = searchQuery.value
+  if (!query) return
+  const failures: string[] = []
+  let replaced = 0
+  for (const file of searchResults.value) {
+    try {
+      const id = await ensureWorkspaceDocumentLoaded(createWorkspacePath(file.path))
+      // Apply from the end so all source offsets remain valid. Each operation
+      // carries the current revision and therefore cannot overwrite an
+      // external or concurrent change silently.
+      for (const match of [...file.matches].sort((a, b) => b.from - a.from)) {
+        searchService.replaceInDocument(store, documentById(id), match.from, match.to, replacement)
+        replaced += 1
+      }
+    } catch (error) {
+      failures.push(`${file.path}: ${workspaceErrorMessage(error)}`)
+    }
+  }
+  searchService.invalidate()
+  searchResults.value = searchService.search(query)
+  searchError.value = failures.length > 0
+    ? `Replaced ${replaced} occurrence${replaced === 1 ? '' : 's'}; failures: ${failures.join('; ')}`
+    : `Replaced ${replaced} occurrence${replaced === 1 ? '' : 's'}.`
+}
+
+async function refreshTemplates(): Promise<void> {
+  templateError.value = null
+  templateRecords.value = await templateService.refresh()
+  if (templateRecords.value.length > 0 && !templateRecords.value.some((item) => item.id === selectedTemplateId.value)) selectedTemplateId.value = templateRecords.value[0].id
+  if (templateCatalog.getFailure()) templateError.value = templateCatalog.getFailure()
+}
+
+async function createFromSelectedTemplate(): Promise<void> {
+  const name = templateName.value.trim()
+  if (!name) { templateError.value = 'Enter a file name first.'; return }
+  try {
+    const result = await templateCreationService.create({ templateId: selectedTemplateId.value, parentPath: '', name })
+    await refreshWorkspace()
+    await openWorkspaceFile(result.path)
+    templateError.value = `Created ${result.path}.`
+  } catch (error) { templateError.value = workspaceErrorMessage(error) }
+}
+
+function insertSelectedTemplate(): void {
+  const document = activeDocument.value
+  const template = templateService.get(selectedTemplateId.value)
+  const view = projection.value?.view
+  if (!document || !template || !view) { templateError.value = 'Open a document before inserting a template.'; return }
+  const at = view.state.selection.main.from
+  try {
+    view.dispatch({ changes: { from: at, to: view.state.selection.main.to, insert: template.markdown } })
+    templateError.value = `Inserted ${template.name}.`
+  } catch (error) { templateError.value = workspaceErrorMessage(error) }
+}
+
+function selectOutlineHeading(from: number): void {
+  try {
+    projection.value?.view.selectRange(from, from)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+async function selectBacklink(edge: { readonly sourcePath: string; readonly from: number; readonly to: number }): Promise<void> {
+  try {
+    await openWorkspaceFile(createWorkspacePath(edge.sourcePath))
+    await nextTick()
+    if (activeDocument.value?.path !== createDocumentPath(edge.sourcePath) || !projection.value) throw new Error('Backlink source is unavailable')
+    projection.value.view.selectRange(edge.from, edge.to)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  }
+}
+
+function maybeAutoCollapseSidebar(): void {
+  if (!sidebarPinned.value && !sidebarCollapsed.value) {
+    updateWorkspaceSettings({ sidebarCollapsed: true })
+  }
+}
+
+function handleMainFocusIn(event: FocusEvent): void {
+  const target = event.target
+  if (target instanceof Element && target.closest('.editor-host')) {
+    maybeAutoCollapseSidebar()
+  }
 }
 
 function changeSidebarCollapsed(event: Event): void {
@@ -933,12 +1455,26 @@ async function saveActiveDocument(): Promise<void> {
   persistenceBusy.value = true
   persistenceError.value = null
   try {
+    const validation = validationService.validate(document.markdown, document.revision)
+    validationIssues.value = validation.issues
+    if (strictValidation.value && validation.issues.some((issue) => issue.severity === 'error')) {
+      throw new Error(`Save blocked by ${validation.issues.filter((issue) => issue.severity === 'error').length} validation error(s).`)
+    }
     await persistence.save(documentById(document.id))
   } catch (error) {
     persistenceError.value = persistenceErrorMessage(error)
   } finally {
     persistenceBusy.value = false
   }
+}
+
+async function exportActiveDocument(): Promise<void> {
+  const document = activeDocument.value
+  if (!document) return
+  const result = await exportService.export(exportService.snapshot(store, documentById(document.id)), { format: exportFormat.value })
+  exportStatus.value = result.success
+    ? `Exported ${result.output?.path} (${result.output?.bytes.length ?? 0} bytes).`
+    : `Export failed: ${result.failure?.message}`
 }
 
 async function checkActiveExternalFile(): Promise<void> {
@@ -998,12 +1534,45 @@ function destroyActiveProjections(): void {
   preview.value = null
   imagePreview.value = null
   imageActionStatus.value = null
+  annotationItems.value = []
+  activeAnnotationId.value = null
+  annotationDrawerOpen.value = false
   mountedDocumentId.value = null
   try {
     activeProjection?.destroy()
   } finally {
     activePreview?.destroy()
   }
+}
+
+function destroySplitProjection(): void {
+  const activeSplit = splitProjection.value
+  splitProjection.value = null
+  activeSplit?.destroy()
+}
+
+function closeSplitPane(): void {
+  destroySplitProjection()
+  splitDocumentId.value = null
+}
+
+function mountSplitDocument(fragment: string | null = null): void {
+  destroySplitProjection()
+  const host = splitEditorHost.value
+  const documentIdToMount = splitDocumentId.value
+  if (!host || documentIdToMount === null) return
+  const document = store.get(documentById(documentIdToMount))
+  if (!document) return
+  const next = mountSingleDocumentView({
+    store,
+    locator: documentById(document.id),
+    parent: host,
+    projectionId: `cm6-split-${document.id}`,
+    editable: true,
+    presentationMode: presentationModes.get(document.id) ?? 'source',
+  })
+  splitProjection.value = next
+  if (fragment !== null) next.jumpToFragment(fragment)
 }
 
 function mountActiveDocument(): void {
@@ -1034,6 +1603,29 @@ function mountActiveDocument(): void {
       editable: true,
       presentationMode: initialPresentationMode,
       extensions: [
+        createLivePreviewExtension({
+          ...imageProjectionOptions,
+          initialMode: initialPresentationMode,
+          onOpenMermaidReference: (path, event) => {
+            try {
+              const target = createWorkspacePath(path)
+              if (event.shiftKey) void openWorkspaceFileInSplit(target)
+              else void openWorkspaceFile(target)
+            } catch (error) {
+              workspaceError.value = workspaceErrorMessage(error)
+            }
+          },
+          isMermaidReferenceAvailable: (path) => {
+            try {
+              return findWorkspaceNode(
+                workspaceTreeSnapshot.value.tree,
+                createWorkspacePath(path),
+              )?.kind === 'file'
+            } catch {
+              return false
+            }
+          },
+        }),
         EditorView.updateListener.of(() => {
           if (
             projection.value &&
@@ -1043,18 +1635,12 @@ function mountActiveDocument(): void {
           }
         }),
         createImagePasteExtension({
+          ...createImagePasteBridgeOptions(),
           getDocumentPath: () => activeDocument.value?.path ?? null,
-          handle: (images, context) =>
-            imageAttachmentService.paste({
-              images,
-              mode: imagePasteMode.value,
-              hostPath: context.documentPath,
-            }),
-          cleanupAttachments: (attachments, context) =>
-            imageAttachmentService.cleanup(attachments, context),
-          onApplied: handleImagePasteApplied,
-          onDiagnostic: handleImagePasteDiagnostic,
-          onError: handleImagePasteError,
+        }),
+        createAnnotationExtension({
+          getAnnotations: () => annotationItems.value,
+          onActivate: activateAnnotation,
         }),
         createReferenceClipboardExtension({
           store: referenceClipboard.store,
@@ -1095,6 +1681,9 @@ function mountActiveDocument(): void {
           onOpen: (path, fragment) => {
             void openWorkspaceFile(path, fragment)
           },
+          onOpenInSplit: (path, fragment) => {
+            void openWorkspaceFileInSplit(path, fragment)
+          },
         }),
         createCompletionExtension({
           registry: completionRegistry,
@@ -1107,8 +1696,17 @@ function mountActiveDocument(): void {
           subscribeTargets: (listener) =>
             referenceHealth.subscribe(() => listener()),
           imageProjection: imageProjectionOptions,
+          slashQuickInsert: {
+            registry: quickInsertRegistry,
+          },
+          completion: {
+            registry: completionRegistry,
+          },
+          imagePaste: createImagePasteBridgeOptions(),
           onOpen: (path, fragment) =>
             openReferenceContext({ path, fragment }),
+          onOpenInSplit: (path, fragment) =>
+            openWorkspaceFileInSplit(createWorkspacePath(path), fragment),
         }),
       ],
       imageProjection: imageProjectionOptions,
@@ -1116,6 +1714,9 @@ function mountActiveDocument(): void {
     projection.value = nextProjection
     mountedDocumentId.value = document.id
     presentationMode.value = nextProjection.presentationMode
+    void refreshActiveAnnotations(document).catch((error: unknown) => {
+      workspaceError.value = workspaceErrorMessage(error)
+    })
     preview.value = mountBasicLivePreview({
       store,
       locator,
@@ -1149,6 +1750,68 @@ function navigateTabs(direction: -1 | 1): void {
   if (next) activateWorkspaceTab(next.documentId)
 }
 
+async function ensureWorkspaceDocumentLoaded(
+  normalizedPath: WorkspacePath,
+): Promise<DocumentId> {
+  const documentPathForOpen = createDocumentPath(normalizedPath)
+  let loadedDocument = store.get(documentByPath(documentPathForOpen))
+  let mappedDocumentId = documentIdsByPath.get(normalizedPath)
+
+  if (!loadedDocument && mappedDocumentId !== undefined) {
+    const mappedDocument = store.get(documentById(mappedDocumentId))
+    if (mappedDocument?.path === documentPathForOpen) loadedDocument = mappedDocument
+    else {
+      documentIdsByPath.delete(normalizedPath)
+      mappedDocumentId = undefined
+    }
+  }
+  if (loadedDocument) {
+    mappedDocumentId = loadedDocument.id
+    documentIdsByPath.set(normalizedPath, loadedDocument.id)
+  }
+
+  const decision = decideWorkspaceOpen({
+    loadedDocumentId: loadedDocument?.id,
+    dirty: loadedDocument?.dirty ?? false,
+    tabOpen: loadedDocument !== undefined && tabs.isOpen(loadedDocument.id),
+  })
+  let documentIdForPath: DocumentId
+  if (decision.kind === 'load') {
+    documentIdForPath = mappedDocumentId ?? createDocumentId(`workspace:${normalizedPath}`)
+    await persistence.loadFromFile({ id: documentIdForPath, path: documentPathForOpen })
+    documentIdsByPath.set(normalizedPath, documentIdForPath)
+  } else {
+    documentIdForPath = decision.documentId
+    if (decision.kind === 'reopen-clean') {
+      await persistence.reopen(documentById(documentIdForPath))
+    }
+  }
+  observeDocument(documentIdForPath)
+  observePersistence(documentIdForPath)
+  indexReferenceDocument(store.get(documentById(documentIdForPath)))
+  return documentIdForPath
+}
+
+async function openWorkspaceFileInSplit(
+  path: WorkspacePath,
+  fragment: string | null = null,
+): Promise<void> {
+  if (workspaceBusy.value) return
+  const normalizedPath = createWorkspacePath(path)
+  if (findWorkspaceNode(workspaceTreeSnapshot.value.tree, normalizedPath)?.kind !== 'file') return
+  workspaceBusy.value = true
+  workspaceError.value = null
+  try {
+    splitDocumentId.value = await ensureWorkspaceDocumentLoaded(normalizedPath)
+    await nextTick()
+    mountSplitDocument(fragment)
+  } catch (error) {
+    workspaceError.value = workspaceErrorMessage(error)
+  } finally {
+    workspaceBusy.value = false
+  }
+}
+
 async function openWorkspaceFile(
   path: WorkspacePath,
   fragment: string | null = null,
@@ -1167,27 +1830,7 @@ async function openWorkspaceFile(
   workspaceBusy.value = true
   workspaceError.value = null
   try {
-    let documentIdForPath = documentIdsByPath.get(normalizedPath)
-    const wasOpen =
-      documentIdForPath !== undefined && tabs.isOpen(documentIdForPath)
-    if (documentIdForPath === undefined) {
-      documentIdForPath = createDocumentId(`workspace:${normalizedPath}`)
-      await persistence.loadFromFile({
-        id: documentIdForPath,
-        path: createDocumentPath(normalizedPath),
-      })
-      documentIdsByPath.set(normalizedPath, documentIdForPath)
-    } else if (!store.get(documentById(documentIdForPath))) {
-      await persistence.loadFromFile({
-        id: documentIdForPath,
-        path: createDocumentPath(normalizedPath),
-      })
-    } else if (!wasOpen) {
-      await persistence.reopen(documentById(documentIdForPath))
-    }
-    observeDocument(documentIdForPath)
-    observePersistence(documentIdForPath)
-    indexReferenceDocument(store.get(documentById(documentIdForPath)))
+    const documentIdForPath = await ensureWorkspaceDocumentLoaded(normalizedPath)
     pendingFragmentNavigation =
       fragment === null
         ? null
@@ -1196,6 +1839,7 @@ async function openWorkspaceFile(
     const previousActive = tabSnapshot.value.activeDocumentId
     if (previousActive !== documentIdForPath) destroyActiveProjections()
     tabs.open(documentIdForPath)
+    maybeAutoCollapseSidebar()
     selectedWorkspacePath.value = normalizedPath
     workspaceRevealPath.value = normalizedPath
     workspaceRevealVersion.value += 1
@@ -1242,39 +1886,52 @@ function revealActiveFile(): void {
 async function closeWorkspaceTab(
   documentIdToClose: DocumentId,
 ): Promise<void> {
-  if (workspaceBusy.value || persistenceBusy.value) return
-  const documentToClose = store.get(documentById(documentIdToClose))
   if (
-    documentToClose?.dirty &&
-    !window.confirm(
-      `${documentToClose.path} has unsaved changes. Close without saving? Local changes will be discarded.`,
-    )
-  ) {
-    return
-  }
+    workspaceBusy.value ||
+    persistenceBusy.value ||
+    closingWorkspaceTabs.has(documentIdToClose)
+  ) return
 
-  if (documentToClose?.dirty) {
-    persistenceBusy.value = true
-    persistenceError.value = null
-    try {
-      await persistence.discardLocalChanges(documentById(documentIdToClose))
-    } catch (error) {
-      persistenceError.value = persistenceErrorMessage(error)
-      return
-    } finally {
-      persistenceBusy.value = false
+  closingWorkspaceTabs.add(documentIdToClose)
+  try {
+    const documentToClose = store.get(documentById(documentIdToClose))
+    if (documentToClose?.dirty) {
+      const shouldClose = window.confirm(
+        `${documentToClose.path} has unsaved changes. Close without saving? Local changes will be discarded.`,
+      )
+      if (!shouldClose) {
+        // Cancel has no asynchronous cleanup. Release the guard before the
+        // native dialog handoff can race a subsequent user gesture.
+        closingWorkspaceTabs.delete(documentIdToClose)
+        return
+      }
     }
-  }
 
-  const wasActive = tabSnapshot.value.activeDocumentId === documentIdToClose
-  if (wasActive) destroyActiveProjections()
-  tabs.close(documentIdToClose)
-  documentSubscriptions.get(documentIdToClose)?.()
-  documentSubscriptions.delete(documentIdToClose)
-  presentationModes.delete(documentIdToClose)
+    if (documentToClose?.dirty) {
+      persistenceBusy.value = true
+      persistenceError.value = null
+      try {
+        await persistence.discardLocalChanges(documentById(documentIdToClose))
+      } catch (error) {
+        persistenceError.value = persistenceErrorMessage(error)
+        return
+      } finally {
+        persistenceBusy.value = false
+      }
+    }
 
-  if (wasActive) {
-    syncActiveWorkspaceSelection()
+    const wasActive = tabSnapshot.value.activeDocumentId === documentIdToClose
+    if (wasActive) destroyActiveProjections()
+    tabs.close(documentIdToClose)
+    documentSubscriptions.get(documentIdToClose)?.()
+    documentSubscriptions.delete(documentIdToClose)
+    presentationModes.delete(documentIdToClose)
+
+    if (wasActive) {
+      syncActiveWorkspaceSelection()
+    }
+  } finally {
+    closingWorkspaceTabs.delete(documentIdToClose)
   }
 }
 
@@ -1358,6 +2015,7 @@ async function renameWorkspaceEntry(
 
 async function deleteWorkspaceEntry(path: WorkspacePath): Promise<void> {
   if (workspaceBusy.value) return
+  const focusOrigin = document.activeElement as HTMLElement | null
   workspaceBusy.value = true
   workspaceError.value = null
   try {
@@ -1373,6 +2031,9 @@ async function deleteWorkspaceEntry(path: WorkspacePath): Promise<void> {
     workspaceError.value = workspaceErrorMessage(error)
   } finally {
     workspaceBusy.value = false
+    // Busy disables the triggering button. Restore only after Vue enables it.
+    await nextTick()
+    if (focusOrigin?.isConnected) focusOrigin.focus()
   }
 }
 
@@ -1493,7 +2154,7 @@ function configureWorkspaceDeletion(): void {
 configureWorkspaceDeletion()
 
 function handleWorkspaceKeydown(event: KeyboardEvent): void {
-  if (event.isComposing) return
+  if (event.isComposing || event.defaultPrevented || settingsPanelOpen.value || pendingWorkspaceDeletion.value) return
   const modifier = event.ctrlKey || event.metaKey
   if (modifier && event.key === 'Tab') {
     event.preventDefault()
@@ -1592,18 +2253,21 @@ function registerApplicationCommands(): void {
     availability: () => tabSnapshot.value.tabs.length > 1,
     execute: () => navigateTabs(-1),
   })
-  applicationCommandRegistry.register({
-    id: 'editor.table.add-row',
-    label: 'Add table row',
-    group: 'Table',
-    keywords: ['table', 'row', 'insert'],
-    availability: () => false,
-    execute: () => undefined,
-  })
+  for (const tableCommand of createTableCommands()) {
+    const commandId = tableCommand.id as TableCommandId
+    applicationCommandRegistry.register({
+      id: commandId,
+      label: tableCommand.label,
+      group: tableCommand.group,
+      keywords: tableCommand.keywords,
+      availability: () => projection.value?.canExecuteTableCommand(commandId) ?? false,
+      execute: () => projection.value?.executeTableCommand(commandId),
+    })
+  }
 }
 
 function handleShortcutKeydown(event: KeyboardEvent): void {
-  if (event.defaultPrevented || event.isComposing) return
+  if (event.defaultPrevented || event.isComposing || settingsPanelOpen.value || pendingWorkspaceDeletion.value) return
 
   const commandId = keybindingRegistry.resolveInput(event)
   if (commandId === undefined) return
@@ -1643,12 +2307,28 @@ registerApplicationCommands()
 
 async function initializeWorkspace(): Promise<void> {
   await refreshWorkspace()
+  await refreshTemplates()
   await restoreWorkspaceSession()
   await nextTick()
   mountActiveDocument()
 }
 
 onMounted(() => {
+  if (import.meta.env.DEV) {
+    ;(window as unknown as {
+      __writeItV2AppTest?: {
+        failNextEmbeddedLoad(path: string, count?: number): void
+      }
+    }).__writeItV2AppTest = {
+      failNextEmbeddedLoad(path, count = 1) {
+        const normalized = createWorkspacePath(path)
+        embeddedDocumentLoadFailures.set(
+          normalized,
+          Math.max(1, Math.trunc(count)),
+        )
+      },
+    }
+  }
   window.addEventListener('keydown', handleWorkspaceKeydown)
   window.addEventListener('keydown', handleShortcutKeydown)
   void initializeWorkspace().catch((error: unknown) => {
@@ -1659,6 +2339,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (import.meta.env.DEV) {
+    delete (window as unknown as { __writeItV2AppTest?: unknown })
+      .__writeItV2AppTest
+  }
   if (pendingWorkspaceDeletion.value) {
     const pending = pendingWorkspaceDeletion.value
     pendingWorkspaceDeletion.value = null
@@ -1669,12 +2353,14 @@ onBeforeUnmount(() => {
   endSidebarResize()
   persistWorkspaceRecovery()
   destroyActiveProjections()
+  destroySplitProjection()
   imagePreview.value = null
   imageProjectionResolver.dispose()
   for (const unsubscribe of documentSubscriptions.values()) unsubscribe()
   documentSubscriptions.clear()
   for (const unsubscribe of persistenceSubscriptions.values()) unsubscribe()
   persistenceSubscriptions.clear()
+  stopDocumentTimelineSubscription()
   persistence.destroy()
   stopTabsSubscription()
   stopKeybindingSubscription()
@@ -1689,45 +2375,19 @@ onBeforeUnmount(() => {
 <template>
   <main class="app-shell" @click="closeWorkspaceContextMenu">
     <header class="app-header">
-      <div>
-        <p class="eyebrow">WriteIt v2 · P4-09</p>
-        <h1>Markdown-first editor surface</h1>
-        <p class="subtitle">
-          一个 DocumentStore；源码与 Live Preview 共用同一个 CM6 编辑器状态。
-        </p>
-        <button
-          type="button"
-          class="settings-toggle"
-          data-testid="workspace-settings-toggle"
-          :aria-expanded="settingsPanelOpen"
-          aria-controls="workspace-settings-panel"
-          @click="toggleSettingsPanel"
-        >
-          Settings
-        </button>
+      <div class="app-brand"><span class="app-brand__mark">W</span><h1>WriteIt</h1><span class="app-workspace-name">工作区</span></div>
+      <div class="app-global-actions">
+        <button type="button" :aria-pressed="outlineOpen" @click="outlineOpen = !outlineOpen">大纲</button>
+        <button type="button" :aria-pressed="backlinksOpen" @click="backlinksOpen = !backlinksOpen">反向引用</button>
+        <button type="button" :aria-pressed="annotationDrawerOpen" @click="annotationDrawerOpen = !annotationDrawerOpen">批注</button>
+        <button type="button" class="settings-toggle" data-testid="workspace-settings-toggle" :aria-expanded="settingsPanelOpen" aria-controls="workspace-settings-panel" @click="toggleSettingsPanel">设置</button>
       </div>
-      <dl class="document-meta" aria-label="Document status">
-        <div>
-          <dt>Document</dt>
-          <dd>{{ activeDocument?.path ?? '—' }}</dd>
-        </div>
-        <div>
-          <dt>Revision</dt>
-          <dd>{{ activeDocument?.revision ?? '—' }}</dd>
-        </div>
-        <div>
-          <dt>State</dt>
-          <dd>{{ activeDocument ? (activeDocument.dirty ? 'dirty' : 'clean') : '—' }}</dd>
-        </div>
-        <div>
-          <dt>Persistence</dt>
-          <dd data-testid="persistence-status">{{ activePersistenceState?.status ?? '—' }}</dd>
-        </div>
-      </dl>
     </header>
 
     <section
       v-if="settingsPanelOpen"
+      v-modal-focus="closeSettingsPanel"
+      aria-modal="true"
       id="workspace-settings-panel"
       class="workspace-settings"
       role="dialog"
@@ -1856,7 +2516,7 @@ onBeforeUnmount(() => {
 
     <div
       class="workspace-layout"
-      :class="{ 'workspace-layout--sidebar-collapsed': sidebarCollapsed }"
+      :class="{ 'workspace-layout--sidebar-collapsed': sidebarCollapsed, 'workspace-layout--outline': outlineOpen && !!activeDocument }"
       :style="{ '--workspace-sidebar-width': `${sidebarWidth}px` }"
     >
       <aside
@@ -1866,8 +2526,8 @@ onBeforeUnmount(() => {
       >
         <div class="workspace-heading">
           <div>
-            <p class="workspace-eyebrow">Workspace</p>
-            <h2>Files</h2>
+
+            <h2>工作区</h2>
           </div>
           <div class="workspace-heading-actions">
             <button
@@ -1878,7 +2538,7 @@ onBeforeUnmount(() => {
               :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
               @click="toggleSidebar"
             >
-              {{ sidebarCollapsed ? 'Expand' : 'Collapse' }}
+              {{ sidebarCollapsed ? '展开' : '收起' }}
             </button>
             <button
               type="button"
@@ -1888,7 +2548,7 @@ onBeforeUnmount(() => {
               :title="sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar'"
               @click="toggleSidebarPinned"
             >
-              {{ sidebarPinned ? 'Pinned' : 'Pin' }}
+              {{ sidebarPinned ? '自动收纳：关' : '自动收纳：开' }}
             </button>
             <button
               type="button"
@@ -1898,7 +2558,7 @@ onBeforeUnmount(() => {
               :disabled="workspaceBusy || !activeDocument"
               @click="revealActiveFile"
             >
-              Reveal current
+              定位当前
             </button>
             <button
               type="button"
@@ -1907,12 +2567,27 @@ onBeforeUnmount(() => {
               :disabled="workspaceBusy"
               @click="refreshWorkspace"
             >
-              Refresh
+              刷新
             </button>
           </div>
         </div>
         <div class="workspace-card__body">
-        <div class="workspace-create">
+        <nav class="workspace-tools" aria-label="Workspace tools">
+          <button
+            v-for="tool in (['files', 'search', 'git'] as const)"
+            :key="tool"
+            type="button"
+            class="workspace-tool"
+            :class="{ 'workspace-tool--active': activeWorkspaceTool === tool }"
+            :data-testid="`workspace-tool-${tool}`"
+            :aria-pressed="activeWorkspaceTool === tool"
+            @click="selectWorkspaceTool(tool)"
+          >
+            {{ tool === 'files' ? '文件' : tool === 'search' ? '搜索' : 'Git' }}
+          </button>
+        </nav>
+        <div v-if="activeWorkspaceTool === 'files'" data-testid="workspace-files-tool">
+        <details v-disclosure.persistent class="workspace-create"><summary>＋ 新建文件或文件夹</summary>
           <label for="workspace-entry-name">New entry</label>
           <input
             id="workspace-entry-name"
@@ -1943,7 +2618,7 @@ onBeforeUnmount(() => {
               New folder
             </button>
           </div>
-        </div>
+        </details>
         <p v-if="workspaceError" class="workspace-error" data-testid="workspace-error">
           {{ workspaceError }}
         </p>
@@ -1963,6 +2638,7 @@ onBeforeUnmount(() => {
         />
         <div
           v-if="workspaceContextMenu"
+          v-context-focus="closeWorkspaceContextMenu"
           class="workspace-context-menu"
           data-testid="workspace-context-menu"
           :style="{ left: `${workspaceContextMenu.x}px`, top: `${workspaceContextMenu.y}px` }"
@@ -1978,9 +2654,71 @@ onBeforeUnmount(() => {
             Copy {{ workspaceName(workspaceContextMenu.path) }}
           </button>
         </div>
-        <p class="workspace-note">
-          拖动文件或文件夹到另一个文件夹即可移动；树状态来自 filesystem refresh。
-        </p>
+        </div>
+        <section
+          v-else-if="activeWorkspaceTool === 'git'"
+          class="workspace-tool-placeholder"
+          data-testid="workspace-git-tool"
+          aria-label="git workspace tool"
+        >
+          <GitWorkbenchPanel
+            :info="gitInfo"
+            :statuses="gitStatuses"
+            :diff="gitDiff"
+            :history="gitHistory"
+            :selected-path="gitSelectedPath"
+            :layout="gitLayout"
+            :loading="gitLoading"
+            :error="gitError"
+            @refresh="refreshGitWorkbench"
+            @switch-branch="switchGitBranch"
+            @select-path="selectGitPath"
+            @toggle-layout="toggleGitLayout"
+            @discard-file="discardGitFile"
+            @discard-hunk="discardGitHunk"
+          />
+          <ul class="workspace-git-preview" aria-label="Changed files preview">
+            <li
+              v-if="activeDocument?.dirty"
+              class="workspace-git-preview__current"
+              data-testid="workspace-git-current-document"
+            >
+              <span>{{ activeDocument.path }}</span>
+              <span>Unsaved</span>
+            </li>
+            <li v-else class="workspace-git-preview__empty">No current unsaved change.</li>
+          </ul>
+        </section>
+        <section
+          v-else
+          class="workspace-tool-placeholder"
+          :data-testid="`workspace-${activeWorkspaceTool}-tool`"
+          :aria-label="`${activeWorkspaceTool} workspace tool`"
+        >
+          <SearchPanel
+            :results="searchResults"
+            :query="searchQuery?.text"
+            :case-sensitive="searchQuery?.caseSensitive"
+            :replace-text="searchReplacement"
+            :error="searchError"
+            @search="runWorkspaceSearch"
+            @select="selectSearchMatch"
+            @replace="replaceSearchMatch"
+            @replace-all="replaceAllSearchMatches"
+          />
+          <section class="template-panel" data-testid="template-panel" aria-label="Templates">
+            <div class="template-panel__header"><h3>Templates</h3><button type="button" data-testid="template-refresh" @click="refreshTemplates">Rescan</button></div>
+            <select v-model="selectedTemplateId" data-testid="template-select">
+              <option v-for="template in templateRecords" :key="template.id" :value="template.id">{{ template.name }} ({{ template.scope }})</option>
+            </select>
+            <input v-model="templateName" data-testid="template-name" placeholder="new-file.md" />
+            <div class="template-panel__actions">
+              <button type="button" data-testid="template-create" @click="createFromSelectedTemplate">New from template</button>
+              <button type="button" data-testid="template-insert" @click="insertSelectedTemplate">Insert at selection</button>
+            </div>
+            <p v-if="templateError" class="workspace-error" data-testid="template-error">{{ templateError }}</p>
+          </section>
+        </section>
         </div>
         <div
           v-if="!sidebarCollapsed"
@@ -1999,7 +2737,18 @@ onBeforeUnmount(() => {
         ></div>
       </aside>
 
-      <section class="workspace-main" aria-label="Open documents">
+      <aside v-if="activeDocument" v-show="outlineOpen" class="outline-panel" aria-label="文档大纲">
+          <section class="workspace-derived__section" data-testid="workspace-outline">
+            <h3>Outline</h3>
+            <ul>
+              <li v-for="heading in flattenOutline(activeOutline)" :key="heading.id">
+                <button type="button" :style="{ marginLeft: `${(heading.level - 1) * 8}px` }" @click="selectOutlineHeading(heading.from)">{{ heading.text }}</button>
+              </li>
+              <li v-if="activeOutline.length === 0" class="workspace-derived__empty">No headings</li>
+            </ul>
+          </section>
+      </aside>
+      <section class="workspace-main" aria-label="Open documents" @focusin="handleMainFocusIn">
         <div class="workspace-tab-toolbar">
           <WorkspaceTabsPanel
             :tabs="documentTabViews"
@@ -2007,7 +2756,7 @@ onBeforeUnmount(() => {
             @select="activateWorkspaceTab"
             @close="closeWorkspaceTab"
           />
-          <div class="workspace-navigation" aria-label="Document navigation">
+          <details v-disclosure.actions class="workspace-navigation" aria-label="Document navigation"><summary title="标签与文件导航" aria-label="标签与文件导航">···</summary><div class="navigation-menu">
             <button
               type="button"
               data-testid="workspace-prev-tab"
@@ -2045,20 +2794,25 @@ onBeforeUnmount(() => {
             >
               ↓ File
             </button>
-          </div>
+          </div></details>
         </div>
 
-        <section v-if="activeDocument" class="surface-grid" aria-label="Document surfaces">
-          <section class="editor-card" aria-label="Markdown editor projection">
+        <section
+          v-if="activeDocument"
+          class="surface-grid"
+          :class="{ 'surface-grid--annotations': annotationDrawerOpen, 'surface-grid--split': !!splitDocument, 'surface-grid--preview': comparisonPreviewOpen, 'surface-grid--backlinks': backlinksOpen }"
+          aria-label="Document surfaces"
+        >
+          <section class="editor-card" :data-document-revision="activeDocument.revision" aria-label="Markdown editor projection">
             <div class="surface-heading">
               <div>
-                <h2>Markdown editor</h2>
+                <h2>{{ activeDocument.path }}</h2>
                 <span class="presentation-status" data-testid="presentation-mode">
                   {{ presentationMode === 'live-preview' ? 'Live Preview' : 'Raw Source' }}
                 </span>
               </div>
               <div class="surface-actions">
-                <span>{{ projection?.projectionId ?? 'mounting' }}</span>
+
                 <button
                   type="button"
                   class="persistence-action"
@@ -2068,6 +2822,19 @@ onBeforeUnmount(() => {
                 >
                   {{ persistenceBusy ? 'Saving…' : 'Save' }}
                 </button>
+                <button
+                  type="button"
+                  class="presentation-toggle"
+                  data-testid="presentation-toggle"
+                  :aria-pressed="presentationMode === 'live-preview'"
+                  @click="toggleEditorPresentation"
+                >
+                  {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
+                  <kbd>Ctrl/Cmd+E</kbd>
+                </button>
+                <details v-disclosure class="document-menu"><summary title="文档操作" aria-label="文档操作">···</summary><div class="document-menu__body">
+                <label class="autosave-control"><span>Export</span><select v-model="exportFormat" data-testid="export-format"><option value="markdown">Markdown</option><option value="pdf">PDF</option><option value="docx">DOCX</option></select></label>
+                <button type="button" class="persistence-action" data-testid="workspace-export" @click="exportActiveDocument">Export</button>
                 <label class="autosave-control">
                   <span>Auto-save</span>
                   <select
@@ -2103,20 +2870,26 @@ onBeforeUnmount(() => {
                 </button>
                 <button
                   type="button"
-                  class="presentation-toggle"
-                  data-testid="presentation-toggle"
-                  :aria-pressed="presentationMode === 'live-preview'"
-                  @click="toggleEditorPresentation"
+                  class="persistence-action"
+                  data-testid="annotation-add"
+                  :disabled="!canAddAnnotation"
+                  @click="addAnnotationFromSelection"
                 >
-                  {{ presentationMode === 'live-preview' ? 'Show source' : 'Live Preview' }}
-                  <kbd>Ctrl/Cmd+E</kbd>
+                  Add annotation
                 </button>
+                <label class="autosave-control">
+                  <input type="checkbox" data-testid="validation-strict" v-model="strictValidation" />
+                  Strict validation
+                </label>
+                  <button type="button" :aria-pressed="comparisonPreviewOpen" @click="comparisonPreviewOpen = !comparisonPreviewOpen">对照预览</button>
+                </div></details>
               </div>
             </div>
             <div ref="editorHost" class="editor-host"></div>
             <p v-if="persistenceError" class="persistence-error" data-testid="persistence-error">
               {{ persistenceError }}
             </p>
+            <p v-if="exportStatus" class="persistence-hint" data-testid="export-status">{{ exportStatus }}</p>
             <p v-if="referenceClipboardStatus" class="persistence-hint" data-testid="reference-clipboard-status">
               {{ referenceClipboardStatus }}
             </p>
@@ -2135,6 +2908,11 @@ onBeforeUnmount(() => {
             <p v-if="activePersistenceState?.status === 'conflict' && !persistenceError" class="persistence-warning" data-testid="save-conflict-warning">
               本地修改与外部文件冲突；不会覆盖外部内容。
             </p>
+            <ul v-if="validationIssues.length > 0" class="validation-issues" data-testid="validation-issues" aria-label="Validation issues">
+              <li v-for="issue in validationIssues" :key="`${issue.ruleId}-${issue.from ?? 0}`" :data-severity="issue.severity">
+                {{ issue.severity }} · {{ issue.message }}
+              </li>
+            </ul>
             <p
               v-if="activeBrokenReferenceCount > 0 || referenceHealthError"
               class="reference-health-warning"
@@ -2142,21 +2920,63 @@ onBeforeUnmount(() => {
             >
               {{ referenceHealthError ?? `${activeBrokenReferenceCount} broken reference${activeBrokenReferenceCount === 1 ? '' : 's'}; click a reference to reselect.` }}
             </p>
-            <p class="projection-note">
-              同一 CM6 document 在 Raw Source 与 Live Preview decorations/widgets 间切换；不创建第二个 textarea authority。试试 <code>Ctrl/Cmd+E</code>、<code>@</code>、<code>[[</code> 或 <code>![[</code>。
-            </p>
+
           </section>
 
-          <section class="preview-card" aria-label="Live Markdown preview">
+          <section
+            v-if="splitDocument"
+            class="editor-card editor-card--split"
+            data-testid="workspace-split-pane"
+            aria-label="Split Markdown editor projection"
+          >
+            <div class="surface-heading">
+              <div>
+                <h2>Split editor</h2>
+                <span class="presentation-status" data-testid="workspace-split-path">
+                  {{ splitDocument.path }}
+                </span>
+              </div>
+              <button
+                type="button"
+                data-testid="workspace-split-close"
+                aria-label="Close split editor"
+                @click="closeSplitPane"
+              >
+                Close split
+              </button>
+            </div>
+            <div ref="splitEditorHost" class="editor-host split-editor-host"></div>
+          </section>
+
+          <section v-show="comparisonPreviewOpen" class="preview-card" aria-label="Live Markdown preview">
             <div class="surface-heading">
               <h2>Live Preview projection</h2>
               <span>{{ preview?.projectionId ?? 'mounting' }}</span>
             </div>
             <div ref="previewHost" class="preview-host"></div>
-            <p class="projection-note">
-              Preview 只读消费 Markdown；未知语法保留为普通文本。
-            </p>
           </section>
+
+          <aside v-if="backlinksOpen" class="backlinks-panel" aria-label="反向引用">          <section class="workspace-derived__section" data-testid="workspace-backlinks">
+            <h3>Backlinks</h3>
+            <ul>
+              <li v-for="(edge, index) in activeBacklinks" :key="edge.id">
+                <button type="button" @click="selectBacklink(edge)">{{ edge.sourcePath }} · {{ index + 1 }} ({{ edge.status }})</button>
+              </li>
+              <li v-if="activeBacklinks.length === 0" class="workspace-derived__empty">No backlinks</li>
+            </ul>
+          </section>
+</aside>
+          <AnnotationDrawer
+            :annotations="annotationItems"
+            :active-id="activeAnnotationId"
+            :open="annotationDrawerOpen"
+            :width="annotationDrawerWidth"
+            @close="annotationDrawerOpen = false"
+            @select="selectAnnotation"
+            @reply="replyAnnotation"
+            @resolve="resolveAnnotation"
+            @resize="resizeAnnotationDrawer"
+          />
         </section>
 
         <section v-else class="workspace-empty" data-testid="workspace-empty" aria-label="No open document">
@@ -2165,9 +2985,17 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </div>
+    <footer class="app-statusbar">
+      <span data-testid="persistence-status">{{ !activeDocument ? '就绪' : persistenceBusy ? '保存中…' : persistenceError ? '保存失败' : activePersistenceState?.status === 'conflict' ? '文件冲突' : activePersistenceState?.status === 'external-change' ? '外部文件已修改' : activeDocument.dirty ? '未保存' : '已保存' }}</span>
+      <span class="status-path" data-testid="active-document-path">{{ activeDocument?.path ?? '未打开文档' }}</span>
+            <div class="document-stats" data-testid="document-stats" aria-label="Document statistics">
+              {{ activeComposedStats.wordCount }} 字词 · {{ activeComposedStats.referenceCount }} 引用 · {{ activeComposedStats.embedCount }} 嵌入
+              <span v-if="activeComposedStats.circularEmbeds.length > 0"> · {{ activeComposedStats.circularEmbeds.length }} circular embed{{ activeComposedStats.circularEmbeds.length === 1 ? '' : 's' }}</span>
+            </div>    </footer>
   </main>
   <div
     v-if="pendingWorkspaceDeletion"
+    v-modal-focus="() => chooseWorkspaceDeletionDecision('cancel')"
     class="workspace-delete-dialog"
     role="dialog"
     aria-modal="true"

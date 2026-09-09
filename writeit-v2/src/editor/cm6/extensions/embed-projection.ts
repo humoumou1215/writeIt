@@ -33,6 +33,18 @@ import {
   getPresentationMode,
 } from './live-preview'
 import {
+  createCompletionExtension,
+  type CompletionSurfaceOptions,
+} from './completion'
+import {
+  createSlashQuickInsertExtension,
+  type SlashQuickInsertExtensionOptions,
+} from './slash-quick-insert'
+import {
+  createImagePasteExtension,
+  type ImagePasteExtensionOptions,
+} from './image-paste'
+import {
   mountSingleDocumentView,
 } from '../projection/single-document-view'
 import type {
@@ -91,8 +103,32 @@ export interface EmbedProjectionExtensionOptions {
   readonly subscribeTargets?: (listener: () => void) => () => void
   /** Source-backed image options shared by nested child projections. */
   readonly imageProjection?: ImageProjectionRenderOptions
+  /**
+   * Existing slash popup contract. The child supplies its own mutation
+   * capability; callers must not provide a second Store mutation bridge.
+   */
+  readonly slashQuickInsert?: Omit<SlashQuickInsertExtensionOptions, 'mutation'>
+  /**
+   * Existing reference completion contract. Trigger/provider business logic
+   * remains shared with the host editor; only the child projection changes.
+   */
+  readonly completion?: Omit<CompletionSurfaceOptions, 'mutation'>
+  /**
+   * Existing application image-paste policy to install only in editable
+   * child projections. The child adapter supplies its own target path and
+   * receives the child projection mutation capability from mountSingleDocumentView.
+   */
+  readonly imagePaste?: Omit<
+    ImagePasteExtensionOptions,
+    'getDocumentPath' | 'mutation'
+  >
   /** Explicit card action for opening the resolved target in a workspace tab. */
   readonly onOpen?: (
+    path: DocumentPath,
+    fragment: string | null,
+    reference: ParsedReference,
+  ) => void | PromiseLike<void>
+  readonly onOpenInSplit?: (
     path: DocumentPath,
     fragment: string | null,
     reference: ParsedReference,
@@ -366,6 +402,8 @@ class EmbedProjectionWidget extends WidgetType {
   private wrapper: HTMLDivElement | undefined
   private mount: HTMLDivElement | undefined
   private openButton: HTMLButtonElement | undefined
+  private splitButton: HTMLButtonElement | undefined
+  private retryButton: HTMLButtonElement | undefined
   private unsubscribeDocument: (() => void) | undefined
   private unsubscribeTimeline: (() => void) | undefined
 
@@ -376,8 +414,8 @@ class EmbedProjectionWidget extends WidgetType {
     if (!mount || !child || !(target instanceof Node)) return
     if (!mount.contains(target)) return
     // The card is a projection surface, not a navigation hit target. Focus
-    // before CM6 handles the pointer so a click on padding or live-preview
-    // content lands in the nested editor instead of the host token.
+    // during capture so the nested editor owns the pointer before either its
+    // CM6 handler or the host view can reclaim focus under a busy runner.
     child.view.focus()
   }
 
@@ -398,6 +436,40 @@ class EmbedProjectionWidget extends WidgetType {
     }
   }
 
+  private readonly handleRetryClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    this.retryMissing()
+  }
+
+  private readonly handleSplitClick = (event: MouseEvent): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const path = targetPath(this.renderTarget.target)
+    const onOpenInSplit = this.options.onOpenInSplit
+    if (!path || !onOpenInSplit) return
+    try {
+      void Promise.resolve(
+        onOpenInSplit(path, this.reference.fragment, this.reference),
+      ).catch((error: unknown) => {
+        if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+      })
+    } catch (error) {
+      if (this.wrapper) this.wrapper.dataset.embedOpenError = errorText(error)
+    }
+  }
+
+  /**
+   * A child editor owns paste events inside its projection. Stop the event at
+   * the child mount after CM6 has handled it so the host editor cannot see a
+   * child paste as a second host paste. Readonly/degraded children reject the
+   * event here rather than letting it bubble to an editable host.
+   */
+  private readonly handleChildPasteBoundary = (event: Event): void => {
+    event.stopPropagation()
+    if (!this.canEdit || this.reference.readonly) event.preventDefault()
+  }
+
   constructor(
     private readonly store: DocumentStore,
     private readonly hostProjectionId: string,
@@ -408,6 +480,7 @@ class EmbedProjectionWidget extends WidgetType {
     private readonly canEdit: boolean,
     private readonly maxDepth: number,
     private readonly options: EmbedProjectionExtensionOptions,
+    private readonly retryMissing: () => void,
   ) {
     super()
   }
@@ -434,12 +507,21 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.dataset.embedDepth = String(this.depth)
     wrapper.setAttribute('aria-label', `${modeLabel(this.reference.readonly)} ${wrapper.dataset.embedTarget}`)
     this.wrapper = wrapper
-    wrapper.addEventListener('mousedown', this.handleBodyMouseDown)
+    wrapper.addEventListener('mousedown', this.handleBodyMouseDown, true)
 
     const label = document.createElement('div')
     label.className = 'cm-writeit-embed-projection__label'
     label.dataset.embedLabel = 'true'
-    label.textContent = `${modeLabel(this.reference.readonly)} · ${wrapper.dataset.embedTarget}`
+    const source = document.createElement('code')
+    source.className = 'cm-writeit-embed-projection__source'
+    source.textContent = this.reference.raw
+    label.append(source)
+    if (this.reference.readonly) {
+      const readonlyBadge = document.createElement('span')
+      readonlyBadge.className = 'cm-writeit-embed-projection__readonly'
+      readonlyBadge.textContent = 'Readonly'
+      label.append(readonlyBadge)
+    }
     wrapper.append(label)
 
     const target = this.renderTarget.target
@@ -457,8 +539,30 @@ class EmbedProjectionWidget extends WidgetType {
       label.append(openButton)
       this.openButton = openButton
     }
+    if (this.options.onOpenInSplit && targetPath(target) !== undefined) {
+      const splitButton = document.createElement('button')
+      splitButton.type = 'button'
+      splitButton.className = 'cm-writeit-embed-projection__open'
+      splitButton.dataset.embedAction = 'open-split'
+      splitButton.setAttribute(
+        'aria-label',
+        `Open ${displayTarget(target, this.reference)} in split`,
+      )
+      splitButton.textContent = 'Open split'
+      splitButton.addEventListener('click', this.handleSplitClick)
+      label.append(splitButton)
+      this.splitButton = splitButton
+    }
     if (this.renderTarget.error !== undefined) {
       this.appendMessage(wrapper, 'error', `Embed unavailable: ${this.renderTarget.error}`)
+      const retryButton = document.createElement('button')
+      retryButton.type = 'button'
+      retryButton.className = 'cm-writeit-embed-projection__retry'
+      retryButton.dataset.embedAction = 'retry'
+      retryButton.textContent = 'Retry'
+      retryButton.addEventListener('click', this.handleRetryClick)
+      wrapper.append(retryButton)
+      this.retryButton = retryButton
       return wrapper
     }
     if (!target) {
@@ -507,6 +611,7 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.dataset.embedProjectionId = childId
     wrapper.append(childMount)
     this.mount = childMount
+    childMount.addEventListener('paste', this.handleChildPasteBoundary)
 
     const childEditable = this.canEdit && !this.reference.readonly
     const childImageProjection = this.options.imageProjection === undefined
@@ -531,6 +636,42 @@ class EmbedProjectionWidget extends WidgetType {
     }
     const childExtensions: Extension[] = [
       createEmbedProjectionExtension(childEmbedOptions),
+      ...(childEditable && this.options.slashQuickInsert !== undefined
+        ? [
+            createSlashQuickInsertExtension({
+              // Deliberately copy only the registry. The child mutation
+              // capability is supplied by mountSingleDocumentView's facet.
+              registry: this.options.slashQuickInsert.registry,
+            }),
+          ]
+        : []),
+      ...(childEditable && this.options.completion !== undefined
+        ? [
+            createCompletionExtension({
+              // Never forward a caller-provided mutation bridge from the host.
+              registry: this.options.completion.registry,
+            }),
+          ]
+        : []),
+      ...(childEditable && this.options.imagePaste !== undefined
+        ? [
+            createImagePasteExtension({
+              ...this.options.imagePaste,
+              // This callback is deliberately child-scoped. It must resolve
+              // attachment destinations against the target Document, never
+              // against the host document containing the Embed token.
+              getDocumentPath: () => {
+                try {
+                  return this.store.get(locator)?.path ?? null
+                } catch {
+                  return null
+                }
+              },
+              originSource:
+                this.options.imagePaste.originSource ?? 'embed-image-paste',
+            }),
+          ]
+        : []),
       keymap.of([
         {
           key: 'Mod-z',
@@ -560,6 +701,7 @@ class EmbedProjectionWidget extends WidgetType {
       })
       this.subscribeChildState(locator, childId, childMount)
       this.renderChildState()
+      wrapper.dataset.embedReady = 'true'
     } catch (error) {
       wrapper.dataset.embedStatus = 'error'
       childMount.replaceChildren()
@@ -574,9 +716,14 @@ class EmbedProjectionWidget extends WidgetType {
     this.unsubscribeTimeline?.()
     this.unsubscribeDocument = undefined
     this.unsubscribeTimeline = undefined
-    this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown)
+    this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown, true)
+    this.mount?.removeEventListener('paste', this.handleChildPasteBoundary)
     this.openButton?.removeEventListener('click', this.handleOpenClick)
+    this.splitButton?.removeEventListener('click', this.handleSplitClick)
+    this.retryButton?.removeEventListener('click', this.handleRetryClick)
     this.openButton = undefined
+    this.splitButton = undefined
+    this.retryButton = undefined
     this.child?.destroy()
     this.child = undefined
     this.mount = undefined
@@ -811,6 +958,7 @@ export class EmbedProjectionController {
             this.canEdit,
             this.maxDepth,
             this.options,
+            () => this.requestRefresh(true),
           ),
         }),
       })

@@ -133,6 +133,11 @@ describe('CM6 raw source / live preview presentation', () => {
     expect(store.getRevision(locator)).toBe(0)
 
     image?.click()
+    expect(image?.closest<HTMLElement>('.cm-writeit-live-preview-image')?.dataset.imageFocused)
+      .toBe('true')
+    projection.view.dom
+      .querySelector<HTMLButtonElement>('[data-image-action="preview"]')
+      ?.click()
     expect(previews).toEqual(['notes/images/diagram.png'])
     resolver.dispose()
   })
