@@ -413,13 +413,9 @@ class EmbedProjectionWidget extends WidgetType {
     const target = event.target
     if (!mount || !child || !(target instanceof Node)) return
     if (!mount.contains(target)) return
-    // The card is a projection surface, not a navigation hit target. Keep the
-    // pointer inside the nested projection: otherwise an ancestor CM6 view can
-    // reclaim focus after this listener runs, especially under a busy browser
-    // runner. The child editor has already seen the target-phase event and can
-    // still establish its click selection before this bubble listener stops
-    // the host event.
-    event.stopPropagation()
+    // The card is a projection surface, not a navigation hit target. Focus
+    // during capture so the nested editor owns the pointer before either its
+    // CM6 handler or the host view can reclaim focus under a busy runner.
     child.view.focus()
   }
 
@@ -511,7 +507,7 @@ class EmbedProjectionWidget extends WidgetType {
     wrapper.dataset.embedDepth = String(this.depth)
     wrapper.setAttribute('aria-label', `${modeLabel(this.reference.readonly)} ${wrapper.dataset.embedTarget}`)
     this.wrapper = wrapper
-    wrapper.addEventListener('mousedown', this.handleBodyMouseDown)
+    wrapper.addEventListener('mousedown', this.handleBodyMouseDown, true)
 
     const label = document.createElement('div')
     label.className = 'cm-writeit-embed-projection__label'
@@ -719,7 +715,7 @@ class EmbedProjectionWidget extends WidgetType {
     this.unsubscribeTimeline?.()
     this.unsubscribeDocument = undefined
     this.unsubscribeTimeline = undefined
-    this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown)
+    this.wrapper?.removeEventListener('mousedown', this.handleBodyMouseDown, true)
     this.mount?.removeEventListener('paste', this.handleChildPasteBoundary)
     this.openButton?.removeEventListener('click', this.handleOpenClick)
     this.splitButton?.removeEventListener('click', this.handleSplitClick)
