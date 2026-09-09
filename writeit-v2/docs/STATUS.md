@@ -15,6 +15,7 @@
 - 设置/删除确认建立焦点边界，背景 inert、Tab 循环、Escape 关闭或取消；快捷键录制优先消费事件，背景工作区命令不执行。删除按钮重新启用后再恢复焦点。
 - 文件树右键面板聚焦当前操作，关闭返回来源行；不存在的来源不会强行聚焦。
 - 修复表格 Enter 后延迟恢复焦点导致紧接着输入落到表格外：DOM 更新后同步恢复活动 cell 焦点，不依赖绘制帧或固定等待；Markdown/Core/ADR 合同不变。
+- CI remediation：editable Embed 的 body mousedown 在 child projection 已处理后停止继续冒泡，避免忙碌 runner 下宿主 CM6 夺回焦点；保持 Embed projection 与宿主导航隔离。
 - 迁移旧 browser tests 的 metadata、隐藏预览、新建/导航菜单入口；独立 editor harness 提供明确可见容器，shell CSS 限定到应用中的编辑区。Revision 使用非视觉 DOM 属性检查，不恢复调试面板。
 - 验证：`npm run test` 477 tests PASS；`npm run typecheck` PASS；`npm run build` PASS；稳定代码下 `npm run test:browser -- --workers=2` 全量 84 tests PASS（32s），`git diff --check` PASS。仍有既有大 chunk 构建警告；本次未验证原生 Tauri/WebView。
 - 下一建议 Task：UX-02，按正文、Embed、表格、Mermaid 的显示基线进行专门视觉验收；本次未宣称完整 UX_SPEC 所有行为已实现。

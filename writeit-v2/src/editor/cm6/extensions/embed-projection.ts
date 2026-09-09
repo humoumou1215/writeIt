@@ -413,9 +413,13 @@ class EmbedProjectionWidget extends WidgetType {
     const target = event.target
     if (!mount || !child || !(target instanceof Node)) return
     if (!mount.contains(target)) return
-    // The card is a projection surface, not a navigation hit target. Focus
-    // before CM6 handles the pointer so a click on padding or live-preview
-    // content lands in the nested editor instead of the host token.
+    // The card is a projection surface, not a navigation hit target. Keep the
+    // pointer inside the nested projection: otherwise an ancestor CM6 view can
+    // reclaim focus after this listener runs, especially under a busy browser
+    // runner. The child editor has already seen the target-phase event and can
+    // still establish its click selection before this bubble listener stops
+    // the host event.
+    event.stopPropagation()
     child.view.focus()
   }
 
